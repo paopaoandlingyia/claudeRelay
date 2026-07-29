@@ -49,6 +49,9 @@ $env:CLAUDE_RELAY_API_KEY = "replace-with-a-long-random-key"
 The environment variable overrides `api_key` in the JSON file. Point an Anthropic client to
 `http://127.0.0.1:8317` and authenticate with the configured downstream key.
 
+Set `upstream_proxy` to an HTTP proxy URL such as `http://127.0.0.1:7890` when Anthropic
+traffic must go through a local proxy.
+
 ## Baseline behavior
 
 The relay preserves the incoming request body byte-for-byte except for one controlled field:

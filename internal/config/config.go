@@ -15,6 +15,7 @@ type Config struct {
 	APIKey          string `json:"api_key"`
 	CredentialsFile string `json:"credentials_file"`
 	UpstreamBaseURL string `json:"upstream_base_url"`
+	UpstreamProxy   string `json:"upstream_proxy"`
 	MaxRequestBytes int64  `json:"max_request_bytes"`
 	SignExistingCCH bool   `json:"sign_existing_cch"`
 }
@@ -56,6 +57,7 @@ func (cfg *Config) validate() error {
 	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
 	cfg.CredentialsFile = strings.TrimSpace(cfg.CredentialsFile)
 	cfg.UpstreamBaseURL = strings.TrimRight(strings.TrimSpace(cfg.UpstreamBaseURL), "/")
+	cfg.UpstreamProxy = strings.TrimSpace(cfg.UpstreamProxy)
 	if cfg.MaxRequestBytes == 0 {
 		cfg.MaxRequestBytes = defaultMaxRequestBytes
 	}
@@ -75,6 +77,12 @@ func (cfg *Config) validate() error {
 	parsed, err := url.Parse(cfg.UpstreamBaseURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return fmt.Errorf("config upstream_base_url must be an absolute HTTP(S) URL")
+	}
+	if cfg.UpstreamProxy != "" {
+		proxyURL, proxyErr := url.Parse(cfg.UpstreamProxy)
+		if proxyErr != nil || proxyURL.Host == "" || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") {
+			return fmt.Errorf("config upstream_proxy must be an absolute HTTP(S) URL")
+		}
 	}
 	return nil
 }

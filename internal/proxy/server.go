@@ -37,11 +37,19 @@ func NewServer(cfg config.Config, cred credential.Credential) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse upstream URL: %w", err)
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.UpstreamProxy != "" {
+		proxyURL, parseErr := url.Parse(cfg.UpstreamProxy)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse upstream proxy URL: %w", parseErr)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
 	server := &Server{
 		cfg:        cfg,
 		credential: cred,
 		upstream:   upstream,
-		client:     &http.Client{},
+		client:     &http.Client{Transport: transport},
 	}
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,
