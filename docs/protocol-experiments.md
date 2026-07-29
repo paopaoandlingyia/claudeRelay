@@ -68,8 +68,10 @@ validates it.
 - The same signed billing-only request succeeded with Opus 5 (HTTP 200). It contained no
   `metadata.user_id`, Claude Code identity prompt, or `anthropic-beta` header.
 - With CCH signing disabled, Opus 5 also succeeded with literal `cch=00000`, and then succeeded
-  after the `cch` field was removed entirely. Current upstream behavior therefore does not require
-  a CCH value for this request path.
+  after the `cch` field was removed entirely. Sonnet 5 likewise succeeded twice with CCH signing
+  disabled and the `cch` field absent, provided that both the billing block and a structurally valid
+  `metadata.user_id` were present. Current upstream behavior therefore does not require a CCH value
+  for either tested model path.
 - A block containing only the reserved `x-anthropic-billing-header:` prefix was rejected with
   HTTP 400. Blocks containing only `cc_version` or only `cc_entrypoint` were rejected the same
   way. A block containing both fields succeeded. The smallest structure demonstrated so far is:
