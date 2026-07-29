@@ -14,6 +14,7 @@ capture-based tests identify the fields the upstream actually requires.
 - `POST /v1/messages`
 - `POST /v1/messages/count_tokens`
 - Transparent JSON and SSE responses
+- Re-signing of an existing five-digit CCH without adding prompt content
 - No format conversion, account rotation, billing, UI, or prompt injection
 - No automatic OAuth refresh in the baseline build
 
@@ -50,10 +51,23 @@ The environment variable overrides `api_key` in the JSON file. Point an Anthropi
 
 ## Baseline behavior
 
-The relay preserves the incoming request body byte-for-byte. It copies end-to-end headers,
-removes the downstream `x-api-key`, replaces upstream authentication with the imported OAuth
-access token, and adds `?beta=true` to the Anthropic endpoint.
+The relay preserves the incoming request body byte-for-byte except for one controlled field:
+when the first system block is a billing attribution block with a five-digit CCH, it recomputes
+those five hexadecimal digits over the final body. It does not add a billing block or any prompt.
+Set `sign_existing_cch` to `false` to disable this behavior.
+
+The relay copies end-to-end headers, removes the downstream `x-api-key`, replaces upstream
+authentication with the imported OAuth access token, and adds `?beta=true` to the Anthropic
+endpoint.
 
 Do not send ordinary Anthropic API traffic yet unless it already contains the subscription
 fields under test. The next milestone is a replay matrix for billing attribution, CCH, and
 `metadata.user_id`.
+
+For an offline captured-body check, write a re-signed copy without contacting Anthropic:
+
+```powershell
+.\claude-relay.exe sign-cch `
+  -in data\capture\body.json `
+  -out data\capture\body.signed.json
+```

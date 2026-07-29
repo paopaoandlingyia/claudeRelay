@@ -12,6 +12,11 @@ Replay a captured Claude Code request through the relay without changing its bod
 2. Streaming and non-streaming responses are relayed unchanged.
 3. The subscription records usage as expected.
 
+The current mitmproxy export is valid JSON but is not byte-identical to the wire request:
+its saved UTF-8 length differs from the captured `Content-Length`. Re-sign its existing CCH
+before replay. The fixture otherwise confirms a Claude Desktop entrypoint, a five-digit CCH,
+and JSON-string metadata containing `account_uuid`, `device_id`, and `session_id`.
+
 ## Minimal request matrix
 
 Start from one captured request and change one variable at a time. Recompute CCH after every

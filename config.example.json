@@ -3,5 +3,6 @@
   "api_key": "",
   "credentials_file": "data/credentials.json",
   "upstream_base_url": "https://api.anthropic.com",
-  "max_request_bytes": 33554432
+  "max_request_bytes": 33554432,
+  "sign_existing_cch": true
 }
