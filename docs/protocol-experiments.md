@@ -25,6 +25,38 @@ its saved UTF-8 length differs from the captured `Content-Length`. Re-sign its e
 before replay. The fixture otherwise confirms a Claude Desktop entrypoint, a five-digit CCH,
 and JSON-string metadata containing `account_uuid`, `device_id`, and `session_id`.
 
+## Official client captures after Opus 5 release
+
+Fresh Claude Desktop 2.1.219 captures from 2026-07-30 show that both Sonnet 5 and Opus 5 still
+send the attribution block as the first system item. Both use this shape:
+
+```text
+x-anthropic-billing-header: cc_version=2.1.219.<build>; cc_entrypoint=claude-desktop; cch=<5 hex>;
+```
+
+Both requests also include JSON-string `metadata.user_id` values with
+`device_id/account_uuid/session_id`, four system blocks, 36 tools, adaptive summarized thinking,
+context management, and `output_config.effort`. The new headers add the
+`mid-conversation-system-2026-04-07` and `effort-2025-11-24` betas compared with the earlier
+2.1.215 capture.
+
+The client continuing to emit CCH is evidence that the field remains part of the official wire
+format even though the controlled acceptance tests below show that the tested model paths do not
+currently require it. Preserve and re-sign an existing CCH for compatibility; do not remove the
+implementation merely because omission is accepted.
+
+Recomputing CCH over the saved 2.1.219 JSON files did not reproduce their captured values. This is
+not evidence by itself that the algorithm changed: the exported body byte lengths do not match the
+captured `Content-Length`, so the files are not known to be byte-identical to the wire bodies. A raw
+byte-preserving capture is required before changing the signing algorithm.
+
+Title generation has moved to a separate Claude Web endpoint under
+`/api/organizations/{organization}/dust/generate_title_and_branch`. The observed request selects
+Sonnet 5 and sends `first_session_message` plus `title_style`; the response contains `title` and
+`branch_name`. A Chinese first message produced a Chinese title, while the branch name remained a
+machine-friendly non-CJK string. This endpoint is a product-side Web API and is outside the relay's
+native Anthropic Messages scope.
+
 ## Minimal request matrix
 
 Start from one captured request and change one variable at a time. Early tests recomputed CCH
