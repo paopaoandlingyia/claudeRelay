@@ -12,7 +12,9 @@ round-robin rotation, or Claude Code prompt injection.
 - Minimum subscription attribution for ordinary Anthropic requests
 - Byte-for-byte body pass-through when an official client CCH is present
 - Cache-affinity account selection, one-hour sticky sessions, and one bounded transient failover
-- No automatic OAuth refresh yet
+- Disabled-by-default account imports and manual activation
+- PKCE OAuth login endpoints for the future WebUI
+- On-demand rotating OAuth refresh for enabled accounts
 
 The dated protocol conclusions and unresolved questions are centralized in
 [`docs/protocol-findings.md`](docs/protocol-findings.md). Raw experiment notes remain in
@@ -35,13 +37,14 @@ go build -o claude-relay.exe ./cmd/claude-relay
 
 The importer preserves the real account UUID when available and creates a persistent random
 device identity when absent. Import each account under a unique, stable ASCII alias using letters,
-digits, dots, underscores, or hyphens. Reimporting the
-same alias updates that account without changing its database identity. Unknown source fields are
-retained under `extra`; tokens are never printed.
+digits, dots, underscores, or hyphens. Every import and reimport leaves the account disabled;
+activation is a separate explicit action. Reimporting the same account preserves its database
+identity. Unknown source fields are retained under `extra`; tokens are never printed.
 
 Existing single-account installations that still set `credentials_file` are migrated into the
 SQLite database as alias `default` the first time the new server starts with an empty database.
 The old JSON file is retained as a backup and is no longer read after the database has an account.
+The schema upgrade that introduced activation also disables every pre-existing account once.
 
 ## Configure and run
 
@@ -53,6 +56,53 @@ $env:CLAUDE_RELAY_API_KEY = "replace-with-a-long-random-key"
 
 Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a URL such as
 `http://127.0.0.1:7890` when upstream traffic must use a local proxy.
+
+## Account management
+
+Management endpoints use the same downstream API key as message requests. They never return access
+or refresh tokens.
+
+```http
+GET  /admin/v1/accounts
+POST /admin/v1/accounts/{alias}/enable
+POST /admin/v1/accounts/{alias}/disable
+```
+
+Disabled accounts cannot be selected automatically or through `X-Claude-Relay-Account`, and they
+never trigger token refresh. Enabling an account means this relay becomes the sole owner of its
+refresh-token chain. Stop managing that account in CLIProxyAPI before enabling it here.
+
+Enabled accounts refresh on demand when their access token has less than five minutes remaining.
+The access token and rotated refresh token are persisted together before the model request is sent.
+Set `auto_refresh_enabled` to `false` for an emergency global refresh stop. Still-valid access
+tokens continue to work; expired tokens return an explicit error.
+
+## OAuth login API
+
+The server-oriented PKCE flow uses authorization-code copy/paste so it does not depend on a callback
+to the user's local computer:
+
+```http
+POST /admin/v1/oauth/claude/start
+Content-Type: application/json
+
+{"alias":"personal"}
+```
+
+Open the returned `authorization_url`, complete authorization, then submit the resulting code (or
+callback URL):
+
+```http
+POST /admin/v1/oauth/claude/exchange
+Content-Type: application/json
+
+{"session_id":"...","code":"..."}
+```
+
+The OAuth session and PKCE verifier live in memory for 30 minutes. A completed login is imported as
+disabled and must be enabled separately. Anthropic does not document this subscription OAuth flow
+as a stable public API, so the real browser exchange still needs an interactive integration test
+whenever its endpoints or client behavior change.
 
 ## Account selection
 
@@ -75,8 +125,9 @@ account identity in an immutable signed CCH request is also rejected. Successful
 single downstream API key can use this override, so aliases should not contain email addresses or
 other sensitive data.
 
-Transient `429`, `529`, network, and upstream `5xx` failures may move an unpinned request to one
-other account at most once. Explicitly selected and signed account-bound requests never fail over.
+Transient `429`, `529`, network, upstream `5xx`, and token-refresh failures may move an unpinned
+request to one other account at most once. Explicitly selected and signed account-bound requests
+never fail over.
 
 ## Request transformation
 

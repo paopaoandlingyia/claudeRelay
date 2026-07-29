@@ -18,6 +18,7 @@ type Config struct {
 	UpstreamBaseURL string `json:"upstream_base_url"`
 	UpstreamProxy   string `json:"upstream_proxy"`
 	MaxRequestBytes int64  `json:"max_request_bytes"`
+	AutoRefresh     bool   `json:"auto_refresh_enabled"`
 }
 
 func Load(path string) (Config, error) {
@@ -26,7 +27,7 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 
-	var cfg Config
+	cfg := Config{AutoRefresh: true}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
@@ -52,6 +53,9 @@ func applyEnvironment(cfg *Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_UPSTREAM_BASE_URL")); value != "" {
 		cfg.UpstreamBaseURL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_AUTO_REFRESH_ENABLED")); value != "" {
+		cfg.AutoRefresh = strings.EqualFold(value, "true") || value == "1"
 	}
 }
 

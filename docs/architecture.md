@@ -25,7 +25,27 @@ model-specific cooldowns. Selection therefore occurs before minimum subscription
 added. Signed CCH bodies remain immutable and are pinned to their matching imported account.
 
 Transient failures permit at most one alternate account. Explicit account overrides and signed
-account-bound requests do not fail over. OAuth refresh remains a separate unfinished capability.
+account-bound requests do not fail over.
+
+## 2026-07-30: activation owns OAuth refresh
+
+The intended end state is full migration away from CLIProxyAPI rather than permanent shared
+credential management. There is therefore one account switch instead of separate traffic-owner and
+refresh-owner state:
+
+- Imports, reimports, and OAuth logins always leave an account disabled.
+- Disabled accounts neither receive traffic nor perform refresh operations.
+- Enabling an account explicitly makes this relay the sole owner of that refresh-token chain.
+- Enabled accounts refresh on demand within five minutes of access-token expiry and atomically
+  persist both the new access token and the rotated refresh token.
+- `auto_refresh_enabled` is a global emergency stop, not a second ownership model.
+
+Schema version 2 intentionally disables all accounts once during upgrade so merely starting a new
+binary cannot take over a credential that another process may still be refreshing.
+
+The PKCE OAuth flow stores its state and verifier in memory for 30 minutes, accepts a copied
+authorization code or callback URL, imports the credential as disabled, and never exposes tokens
+through management responses. It deliberately excludes cookie-based login.
 
 SQLite in WAL mode is the single-instance persistence boundary. The database holds OAuth secrets
 and must live on a private server volume; the service requests owner-only file permissions on

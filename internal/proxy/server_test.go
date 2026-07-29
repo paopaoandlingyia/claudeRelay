@@ -5,10 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/local/claude-relay/internal/claudeoauth"
 	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/credential"
 	"github.com/local/claude-relay/internal/store"
@@ -415,6 +418,121 @@ func TestRoutingPrefixIgnoresContentAfterCacheBreakpoint(t *testing.T) {
 	}
 }
 
+func TestAdminAccountLifecycleDoesNotExposeTokens(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/admin/v1/accounts", nil)
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "upstream-access-token") || strings.Contains(recorder.Body.String(), "refresh_token\":\"") {
+		t.Fatalf("account response exposed token material: %s", recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/admin/v1/accounts/default/disable", nil)
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"enabled":false`) {
+		t.Fatalf("disable status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"m","messages":[]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set(accountHeader, "default")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled forced account status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestOAuthManagementFlowImportsDisabledAccount(t *testing.T) {
+	t.Parallel()
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"oauth-access","refresh_token":"oauth-refresh","expires_in":28800,"account":{"uuid":"33333333-3333-4333-8333-333333333333","email_address":"oauth@example.com"}}`)
+	}))
+	defer tokenServer.Close()
+	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+	oauthClient := claudeoauth.NewForTest(tokenServer.Client(), "https://example.test/authorize", tokenServer.URL, "https://example.test/callback")
+	server.oauth = oauthClient
+	server.tokens.oauth = oauthClient
+
+	startRecorder := httptest.NewRecorder()
+	startRequest := httptest.NewRequest(http.MethodPost, "/admin/v1/oauth/claude/start", strings.NewReader(`{"alias":"oauth-account"}`))
+	startRequest.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(startRecorder, startRequest)
+	if startRecorder.Code != http.StatusOK {
+		t.Fatalf("start status = %d body = %s", startRecorder.Code, startRecorder.Body.String())
+	}
+	var started struct {
+		AuthorizationURL string `json:"authorization_url"`
+		SessionID        string `json:"session_id"`
+	}
+	if err := json.Unmarshal(startRecorder.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	parsedURL, err := url.Parse(started.AuthorizationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := parsedURL.Query().Get("state")
+	exchangeBody, _ := json.Marshal(map[string]string{"session_id": started.SessionID, "code": "auth-code#" + state})
+	exchangeRecorder := httptest.NewRecorder()
+	exchangeRequest := httptest.NewRequest(http.MethodPost, "/admin/v1/oauth/claude/exchange", strings.NewReader(string(exchangeBody)))
+	exchangeRequest.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(exchangeRecorder, exchangeRequest)
+	if exchangeRecorder.Code != http.StatusCreated || !strings.Contains(exchangeRecorder.Body.String(), `"enabled":false`) {
+		t.Fatalf("exchange status = %d body = %s", exchangeRecorder.Code, exchangeRecorder.Body.String())
+	}
+	account, found, err := server.store.AccountByAlias(t.Context(), "oauth-account")
+	if err != nil || !found || account.Enabled || account.RefreshToken != "oauth-refresh" {
+		t.Fatalf("OAuth account = %#v found=%v err=%v", account, found, err)
+	}
+}
+
+func TestTokenManagerPersistsRotatedRefreshToken(t *testing.T) {
+	t.Parallel()
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":28800}`)
+	}))
+	defer tokenServer.Close()
+	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+	account, err := server.store.ImportAccount(t.Context(), "refreshing", credential.Credential{
+		Type:         "claude",
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    time.Now().Add(-time.Minute).Format(time.RFC3339),
+		AccountUUID:  "44444444-4444-4444-8444-444444444444",
+		DeviceID:     strings.Repeat("d", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err = server.store.SetAccountEnabled(t.Context(), account.Alias, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oauthClient := claudeoauth.NewForTest(tokenServer.Client(), "https://example.test/authorize", tokenServer.URL, "https://example.test/callback")
+	manager := tokenManager{store: server.store, oauth: oauthClient, autoRefresh: true}
+	updated, err := manager.ensureFresh(t.Context(), account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AccessToken != "new-access" || updated.RefreshToken != "new-refresh" {
+		t.Fatalf("updated account tokens were not rotated")
+	}
+	persisted, _, err := server.store.AccountByID(t.Context(), account.ID)
+	if err != nil || persisted.RefreshToken != "new-refresh" {
+		t.Fatalf("persisted account refresh token was not rotated: err=%v", err)
+	}
+}
+
 func newTestServer(t *testing.T, upstreamURL string, maxRequestBytes int64) *Server {
 	t.Helper()
 	database, err := store.Open(filepath.Join(t.TempDir(), "relay.db"))
@@ -429,6 +547,9 @@ func newTestServer(t *testing.T, upstreamURL string, maxRequestBytes int64) *Ser
 		DeviceID:    strings.Repeat("a", 64),
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SetAccountEnabled(t.Context(), "default", true); err != nil {
 		t.Fatal(err)
 	}
 	server, err := NewServer(config.Config{
@@ -453,6 +574,9 @@ func importTestAccount(t *testing.T, database *store.Store, alias, token, accoun
 		DeviceID:    strings.Repeat(deviceByte, 64),
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SetAccountEnabled(t.Context(), alias, true); err != nil {
 		t.Fatal(err)
 	}
 }

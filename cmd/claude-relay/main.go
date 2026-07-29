@@ -120,11 +120,11 @@ func migrateLegacyCredential(database *store.Store, path string) error {
 		return fmt.Errorf("load legacy credential for migration: %w", err)
 	}
 	if cred.IsExpired(time.Now()) {
-		slog.Warn("access token appears expired; automatic refresh is not enabled", "expires", cred.ExpiresAt)
+		slog.Warn("legacy credential access token appears expired; migrated account will remain disabled", "expires", cred.ExpiresAt)
 	}
 	_, err = database.ImportAccount(context.Background(), "default", cred)
 	if err == nil {
-		slog.Info("migrated legacy credential into account database", "account", "default")
+		slog.Info("migrated legacy credential into account database as disabled", "account", "default")
 	}
 	return err
 }

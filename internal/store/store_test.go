@@ -29,6 +29,13 @@ func TestImportBindingAndCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if account.Enabled {
+		t.Fatal("newly imported account was enabled")
+	}
+	account, err = database.SetAccountEnabled(context.Background(), account.Alias, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := database.Bind(context.Background(), "route", account.ID, time.Hour); err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +74,15 @@ func TestImportSameAliasUpdatesCredentialWithoutChangingID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.SetAccountEnabled(context.Background(), first.Alias, true); err != nil {
+		t.Fatal(err)
+	}
 	base.AccessToken = "two"
 	second, err := database.ImportAccount(context.Background(), "ACCOUNT", base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ID != second.ID || second.AccessToken != "two" {
+	if first.ID != second.ID || second.AccessToken != "two" || second.Enabled {
 		t.Fatalf("updated account = %#v, first = %#v", second, first)
 	}
 }

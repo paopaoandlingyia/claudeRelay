@@ -92,6 +92,11 @@ func ReadImport(sourcePath string) (Credential, error) {
 	if len(cred.Extra) == 0 {
 		cred.Extra = nil
 	}
+	return Prepare(cred)
+}
+
+// Prepare validates a credential and fills stable attribution identity fields.
+func Prepare(cred Credential) (Credential, error) {
 	if err := cred.validate(); err != nil {
 		return Credential{}, err
 	}

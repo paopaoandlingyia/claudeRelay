@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/local/claude-relay/internal/claudeoauth"
 	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/store"
 )
@@ -31,6 +32,8 @@ type Server struct {
 	upstream   *url.URL
 	httpServer *http.Server
 	client     *http.Client
+	oauth      *claudeoauth.Client
+	tokens     *tokenManager
 }
 
 func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
@@ -49,13 +52,16 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
+	oauthClient := claudeoauth.New(&http.Client{Transport: transport, Timeout: 60 * time.Second})
 	server := &Server{
 		cfg:      cfg,
 		store:    database,
 		selector: accountSelector{store: database},
 		upstream: upstream,
 		client:   &http.Client{Transport: transport},
+		oauth:    oauthClient,
 	}
+	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.routes(),
@@ -93,6 +99,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /v1/messages", s.forward)
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.forward)
+	mux.HandleFunc("GET /admin/v1/accounts", s.listAccounts)
+	mux.HandleFunc("POST /admin/v1/accounts/{alias}/enable", func(w http.ResponseWriter, r *http.Request) { s.setAccountEnabled(w, r, true) })
+	mux.HandleFunc("POST /admin/v1/accounts/{alias}/disable", func(w http.ResponseWriter, r *http.Request) { s.setAccountEnabled(w, r, false) })
+	mux.HandleFunc("POST /admin/v1/oauth/claude/start", s.startClaudeOAuth)
+	mux.HandleFunc("POST /admin/v1/oauth/claude/exchange", s.exchangeClaudeOAuth)
 	return s.authenticate(mux)
 }
 
@@ -158,6 +169,17 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "api_error", err.Error())
 			return
 		}
+		freshAccount, refreshErr := s.tokens.ensureFresh(incoming.Context(), selected.Account)
+		if refreshErr != nil {
+			_ = s.store.Cooldown(incoming.Context(), selected.Account.ID, "", time.Now().Add(time.Minute), "oauth_refresh_failed")
+			if selected.Pinned || strings.TrimSpace(forcedAlias) != "" || attempt == 1 {
+				writeError(w, http.StatusServiceUnavailable, "authentication_error", refreshErr.Error())
+				return
+			}
+			excluded[selected.Account.ID] = true
+			continue
+		}
+		selected.Account = freshAccount
 		transformedBody, changed, transformErr := addSubscriptionAttribution(body, incoming.Header, selected.Account.Credential, includeMetadata, route.ConversationKey)
 		if transformErr != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request_error", transformErr.Error())

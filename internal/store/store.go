@@ -65,7 +65,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
 	}
-	if version > 1 {
+	if version > 2 {
 		return fmt.Errorf("database schema version %d is newer than this build supports", version)
 	}
 	statements := []string{
@@ -83,7 +83,7 @@ func (s *Store) initialize(ctx context.Context) error {
 			account_uuid TEXT NOT NULL,
 			device_id TEXT NOT NULL,
 			extra_json TEXT NOT NULL DEFAULT '{}',
-			enabled INTEGER NOT NULL DEFAULT 1,
+			enabled INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -103,11 +103,21 @@ func (s *Store) initialize(ctx context.Context) error {
 			reason TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY(account_id, model)
 		)`,
-		`PRAGMA user_version=1`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize database: %w", err)
+		}
+	}
+	if version < 2 {
+		// Version 2 introduces explicit account activation. Existing accounts are
+		// intentionally disabled so an upgrade cannot take over credentials still
+		// managed by another process.
+		if _, err := s.db.ExecContext(ctx, `UPDATE accounts SET enabled=0`); err != nil {
+			return fmt.Errorf("disable accounts during schema migration: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=2`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}
 	return nil
@@ -115,24 +125,34 @@ func (s *Store) initialize(ctx context.Context) error {
 
 func (s *Store) ImportAccount(ctx context.Context, alias string, cred credential.Credential) (Account, error) {
 	alias = strings.TrimSpace(alias)
-	if alias == "" {
-		return Account{}, fmt.Errorf("account alias is required")
-	}
-	if len(alias) > 64 || !validAlias(alias) {
-		return Account{}, fmt.Errorf("account alias must use 1-64 ASCII letters, digits, dots, underscores, or hyphens")
+	if err := ValidateAlias(alias); err != nil {
+		return Account{}, err
 	}
 	extra, err := json.Marshal(cred.Extra)
 	if err != nil {
 		return Account{}, fmt.Errorf("encode account extras: %w", err)
 	}
 	now := time.Now().Unix()
+	if existing, found, lookupErr := s.accountByUUIDAnyState(ctx, cred.AccountUUID); lookupErr != nil {
+		return Account{}, lookupErr
+	} else if found && !strings.EqualFold(existing.Alias, alias) {
+		_, err = s.db.ExecContext(ctx, `UPDATE accounts SET alias=?,type=?,access_token=?,refresh_token=?,expires_at=?,email=?,
+			account_uuid=?,device_id=?,extra_json=?,enabled=0,updated_at=? WHERE id=?`,
+			alias, cred.Type, cred.AccessToken, cred.RefreshToken, cred.ExpiresAt, cred.Email,
+			cred.AccountUUID, cred.DeviceID, string(extra), now, existing.ID)
+		if err != nil {
+			return Account{}, fmt.Errorf("update existing account identity: %w", err)
+		}
+		account, _, reloadErr := s.AccountByID(ctx, existing.ID)
+		return account, reloadErr
+	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO accounts
 		(alias,type,access_token,refresh_token,expires_at,email,account_uuid,device_id,extra_json,enabled,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,1,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,0,?,?)
 		ON CONFLICT(alias) DO UPDATE SET
 		type=excluded.type, access_token=excluded.access_token, refresh_token=excluded.refresh_token,
 		expires_at=excluded.expires_at, email=excluded.email, account_uuid=excluded.account_uuid,
-		device_id=excluded.device_id, extra_json=excluded.extra_json, updated_at=excluded.updated_at`,
+		device_id=excluded.device_id, extra_json=excluded.extra_json, enabled=0, updated_at=excluded.updated_at`,
 		alias, cred.Type, cred.AccessToken, cred.RefreshToken, cred.ExpiresAt, cred.Email,
 		cred.AccountUUID, cred.DeviceID, string(extra), now, now)
 	if err != nil {
@@ -146,6 +166,22 @@ func (s *Store) ImportAccount(ctx context.Context, alias string, cred credential
 		return Account{}, fmt.Errorf("reload imported account: account disappeared")
 	}
 	return account, nil
+}
+
+func (s *Store) accountByUUIDAnyState(ctx context.Context, uuid string) (Account, bool, error) {
+	account, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts a WHERE a.account_uuid=? LIMIT 1`, uuid))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, false, nil
+	}
+	return account, err == nil, err
+}
+
+func ValidateAlias(alias string) error {
+	alias = strings.TrimSpace(alias)
+	if alias == "" || len(alias) > 64 || !validAlias(alias) {
+		return fmt.Errorf("account alias must use 1-64 ASCII letters, digits, dots, underscores, or hyphens")
+	}
+	return nil
 }
 
 func validAlias(alias string) bool {
@@ -190,6 +226,23 @@ func (s *Store) Accounts(ctx context.Context, model string, now time.Time) ([]Ac
 	return accounts, rows.Err()
 }
 
+func (s *Store) AllAccounts(ctx context.Context) ([]Account, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+accountColumns+` FROM accounts a ORDER BY a.alias`)
+	if err != nil {
+		return nil, fmt.Errorf("list all accounts: %w", err)
+	}
+	defer rows.Close()
+	var accounts []Account
+	for rows.Next() {
+		account, scanErr := scanAccount(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, rows.Err()
+}
+
 const accountColumns = `a.id,a.alias,a.enabled,a.type,a.access_token,a.refresh_token,a.expires_at,a.email,a.account_uuid,a.device_id,a.extra_json`
 
 type scanner interface{ Scan(...any) error }
@@ -216,6 +269,47 @@ func (s *Store) AccountByAlias(ctx context.Context, alias string) (Account, bool
 		return Account{}, false, nil
 	}
 	return account, err == nil, err
+}
+
+func (s *Store) AccountByID(ctx context.Context, id int64) (Account, bool, error) {
+	account, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts a WHERE a.id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, false, nil
+	}
+	return account, err == nil, err
+}
+
+func (s *Store) SetAccountEnabled(ctx context.Context, alias string, enabled bool) (Account, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET enabled=?,updated_at=? WHERE alias=?`, enabled, time.Now().Unix(), alias)
+	if err != nil {
+		return Account{}, fmt.Errorf("update account state: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return Account{}, fmt.Errorf("inspect account state update: %w", err)
+	}
+	if changed == 0 {
+		return Account{}, fmt.Errorf("account %q was not found", alias)
+	}
+	account, _, err := s.AccountByAlias(ctx, alias)
+	return account, err
+}
+
+func (s *Store) UpdateTokens(ctx context.Context, id int64, accessToken, refreshToken, expiresAt string) (Account, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET access_token=?,refresh_token=?,expires_at=?,updated_at=? WHERE id=?`,
+		accessToken, refreshToken, expiresAt, time.Now().Unix(), id)
+	if err != nil {
+		return Account{}, fmt.Errorf("persist refreshed tokens: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return Account{}, fmt.Errorf("inspect refreshed token update: %w", err)
+	}
+	if changed == 0 {
+		return Account{}, fmt.Errorf("account id %d was not found", id)
+	}
+	account, _, err := s.AccountByID(ctx, id)
+	return account, err
 }
 
 func (s *Store) AccountByUUID(ctx context.Context, uuid string) (Account, bool, error) {
