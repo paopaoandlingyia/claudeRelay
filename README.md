@@ -1,0 +1,59 @@
+# claude-relay
+
+Minimal, experimental Anthropic Messages relay for one Claude subscription credential.
+
+The baseline build intentionally does not rewrite request bodies. Its first purpose is to
+replay real Claude Code traffic without invalidating the existing billing attribution or
+CCH value. Minimal transformations for ordinary API clients will be added only after
+capture-based tests identify the fields the upstream actually requires.
+
+## Current scope
+
+- One imported Claude OAuth credential
+- One downstream API key
+- `POST /v1/messages`
+- `POST /v1/messages/count_tokens`
+- Transparent JSON and SSE responses
+- No format conversion, account rotation, billing, UI, or prompt injection
+- No automatic OAuth refresh in the baseline build
+
+## Build
+
+```powershell
+go build -o claude-relay.exe ./cmd/claude-relay
+```
+
+## Import a CLIProxyAPI credential
+
+Stop using the same Claude account for refresh operations in other programs before enabling
+automatic refresh in a future build. The current baseline imports a private copy and only
+uses its access token.
+
+```powershell
+.\claude-relay.exe import `
+  -from F:\path\to\cliproxy\auths\claude-user.json `
+  -to data\credentials.json
+```
+
+Unknown source fields are retained under `extra`. Tokens are never printed.
+
+## Configure and run
+
+```powershell
+Copy-Item config.example.json config.json
+$env:CLAUDE_RELAY_API_KEY = "replace-with-a-long-random-key"
+.\claude-relay.exe serve -config config.json
+```
+
+The environment variable overrides `api_key` in the JSON file. Point an Anthropic client to
+`http://127.0.0.1:8317` and authenticate with the configured downstream key.
+
+## Baseline behavior
+
+The relay preserves the incoming request body byte-for-byte. It copies end-to-end headers,
+removes the downstream `x-api-key`, replaces upstream authentication with the imported OAuth
+access token, and adds `?beta=true` to the Anthropic endpoint.
+
+Do not send ordinary Anthropic API traffic yet unless it already contains the subscription
+fields under test. The next milestone is a replay matrix for billing attribution, CCH, and
+`metadata.user_id`.

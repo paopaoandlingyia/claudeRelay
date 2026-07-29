@@ -1,0 +1,7 @@
+{
+  "listen": "127.0.0.1:8317",
+  "api_key": "",
+  "credentials_file": "data/credentials.json",
+  "upstream_base_url": "https://api.anthropic.com",
+  "max_request_bytes": 33554432
+}
