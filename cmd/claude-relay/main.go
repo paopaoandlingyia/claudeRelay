@@ -15,6 +15,7 @@ import (
 	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/credential"
 	"github.com/local/claude-relay/internal/proxy"
+	"github.com/local/claude-relay/internal/store"
 )
 
 func main() {
@@ -46,7 +47,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  claude-relay import -from <cliproxy-credential.json> [-to data/credentials.json]")
+	fmt.Fprintln(os.Stderr, "  claude-relay import -from <cliproxy-credential.json> -alias <name> [-db data/claude-relay.db]")
 	fmt.Fprintln(os.Stderr, "  claude-relay sign-cch -in <body.json> -out <signed-body.json>")
 	fmt.Fprintln(os.Stderr, "  claude-relay serve [-config config.json]")
 }
@@ -54,19 +55,28 @@ func usage() {
 func runImport(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	from := fs.String("from", "", "source CLIProxyAPI Claude credential JSON")
-	to := fs.String("to", "data/credentials.json", "destination credential JSON")
+	alias := fs.String("alias", "", "stable account alias used by routing and the private selection header")
+	databasePath := fs.String("db", "data/claude-relay.db", "SQLite database")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *from == "" {
-		return fmt.Errorf("-from is required")
+	if *from == "" || *alias == "" {
+		return fmt.Errorf("-from and -alias are required")
 	}
-
-	cred, err := credential.Import(*from, *to)
+	cred, err := credential.ReadImport(*from)
 	if err != nil {
 		return err
 	}
-	slog.Info("credential imported", "destination", *to, "expires", cred.ExpiresAt)
+	database, err := store.Open(*databasePath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	account, err := database.ImportAccount(context.Background(), *alias, cred)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential imported", "account", account.Alias, "database", *databasePath, "expires", cred.ExpiresAt)
 	return nil
 }
 
@@ -81,15 +91,16 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	cred, err := credential.Load(cfg.CredentialsFile)
+	database, err := store.Open(cfg.DatabaseFile)
 	if err != nil {
 		return err
 	}
-	if cred.IsExpired(time.Now()) {
-		slog.Warn("access token appears expired; automatic refresh is not enabled in the baseline build", "expires", cred.ExpiresAt)
+	defer database.Close()
+	if err := migrateLegacyCredential(database, cfg.CredentialsFile); err != nil {
+		return err
 	}
 
-	server, err := proxy.NewServer(cfg, cred)
+	server, err := proxy.NewServer(cfg, database)
 	if err != nil {
 		return err
 	}
@@ -97,6 +108,25 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return server.Run(ctx)
+}
+
+func migrateLegacyCredential(database *store.Store, path string) error {
+	count, err := database.AccountCount(context.Background())
+	if err != nil || count != 0 || path == "" {
+		return err
+	}
+	cred, err := credential.Load(path)
+	if err != nil {
+		return fmt.Errorf("load legacy credential for migration: %w", err)
+	}
+	if cred.IsExpired(time.Now()) {
+		slog.Warn("access token appears expired; automatic refresh is not enabled", "expires", cred.ExpiresAt)
+	}
+	_, err = database.ImportAccount(context.Background(), "default", cred)
+	if err == nil {
+		slog.Info("migrated legacy credential into account database", "account", "default")
+	}
+	return err
 }
 
 func runSignCCH(args []string) error {

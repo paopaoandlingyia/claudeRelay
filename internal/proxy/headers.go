@@ -17,6 +17,7 @@ func copyRequestHeaders(destination, source http.Header) {
 	copyHeaders(destination, source)
 	destination.Del("Host")
 	destination.Del("Content-Length")
+	destination.Del(accountHeader)
 }
 
 func copyResponseHeaders(destination, source http.Header) {

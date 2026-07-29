@@ -11,11 +11,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/local/claude-relay/internal/config"
-	"github.com/local/claude-relay/internal/credential"
+	"github.com/local/claude-relay/internal/store"
 )
 
 var allowedPaths = map[string]struct{}{
@@ -25,13 +26,17 @@ var allowedPaths = map[string]struct{}{
 
 type Server struct {
 	cfg        config.Config
-	credential credential.Credential
+	store      *store.Store
+	selector   accountSelector
 	upstream   *url.URL
 	httpServer *http.Server
 	client     *http.Client
 }
 
-func NewServer(cfg config.Config, cred credential.Credential) (*Server, error) {
+func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
+	if database == nil {
+		return nil, fmt.Errorf("account store is required")
+	}
 	upstream, err := url.Parse(cfg.UpstreamBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse upstream URL: %w", err)
@@ -45,10 +50,11 @@ func NewServer(cfg config.Config, cred credential.Credential) (*Server, error) {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	server := &Server{
-		cfg:        cfg,
-		credential: cred,
-		upstream:   upstream,
-		client:     &http.Client{Transport: transport},
+		cfg:      cfg,
+		store:    database,
+		selector: accountSelector{store: database},
+		upstream: upstream,
+		client:   &http.Client{Transport: transport},
 	}
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,
@@ -136,42 +142,53 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		return
 	}
 	includeMetadata := incoming.URL.Path == "/v1/messages"
-	transformedBody, changed, transformErr := addSubscriptionAttribution(body, incoming.Header, s.credential, includeMetadata)
-	if transformErr != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", transformErr.Error())
+	route, routeErr := deriveRequestRoute(body, incoming.Header, s.cfg.APIKey)
+	if routeErr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", routeErr.Error())
 		return
 	}
-	body = transformedBody
-	if changed {
-		slog.Info("added subscription attribution", "path", incoming.URL.Path)
-	}
-
-	target := *s.upstream
-	target.Path = strings.TrimRight(s.upstream.Path, "/") + incoming.URL.Path
-	query := incoming.URL.Query()
-	query.Set("beta", "true")
-	target.RawQuery = query.Encode()
-
-	upstreamRequest, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, target.String(), bytes.NewReader(body))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "api_error", "failed to create upstream request")
-		return
-	}
-	copyRequestHeaders(upstreamRequest.Header, incoming.Header)
-	upstreamRequest.Header.Del("x-api-key")
-	upstreamRequest.Header.Set("Authorization", "Bearer "+s.credential.AccessToken)
-	if upstreamRequest.Header.Get("anthropic-version") == "" {
-		upstreamRequest.Header.Set("anthropic-version", "2023-06-01")
-	}
-	if upstreamRequest.Header.Get("content-type") == "" {
-		upstreamRequest.Header.Set("content-type", "application/json")
-	}
-	upstreamRequest.Host = s.upstream.Host
-
+	forcedAlias := incoming.Header.Get(accountHeader)
+	excluded := make(map[int64]bool)
 	started := time.Now()
-	response, err := s.client.Do(upstreamRequest)
+	var response *http.Response
+	var selected selection
+	for attempt := 0; attempt < 2; attempt++ {
+		selected, err = s.selector.selectAccount(incoming.Context(), route, forcedAlias, excluded)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "api_error", err.Error())
+			return
+		}
+		transformedBody, changed, transformErr := addSubscriptionAttribution(body, incoming.Header, selected.Account.Credential, includeMetadata, route.ConversationKey)
+		if transformErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", transformErr.Error())
+			return
+		}
+		if changed {
+			slog.Info("added subscription attribution", "path", incoming.URL.Path, "account", selected.Account.Alias)
+		}
+		response, err = s.doUpstream(incoming, transformedBody, selected.Account.AccessToken)
+		if err == nil && !retryableStatus(response.StatusCode) {
+			break
+		}
+		if err == nil {
+			cooldown := retryAfter(response.Header, response.StatusCode)
+			_ = s.store.Cooldown(incoming.Context(), selected.Account.ID, route.Model, time.Now().Add(cooldown), http.StatusText(response.StatusCode))
+		}
+		if selected.Pinned || strings.TrimSpace(forcedAlias) != "" || attempt == 1 {
+			break
+		}
+		if response != nil {
+			_ = response.Body.Close()
+			response = nil
+		}
+		excluded[selected.Account.ID] = true
+	}
 	if err != nil {
-		slog.Error("upstream request failed", "path", incoming.URL.Path, "duration_ms", time.Since(started).Milliseconds(), "error", err)
+		slog.Error("upstream request failed", "path", incoming.URL.Path, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
+		writeError(w, http.StatusBadGateway, "api_error", "upstream request failed")
+		return
+	}
+	if response == nil {
 		writeError(w, http.StatusBadGateway, "api_error", "upstream request failed")
 		return
 	}
@@ -182,12 +199,55 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	}()
 
 	copyResponseHeaders(w.Header(), response.Header)
+	w.Header().Set("X-Claude-Relay-Account", selected.Account.Alias)
 	w.WriteHeader(response.StatusCode)
 	if _, err := io.Copy(flushWriter{ResponseWriter: w}, response.Body); err != nil {
 		slog.Warn("relay response interrupted", "path", incoming.URL.Path, "status", response.StatusCode, "error", err)
 		return
 	}
-	slog.Info("request completed", "path", incoming.URL.Path, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
+	if response.StatusCode < 400 {
+		if bindErr := s.store.Bind(incoming.Context(), route.ConversationKey, selected.Account.ID, stickySessionTTL); bindErr != nil {
+			slog.Warn("persist session binding", "error", bindErr)
+		}
+	}
+	slog.Info("request completed", "path", incoming.URL.Path, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
+}
+
+func (s *Server) doUpstream(incoming *http.Request, body []byte, accessToken string) (*http.Response, error) {
+	target := *s.upstream
+	target.Path = strings.TrimRight(s.upstream.Path, "/") + incoming.URL.Path
+	query := incoming.URL.Query()
+	query.Set("beta", "true")
+	target.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, target.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	copyRequestHeaders(request.Header, incoming.Header)
+	request.Header.Del("x-api-key")
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	if request.Header.Get("anthropic-version") == "" {
+		request.Header.Set("anthropic-version", "2023-06-01")
+	}
+	if request.Header.Get("content-type") == "" {
+		request.Header.Set("content-type", "application/json")
+	}
+	request.Host = s.upstream.Host
+	return s.client.Do(request)
+}
+
+func retryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == 529 || status >= 500
+}
+
+func retryAfter(headers http.Header, status int) time.Duration {
+	if seconds, err := strconv.Atoi(strings.TrimSpace(headers.Get("Retry-After"))); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if status == http.StatusTooManyRequests {
+		return 30 * time.Second
+	}
+	return 10 * time.Second
 }
 
 type flushWriter struct {

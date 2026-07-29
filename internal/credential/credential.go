@@ -47,6 +47,19 @@ func Load(path string) (Credential, error) {
 }
 
 func Import(sourcePath, destinationPath string) (Credential, error) {
+	cred, err := ReadImport(sourcePath)
+	if err != nil {
+		return Credential{}, err
+	}
+	if err := save(destinationPath, cred); err != nil {
+		return Credential{}, err
+	}
+	return cred, nil
+}
+
+// ReadImport parses a CLIProxyAPI-compatible Claude credential without
+// persisting it. Runtime stores use this when importing into their own database.
+func ReadImport(sourcePath string) (Credential, error) {
 	raw, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return Credential{}, fmt.Errorf("read source credentials: %w", err)
@@ -83,9 +96,6 @@ func Import(sourcePath, destinationPath string) (Credential, error) {
 		return Credential{}, err
 	}
 	if _, err := cred.ensureIdentity(); err != nil {
-		return Credential{}, err
-	}
-	if err := save(destinationPath, cred); err != nil {
 		return Credential{}, err
 	}
 	return cred, nil

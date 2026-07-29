@@ -5,11 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/credential"
+	"github.com/local/claude-relay/internal/store"
 )
 
 func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
@@ -176,7 +178,7 @@ func TestForwardAddsMinimumAttributionAndStableHeaderSession(t *testing.T) {
 	if firstUserID != secondUserID {
 		t.Fatalf("header-derived session was not stable: %#v != %#v", firstUserID, secondUserID)
 	}
-	if firstUserID.AccountUUID != server.credential.AccountUUID || firstUserID.DeviceID != server.credential.DeviceID {
+	if firstUserID.AccountUUID != "11111111-1111-4111-8111-111111111111" || firstUserID.DeviceID != strings.Repeat("a", 64) {
 		t.Fatalf("metadata identity does not match credential: %#v", firstUserID)
 	}
 }
@@ -213,11 +215,11 @@ func TestAttributionTransformIsIdempotent(t *testing.T) {
 	}
 	headers := http.Header{"X-Session-Id": []string{"stable-session"}}
 	body := []byte(`{"system":[{"type":"text","text":"keep me"}],"messages":[]}`)
-	first, changed, err := addSubscriptionAttribution(body, headers, cred, true)
+	first, changed, err := addSubscriptionAttribution(body, headers, cred, true, "")
 	if err != nil || !changed {
 		t.Fatalf("first transform: changed=%v err=%v", changed, err)
 	}
-	second, changed, err := addSubscriptionAttribution(first, headers, cred, true)
+	second, changed, err := addSubscriptionAttribution(first, headers, cred, true, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,15 +302,127 @@ func TestRequestBodyLimit(t *testing.T) {
 	}
 }
 
+func TestForcedAccountHeaderSelectsAliasAndIsNotForwarded(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-secondary" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get(accountHeader); got != "" {
+			t.Errorf("private routing header leaked upstream: %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set(accountHeader, "secondary")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get(accountHeader); got != "secondary" {
+		t.Fatalf("selected account response header = %q", got)
+	}
+}
+
+func TestStickySessionKeepsSelectedAccount(t *testing.T) {
+	t.Parallel()
+	var authorizations []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+	body := `{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`
+	for range 2 {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+		request.Header.Set("x-api-key", "downstream-key")
+		request.Header.Set("X-Claude-Session-Id", "conversation-1")
+		server.routes().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+	}
+	if len(authorizations) != 2 || authorizations[0] != authorizations[1] {
+		t.Fatalf("sticky session accounts = %#v", authorizations)
+	}
+}
+
+func TestRetryableResponseSwitchesAccountOnce(t *testing.T) {
+	t.Parallel()
+	var firstAuthorization string
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			firstAuthorization = r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got == firstAuthorization {
+			t.Errorf("retry reused first account: %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"retry me"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || calls != 2 {
+		t.Fatalf("status = %d calls = %d body = %s", recorder.Code, calls, recorder.Body.String())
+	}
+}
+
+func TestSignedRequestRejectsConflictingForcedAccount(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+	body := `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=x; cc_entrypoint=cli; cch=abcde;"}],"metadata":{"user_id":"{\"account_uuid\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"s\"}"},"messages":[]}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set(accountHeader, "secondary")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "conflicts with signed request") {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRoutingPrefixIgnoresContentAfterCacheBreakpoint(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	first, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"one"}]}`), headers, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`), headers, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SelectionKey != second.SelectionKey {
+		t.Fatalf("cache prefix keys differ: %q != %q", first.SelectionKey, second.SelectionKey)
+	}
+}
+
 func newTestServer(t *testing.T, upstreamURL string, maxRequestBytes int64) *Server {
 	t.Helper()
-	server, err := NewServer(config.Config{
-		Listen:          "127.0.0.1:0",
-		APIKey:          "downstream-key",
-		CredentialsFile: "unused.json",
-		UpstreamBaseURL: upstreamURL,
-		MaxRequestBytes: maxRequestBytes,
-	}, credential.Credential{
+	database, err := store.Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	_, err = database.ImportAccount(t.Context(), "default", credential.Credential{
 		Type:        "claude",
 		AccessToken: "upstream-access-token",
 		AccountUUID: "11111111-1111-4111-8111-111111111111",
@@ -317,5 +431,28 @@ func newTestServer(t *testing.T, upstreamURL string, maxRequestBytes int64) *Ser
 	if err != nil {
 		t.Fatal(err)
 	}
+	server, err := NewServer(config.Config{
+		Listen:          "127.0.0.1:0",
+		APIKey:          "downstream-key",
+		CredentialsFile: "unused.json",
+		UpstreamBaseURL: upstreamURL,
+		MaxRequestBytes: maxRequestBytes,
+	}, database)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return server
+}
+
+func importTestAccount(t *testing.T, database *store.Store, alias, token, accountUUID, deviceByte string) {
+	t.Helper()
+	_, err := database.ImportAccount(t.Context(), alias, credential.Credential{
+		Type:        "claude",
+		AccessToken: token,
+		AccountUUID: accountUUID,
+		DeviceID:    strings.Repeat(deviceByte, 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }

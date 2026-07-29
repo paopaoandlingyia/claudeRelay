@@ -35,7 +35,7 @@ type attributionUserID struct {
 // addSubscriptionAttribution adds only the minimum fields demonstrated by the
 // protocol experiments. A request carrying an existing CCH is returned byte-for-byte
 // because changing any body byte could invalidate an official client signature.
-func addSubscriptionAttribution(body []byte, headers http.Header, cred credential.Credential, includeMetadata bool) ([]byte, bool, error) {
+func addSubscriptionAttribution(body []byte, headers http.Header, cred credential.Credential, includeMetadata bool, sessionSeed string) ([]byte, bool, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -81,7 +81,7 @@ func addSubscriptionAttribution(body []byte, headers http.Header, cred credentia
 		return nil, false, err
 	}
 	if existing, _ := metadata["user_id"].(string); strings.TrimSpace(existing) == "" {
-		sessionID, err := attributionSessionID(headers, cred.DeviceID)
+		sessionID, err := attributionSessionID(headers, cred.DeviceID, sessionSeed)
 		if err != nil {
 			return nil, false, err
 		}
@@ -158,11 +158,14 @@ func metadataObject(value any) (map[string]any, error) {
 	return metadata, nil
 }
 
-func attributionSessionID(headers http.Header, deviceID string) (string, error) {
+func attributionSessionID(headers http.Header, deviceID, fallbackSeed string) (string, error) {
 	for _, name := range sessionHeaderNames {
 		if value := strings.TrimSpace(headers.Get(name)); value != "" {
 			return deterministicUUID(deviceID, value), nil
 		}
+	}
+	if fallbackSeed != "" {
+		return deterministicUUID(deviceID, fallbackSeed), nil
 	}
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
