@@ -54,9 +54,17 @@ validates it.
   HTTP 429 `rate_limit_error`. Metadata alone does not pass the model gate.
 - Adding a billing block containing `cc_version`, `cc_entrypoint`, and a correctly signed `cch`
   changed Sonnet 5 from the opaque HTTP 429 to HTTP 529 `overloaded_error` in three attempts.
-  A contemporaneous request without the block still returned the opaque HTTP 429. This strongly
-  indicates that the billing block passed the model gate and the 529 was a separate capacity
-  condition.
+  A contemporaneous request without the block still returned the opaque HTTP 429.
+- Adding both the billing block and `metadata.user_id` made Sonnet 5 succeed (HTTP 200). An
+  interleaved `without metadata -> with random metadata -> without metadata` test returned
+  `529 -> 200 -> 529`. On this request path, the 529 is therefore another opaque validation/gating
+  response rather than evidence of actual model overload.
+- Sonnet 5 accepted all of these `metadata.user_id` values when combined with the billing block:
+  the real captured JSON string, a random JSON string with the same
+  `device_id/account_uuid/session_id` shape, and CLIProxyAPI's generated
+  `user_<64 hex>_account_<UUID>_session_<UUID>` shape. The value does not need to contain the real
+  subscription account UUID. A short unstructured value reached 529 in an earlier attempt, but
+  that attempt coincided with transient 529s for a structured value and is not conclusive.
 - The same signed billing-only request succeeded with Opus 5 (HTTP 200). It contained no
   `metadata.user_id`, Claude Code identity prompt, or `anthropic-beta` header.
 - With CCH signing disabled, Opus 5 also succeeded with literal `cch=00000`, and then succeeded
@@ -84,7 +92,8 @@ The current evidence supports an ordinary-client transformer with this idempoten
 
 - Preserve an existing billing block; otherwise prepend the demonstrated minimum block containing
   `cc_version` and `cc_entrypoint`.
-- Do not synthesize `metadata.user_id`; preserve it if the client supplied it.
+- Preserve a structurally valid `metadata.user_id`; otherwise synthesize a random Claude-client
+  shaped value. This is required by the tested Sonnet 5 path but not by the tested Opus 5 path.
 - Preserve every other system block and message in its original order.
 - Preserve and re-sign an existing CCH for compatibility with real Claude Code traffic, but do not
   synthesize one for ordinary clients.
