@@ -42,12 +42,14 @@ body change.
 
 ### Observations
 
-- Case G returned HTTP 200 on 2026-07-30 after the relay supplied only the standard
+- Case G returned HTTP 200 with Haiku 4.5 on 2026-07-30 after the relay supplied only the standard
   `anthropic-version`, `content-type`, and OAuth authorization headers. The request contained
   ordinary system and user text, with no billing block, CCH, metadata, or Claude Code identity
   prompt. Response usage reported 33 ordinary input tokens and no cache creation/read tokens.
-- This proves those Claude Code attribution fields are not universally required for successful
-  inference. Subscription usage classification still needs separate verification.
+- The same minimal shape returned `rate_limit_error` with tested Sonnet and Opus models. This
+  proves the requirement is model-dependent: the Claude Code attribution fields are not
+  universally required for successful inference, but non-Haiku models need controlled field
+  isolation. Subscription usage classification still needs separate verification.
 
 Record both HTTP behavior and subscription usage classification. A successful HTTP response
 alone does not prove that the request followed the intended subscription path.
