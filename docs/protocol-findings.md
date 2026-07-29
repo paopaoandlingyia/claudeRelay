@@ -76,6 +76,11 @@ does not by itself prove how Anthropic classified subscription usage.
   algorithm as of its 2026-07-29 main branch.
 - **Current policy:** never generate or rewrite CCH online. Any request already carrying CCH is
   forwarded byte-for-byte. The old algorithm remains only in the offline research utility.
+- **Inference:** CCH may currently be a soft signal for client attribution, telemetry, staged
+  validation, or abuse/risk scoring rather than a hard admission check. Accepting a missing or
+  incorrect value is consistent with those uses and with backward compatibility, but no available
+  evidence identifies Anthropic's actual purpose. Public adoption of third-party relays is not
+  proof of this intent.
 
 ## Official prompt and title behavior
 
@@ -94,6 +99,17 @@ does not by itself prove how Anthropic classified subscription usage.
 4. Preserve all original system instructions and messages; never inject Claude Code behavioral
    instructions.
 5. Keep the transformer idempotent.
+
+For an ordinary request, `system` is normalized as follows:
+
+| Incoming `system` | Upstream `system` |
+| --- | --- |
+| Missing, `null`, or empty string | `[billing block]` |
+| String | `[billing block, original text block]` |
+| Array | `[billing block, ...original blocks]` |
+
+This normalization is not applied when an existing billing block contains CCH; such a request is
+treated as signed official-client traffic and forwarded byte-for-byte.
 
 ## Deferred questions
 
