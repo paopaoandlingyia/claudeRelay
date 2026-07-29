@@ -162,6 +162,12 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	copyRequestHeaders(upstreamRequest.Header, incoming.Header)
 	upstreamRequest.Header.Del("x-api-key")
 	upstreamRequest.Header.Set("Authorization", "Bearer "+s.credential.AccessToken)
+	if upstreamRequest.Header.Get("anthropic-version") == "" {
+		upstreamRequest.Header.Set("anthropic-version", "2023-06-01")
+	}
+	if upstreamRequest.Header.Get("content-type") == "" {
+		upstreamRequest.Header.Set("content-type", "application/json")
+	}
 	upstreamRequest.Host = s.upstream.Host
 
 	started := time.Now()

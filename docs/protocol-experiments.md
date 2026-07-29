@@ -4,6 +4,14 @@ The relay must preserve normal Anthropic API semantics. It will not add a full C
 prompt unless evidence shows that a specific upstream requirement cannot be satisfied in a
 smaller way.
 
+## Standard API requirements
+
+These are normal Anthropic API requirements, not subscription or Claude Code mimicry:
+
+- `anthropic-version` is required. The relay supplies `2023-06-01` only when absent.
+- `content-type: application/json` is required and supplied only when absent.
+- Upstream authentication is supplied by the relay.
+
 ## Baseline
 
 Replay a captured Claude Code request through the relay without changing its body. Confirm:

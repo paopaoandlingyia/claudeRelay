@@ -62,6 +62,51 @@ func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	}
 }
 
+func TestForwardAddsStandardAnthropicHeadersWhenMissing(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
+			t.Errorf("anthropic-version = %q", got)
+		}
+		if got := r.Header.Get("content-type"); got != "application/json" {
+			t.Errorf("content-type = %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream.URL, 1024)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"messages":[]}`))
+	request.Header.Del("content-type")
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestForwardPreservesClientAnthropicVersion(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("anthropic-version"); got != "client-version" {
+			t.Errorf("anthropic-version = %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream.URL, 1024)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"messages":[]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set("anthropic-version", "client-version")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestForwardSignsExistingBillingBlock(t *testing.T) {
 	t.Parallel()
 	body := `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.215.574; cc_entrypoint=claude-desktop; cch=00000;"}],"messages":[]}`
