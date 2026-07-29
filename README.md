@@ -53,6 +53,8 @@ Point an Anthropic client to `http://127.0.0.1:8317`. Set `upstream_proxy` to a 
 - An existing billing block or `metadata.user_id` is preserved.
 - Otherwise the relay prepends the smallest billing block demonstrated by the current tests and
   adds a JSON-string user identity with stable account/device identifiers.
+- Token-count requests receive the same billing block but no metadata, because that endpoint's
+  schema rejects metadata. The returned count therefore includes the billing text sent to models.
 - `X-Claude-Session-Id`, `X-Session-Id`, or `Session-Id` produces a stable pseudonymous session
   UUID. Without one, a new session UUID is generated for that stateless request.
 - No Claude Code identity or software-engineering system prompt is added.

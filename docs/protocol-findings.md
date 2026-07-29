@@ -18,6 +18,11 @@ available model generation changes.
 - **Acceptance test:** `anthropic-version` is required by the normal Messages API. The relay adds
   `2023-06-01` only when absent.
 - **Acceptance test:** `content-type: application/json` is required and added only when absent.
+- **Acceptance test:** a Haiku 4.5 token-count request reported 8 input tokens without attribution
+  and 41 with the current minimum billing block, so that block contributes 33 input tokens.
+- **Acceptance test:** `/v1/messages/count_tokens` rejects `metadata` with
+  `metadata: Extra inputs are not permitted`. The relay therefore adds billing attribution but not
+  metadata on that endpoint.
 - The relay supports native Anthropic request and response shapes only.
 
 ## Model acceptance matrix
@@ -110,6 +115,10 @@ For an ordinary request, `system` is normalized as follows:
 
 This normalization is not applied when an existing billing block contains CCH; such a request is
 treated as signed official-client traffic and forwarded byte-for-byte.
+
+For `/v1/messages/count_tokens`, the same system normalization is applied so its result includes
+the billing block that the corresponding Messages request would send. Metadata is not added because
+the count-tokens schema rejects it, and metadata does not contribute prompt tokens.
 
 ## Deferred questions
 

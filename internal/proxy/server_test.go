@@ -213,16 +213,47 @@ func TestAttributionTransformIsIdempotent(t *testing.T) {
 	}
 	headers := http.Header{"X-Session-Id": []string{"stable-session"}}
 	body := []byte(`{"system":[{"type":"text","text":"keep me"}],"messages":[]}`)
-	first, changed, err := addSubscriptionAttribution(body, headers, cred)
+	first, changed, err := addSubscriptionAttribution(body, headers, cred, true)
 	if err != nil || !changed {
 		t.Fatalf("first transform: changed=%v err=%v", changed, err)
 	}
-	second, changed, err := addSubscriptionAttribution(first, headers, cred)
+	second, changed, err := addSubscriptionAttribution(first, headers, cred, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if changed || string(second) != string(first) {
 		t.Fatalf("second transform was not idempotent: changed=%v\n%s\n%s", changed, first, second)
+	}
+}
+
+func TestCountTokensAddsBillingWithoutMetadata(t *testing.T) {
+	t.Parallel()
+	requestBody := `{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"hello"}]}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := decodeBody(t, got)
+		if _, exists := body["metadata"]; exists {
+			t.Fatalf("count_tokens request contains unsupported metadata: %s", got)
+		}
+		system := body["system"].([]any)
+		if got := system[0].(map[string]any)["text"]; got != observedBillingAttribution {
+			t.Fatalf("billing attribution = %#v", got)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"input_tokens":41}`)
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream.URL, 4096)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(requestBody))
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 

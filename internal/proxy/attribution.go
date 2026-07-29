@@ -35,7 +35,7 @@ type attributionUserID struct {
 // addSubscriptionAttribution adds only the minimum fields demonstrated by the
 // protocol experiments. A request carrying an existing CCH is returned byte-for-byte
 // because changing any body byte could invalidate an official client signature.
-func addSubscriptionAttribution(body []byte, headers http.Header, cred credential.Credential) ([]byte, bool, error) {
+func addSubscriptionAttribution(body []byte, headers http.Header, cred credential.Credential, includeMetadata bool) ([]byte, bool, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -63,6 +63,17 @@ func addSubscriptionAttribution(body []byte, headers http.Header, cred credentia
 		system = append([]any{billing}, system...)
 		root["system"] = system
 		changed = true
+	}
+
+	if !includeMetadata {
+		if !changed {
+			return body, false, nil
+		}
+		transformed, err := json.Marshal(root)
+		if err != nil {
+			return nil, false, fmt.Errorf("encode attributed request body: %w", err)
+		}
+		return transformed, true, nil
 	}
 
 	metadata, err := metadataObject(root["metadata"])

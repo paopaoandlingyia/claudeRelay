@@ -135,7 +135,8 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
 		return
 	}
-	transformedBody, changed, transformErr := addSubscriptionAttribution(body, incoming.Header, s.credential)
+	includeMetadata := incoming.URL.Path == "/v1/messages"
+	transformedBody, changed, transformErr := addSubscriptionAttribution(body, incoming.Header, s.credential, includeMetadata)
 	if transformErr != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", transformErr.Error())
 		return
