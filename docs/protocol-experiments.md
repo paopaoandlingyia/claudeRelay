@@ -38,6 +38,16 @@ body change.
 | D | present | invalid | present | absent |
 | E | absent | absent | present | absent |
 | F | present | valid | present | present |
+| G | absent | absent | absent | absent |
+
+### Observations
+
+- Case G returned HTTP 200 on 2026-07-30 after the relay supplied only the standard
+  `anthropic-version`, `content-type`, and OAuth authorization headers. The request contained
+  ordinary system and user text, with no billing block, CCH, metadata, or Claude Code identity
+  prompt. Response usage reported 33 ordinary input tokens and no cache creation/read tokens.
+- This proves those Claude Code attribution fields are not universally required for successful
+  inference. Subscription usage classification still needs separate verification.
 
 Record both HTTP behavior and subscription usage classification. A successful HTTP response
 alone does not prove that the request followed the intended subscription path.
