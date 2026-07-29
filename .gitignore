@@ -1,4 +1,5 @@
 /claude-relay.exe
 /data/
 /config.json
+/docs/*.json
 *.log
