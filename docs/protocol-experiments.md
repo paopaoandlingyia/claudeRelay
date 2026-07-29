@@ -20,10 +20,10 @@ Replay a captured Claude Code request through the relay without changing its bod
 2. Streaming and non-streaming responses are relayed unchanged.
 3. The subscription records usage as expected.
 
-The current mitmproxy export is valid JSON but is not byte-identical to the wire request:
-its saved UTF-8 length differs from the captured `Content-Length`. Re-sign its existing CCH
-before replay. The fixture otherwise confirms a Claude Desktop entrypoint, a five-digit CCH,
-and JSON-string metadata containing `account_uuid`, `device_id`, and `session_id`.
+The Pretty-view copies are valid JSON but are not byte-identical to the wire request. Exact raw
+bodies were later recovered directly from mitmweb and matched their captured `Content-Length`.
+They confirm a Claude Desktop entrypoint, a five-digit CCH, and JSON-string metadata containing
+`account_uuid`, `device_id`, and `session_id`.
 
 ## Official client captures after Opus 5 release
 
@@ -42,13 +42,9 @@ context management, and `output_config.effort`. The new headers add the
 
 The client continuing to emit CCH is evidence that the field remains part of the official wire
 format even though the controlled acceptance tests below show that the tested model paths do not
-currently require it. Preserve and re-sign an existing CCH for compatibility; do not remove the
-implementation merely because omission is accepted.
-
-Recomputing CCH over the saved 2.1.219 JSON files did not reproduce their captured values. This is
-not evidence by itself that the algorithm changed: the exported body byte lengths do not match the
-captured `Content-Length`, so the files are not known to be byte-identical to the wire bodies. A raw
-byte-preserving capture is required before changing the signing algorithm.
+currently require it. Exact raw Sonnet and Opus bodies matched their captured byte lengths, but the
+older seeded xxHash64 algorithm did not reproduce either value. Online rewriting was therefore
+disabled: preserve a body carrying CCH byte-for-byte until a new algorithm is independently proven.
 
 Title generation has moved to a separate Claude Web endpoint under
 `/api/organizations/{organization}/dust/generate_title_and_branch`. The observed request selects
@@ -120,15 +116,15 @@ Subscription usage classification still needs separate verification.
 Record both HTTP behavior and subscription usage classification. A successful HTTP response
 alone does not prove that the request followed the intended subscription path.
 
-## Transformation rule under consideration
+## Implemented transformation rule
 
 The current evidence supports an ordinary-client transformer with this idempotent policy:
 
 - Preserve an existing billing block; otherwise prepend the demonstrated minimum block containing
   `cc_version` and `cc_entrypoint`.
-- Preserve a structurally valid `metadata.user_id`; otherwise synthesize a random Claude-client
-  shaped value. This is required by the tested Sonnet 5 path but not by the tested Opus 5 path.
+- Preserve a `metadata.user_id`; otherwise synthesize the captured JSON-string shape. Account and
+  device identities are stable; a downstream session header is mapped stably, while a stateless
+  request without one receives a fresh session UUID.
 - Preserve every other system block and message in its original order.
-- Preserve and re-sign an existing CCH for compatibility with real Claude Code traffic, but do not
-  synthesize one for ordinary clients.
+- Preserve a request carrying CCH byte-for-byte. Do not synthesize or rewrite CCH online.
 - Never add Claude Code identity or software-engineering instructions.

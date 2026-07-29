@@ -1,6 +1,8 @@
 package credential
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,6 +18,7 @@ type Credential struct {
 	ExpiresAt    string         `json:"expired,omitempty"`
 	Email        string         `json:"email,omitempty"`
 	AccountUUID  string         `json:"account_uuid,omitempty"`
+	DeviceID     string         `json:"device_id,omitempty"`
 	Extra        map[string]any `json:"extra,omitempty"`
 }
 
@@ -30,6 +33,15 @@ func Load(path string) (Credential, error) {
 	}
 	if err := cred.validate(); err != nil {
 		return Credential{}, err
+	}
+	changed, err := cred.ensureIdentity()
+	if err != nil {
+		return Credential{}, err
+	}
+	if changed {
+		if err := save(path, cred); err != nil {
+			return Credential{}, fmt.Errorf("persist generated credential identity: %w", err)
+		}
 	}
 	return cred, nil
 }
@@ -51,6 +63,7 @@ func Import(sourcePath, destinationPath string) (Credential, error) {
 		ExpiresAt:    firstStringValue(source, "expired", "expires_at", "expiry"),
 		Email:        stringValue(source, "email"),
 		AccountUUID:  firstStringValue(source, "account_uuid", "organization_uuid"),
+		DeviceID:     stringValue(source, "device_id"),
 		Extra:        make(map[string]any),
 	}
 	if cred.Type == "" {
@@ -58,7 +71,7 @@ func Import(sourcePath, destinationPath string) (Credential, error) {
 	}
 	for key, value := range source {
 		switch key {
-		case "type", "access_token", "refresh_token", "expired", "expires_at", "expiry", "email", "account_uuid", "organization_uuid":
+		case "type", "access_token", "refresh_token", "expired", "expires_at", "expiry", "email", "account_uuid", "organization_uuid", "device_id":
 		default:
 			cred.Extra[key] = value
 		}
@@ -69,10 +82,69 @@ func Import(sourcePath, destinationPath string) (Credential, error) {
 	if err := cred.validate(); err != nil {
 		return Credential{}, err
 	}
+	if _, err := cred.ensureIdentity(); err != nil {
+		return Credential{}, err
+	}
 	if err := save(destinationPath, cred); err != nil {
 		return Credential{}, err
 	}
 	return cred, nil
+}
+
+func (cred *Credential) ensureIdentity() (bool, error) {
+	changed := false
+	if !isUUID(cred.AccountUUID) {
+		value, err := randomUUID()
+		if err != nil {
+			return false, fmt.Errorf("generate account identity: %w", err)
+		}
+		cred.AccountUUID = value
+		changed = true
+	}
+	if !isHex(cred.DeviceID, 64) {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return false, fmt.Errorf("generate device identity: %w", err)
+		}
+		cred.DeviceID = hex.EncodeToString(raw)
+		changed = true
+	} else {
+		normalized := strings.ToLower(cred.DeviceID)
+		changed = changed || normalized != cred.DeviceID
+		cred.DeviceID = normalized
+	}
+	return changed, nil
+}
+
+func randomUUID() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return formatUUID(raw), nil
+}
+
+func formatUUID(raw []byte) string {
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+}
+
+func isUUID(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	return isHex(strings.ReplaceAll(value, "-", ""), 32)
+}
+
+func isHex(value string, size int) bool {
+	if len(value) != size {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func (cred Credential) IsExpired(now time.Time) bool {

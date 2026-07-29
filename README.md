@@ -1,22 +1,21 @@
 # claude-relay
 
-Minimal, experimental Anthropic Messages relay for one Claude subscription credential.
-
-The baseline build intentionally does not rewrite request bodies. Its first purpose is to
-replay real Claude Code traffic without invalidating the existing billing attribution or
-CCH value. Minimal transformations for ordinary API clients will be added only after
-capture-based tests identify the fields the upstream actually requires.
+Minimal Anthropic Messages relay for one Claude subscription credential. It accepts the native
+Anthropic request format only; there is no OpenAI compatibility layer, account rotation, billing,
+or Claude Code prompt injection.
 
 ## Current scope
 
-- One imported Claude OAuth credential
-- One downstream API key
-- `POST /v1/messages`
-- `POST /v1/messages/count_tokens`
+- One imported Claude OAuth credential and one downstream API key
+- `POST /v1/messages` and `POST /v1/messages/count_tokens`
 - Transparent JSON and SSE responses
-- Re-signing of an existing five-digit CCH without adding prompt content
-- No format conversion, account rotation, billing, UI, or prompt injection
-- No automatic OAuth refresh in the baseline build
+- Minimum subscription attribution for ordinary Anthropic requests
+- Byte-for-byte body pass-through when an official client CCH is present
+- No automatic OAuth refresh yet
+
+The dated protocol conclusions and unresolved questions are centralized in
+[`docs/protocol-findings.md`](docs/protocol-findings.md). Raw experiment notes remain in
+[`docs/protocol-experiments.md`](docs/protocol-experiments.md).
 
 ## Build
 
@@ -26,17 +25,15 @@ go build -o claude-relay.exe ./cmd/claude-relay
 
 ## Import a CLIProxyAPI credential
 
-Stop using the same Claude account for refresh operations in other programs before enabling
-automatic refresh in a future build. The current baseline imports a private copy and only
-uses its access token.
-
 ```powershell
 .\claude-relay.exe import `
   -from F:\path\to\cliproxy\auths\claude-user.json `
   -to data\credentials.json
 ```
 
-Unknown source fields are retained under `extra`. Tokens are never printed.
+The importer preserves the real account UUID when available and creates a persistent random
+device identity when absent. Existing credential files are upgraded once on the next load.
+Unknown source fields are retained under `extra`; tokens are never printed.
 
 ## Configure and run
 
@@ -46,31 +43,31 @@ $env:CLAUDE_RELAY_API_KEY = "replace-with-a-long-random-key"
 .\claude-relay.exe serve -config config.json
 ```
 
-The environment variable overrides `api_key` in the JSON file. Point an Anthropic client to
-`http://127.0.0.1:8317` and authenticate with the configured downstream key.
+Point an Anthropic client to `http://127.0.0.1:8317`. Set `upstream_proxy` to a URL such as
+`http://127.0.0.1:7890` when upstream traffic must use a local proxy.
 
-Set `upstream_proxy` to an HTTP proxy URL such as `http://127.0.0.1:7890` when Anthropic
-traffic must go through a local proxy.
+## Request transformation
 
-## Baseline behavior
+- Requests containing a billing block with `cch=` are treated as official signed traffic and
+  forwarded byte-for-byte.
+- An existing billing block or `metadata.user_id` is preserved.
+- Otherwise the relay prepends the smallest billing block demonstrated by the current tests and
+  adds a JSON-string user identity with stable account/device identifiers.
+- `X-Claude-Session-Id`, `X-Session-Id`, or `Session-Id` produces a stable pseudonymous session
+  UUID. Without one, a new session UUID is generated for that stateless request.
+- No Claude Code identity or software-engineering system prompt is added.
 
-The relay preserves the incoming request body byte-for-byte except for one controlled field:
-when the first system block is a billing attribution block with a five-digit CCH, it recomputes
-those five hexadecimal digits over the final body. It does not add a billing block or any prompt.
-Set `sign_existing_cch` to `false` to disable this behavior.
+The relay supplies `anthropic-version: 2023-06-01` and `content-type: application/json` only when
+the client omits them. It replaces downstream authentication with the imported OAuth token and
+adds `?beta=true` to the upstream endpoint.
 
-The relay copies end-to-end headers, removes the downstream `x-api-key`, replaces upstream
-authentication with the imported OAuth access token, and adds `?beta=true` to the Anthropic
-endpoint.
+## Legacy CCH research utility
 
-Do not send ordinary Anthropic API traffic yet unless it already contains the subscription
-fields under test. The next milestone is a replay matrix for billing attribution, CCH, and
-`metadata.user_id`.
-
-For an offline captured-body check, write a re-signed copy without contacting Anthropic:
+The offline `sign-cch` command retains the old 2.1.215-era candidate algorithm for reproducibility.
+It is not used by the server and is known not to reproduce official 2.1.219 captures.
 
 ```powershell
 .\claude-relay.exe sign-cch `
   -in data\capture\body.json `
-  -out data\capture\body.signed.json
+  -out data\capture\body.legacy-signed.json
 ```

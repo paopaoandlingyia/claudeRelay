@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/local/claude-relay/internal/cch"
 	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/credential"
 )
@@ -136,16 +135,14 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
 		return
 	}
-	if s.cfg.SignExistingCCH {
-		signedBody, info, signErr := cch.SignExisting(body)
-		if signErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid billing attribution block")
-			return
-		}
-		body = signedBody
-		if info.Changed {
-			slog.Info("re-signed existing CCH", "path", incoming.URL.Path)
-		}
+	transformedBody, changed, transformErr := addSubscriptionAttribution(body, incoming.Header, s.credential)
+	if transformErr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", transformErr.Error())
+		return
+	}
+	body = transformedBody
+	if changed {
+		slog.Info("added subscription attribution", "path", incoming.URL.Path)
 	}
 
 	target := *s.upstream

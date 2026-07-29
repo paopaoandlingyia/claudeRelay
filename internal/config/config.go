@@ -17,7 +17,6 @@ type Config struct {
 	UpstreamBaseURL string `json:"upstream_base_url"`
 	UpstreamProxy   string `json:"upstream_proxy"`
 	MaxRequestBytes int64  `json:"max_request_bytes"`
-	SignExistingCCH bool   `json:"sign_existing_cch"`
 }
 
 func Load(path string) (Config, error) {
@@ -26,7 +25,7 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 
-	cfg := Config{SignExistingCCH: true}
+	var cfg Config
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}

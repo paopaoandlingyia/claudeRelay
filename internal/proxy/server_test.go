@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,7 @@ import (
 
 func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	t.Parallel()
-	requestBody := "{\n  \"model\": \"claude-test\",\n  \"messages\": []\n}"
+	requestBody := "{\n  \"model\": \"claude-test\",\n  \"system\": [{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.219.0a7; cc_entrypoint=claude-desktop; cch=abcde;\"}],\n  \"metadata\": {\"user_id\":\"official-client-value\"},\n  \"messages\": []\n}"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
 			t.Errorf("path = %q", r.URL.Path)
@@ -107,7 +108,7 @@ func TestForwardPreservesClientAnthropicVersion(t *testing.T) {
 	}
 }
 
-func TestForwardSignsExistingBillingBlock(t *testing.T) {
+func TestForwardPreservesExistingCCHByteForByte(t *testing.T) {
 	t.Parallel()
 	body := `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.215.574; cc_entrypoint=claude-desktop; cch=00000;"}],"messages":[]}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -115,15 +116,14 @@ func TestForwardSignsExistingBillingBlock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(got) == body || strings.Contains(string(got), "cch=00000;") {
-			t.Fatalf("body was not signed: %s", got)
+		if string(got) != body {
+			t.Fatalf("signed client body changed:\n%s", got)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
 
 	server := newTestServer(t, upstream.URL, 1024)
-	server.cfg.SignExistingCCH = true
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	request.Header.Set("x-api-key", "downstream-key")
@@ -131,6 +131,118 @@ func TestForwardSignsExistingBillingBlock(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
+}
+
+func TestForwardAddsMinimumAttributionAndStableHeaderSession(t *testing.T) {
+	t.Parallel()
+	requestBody := `{"model":"claude-sonnet-5","system":"ordinary prompt","messages":[{"role":"user","content":"hello"}]}`
+	var bodies [][]byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream.URL, 4096)
+	for range 2 {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
+		request.Header.Set("x-api-key", "downstream-key")
+		request.Header.Set("X-Claude-Session-Id", "chat-42")
+		server.routes().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("upstream requests = %d", len(bodies))
+	}
+	first := decodeBody(t, bodies[0])
+	second := decodeBody(t, bodies[1])
+	firstSystem := first["system"].([]any)
+	billing := firstSystem[0].(map[string]any)["text"].(string)
+	if billing != observedBillingAttribution || strings.Contains(billing, "cch=") {
+		t.Fatalf("billing attribution = %q", billing)
+	}
+	if got := firstSystem[1].(map[string]any)["text"]; got != "ordinary prompt" {
+		t.Fatalf("original system = %#v", got)
+	}
+	firstUserID := decodeUserID(t, first)
+	secondUserID := decodeUserID(t, second)
+	if firstUserID != secondUserID {
+		t.Fatalf("header-derived session was not stable: %#v != %#v", firstUserID, secondUserID)
+	}
+	if firstUserID.AccountUUID != server.credential.AccountUUID || firstUserID.DeviceID != server.credential.DeviceID {
+		t.Fatalf("metadata identity does not match credential: %#v", firstUserID)
+	}
+}
+
+func TestForwardPreservesExistingMetadataWithoutCCH(t *testing.T) {
+	t.Parallel()
+	body := `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=custom; cc_entrypoint=cli;"}],"metadata":{"user_id":"caller-owned"},"messages":[]}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != body {
+			t.Fatalf("already-attributed body changed: %s", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAttributionTransformIsIdempotent(t *testing.T) {
+	t.Parallel()
+	cred := credential.Credential{
+		AccountUUID: "11111111-1111-4111-8111-111111111111",
+		DeviceID:    strings.Repeat("b", 64),
+	}
+	headers := http.Header{"X-Session-Id": []string{"stable-session"}}
+	body := []byte(`{"system":[{"type":"text","text":"keep me"}],"messages":[]}`)
+	first, changed, err := addSubscriptionAttribution(body, headers, cred)
+	if err != nil || !changed {
+		t.Fatalf("first transform: changed=%v err=%v", changed, err)
+	}
+	second, changed, err := addSubscriptionAttribution(first, headers, cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || string(second) != string(first) {
+		t.Fatalf("second transform was not idempotent: changed=%v\n%s\n%s", changed, first, second)
+	}
+}
+
+func decodeBody(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func decodeUserID(t *testing.T, body map[string]any) attributionUserID {
+	t.Helper()
+	metadata := body["metadata"].(map[string]any)
+	var value attributionUserID
+	if err := json.Unmarshal([]byte(metadata["user_id"].(string)), &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
 }
 
 func TestAuthenticationRejectsWrongKey(t *testing.T) {
@@ -165,7 +277,12 @@ func newTestServer(t *testing.T, upstreamURL string, maxRequestBytes int64) *Ser
 		CredentialsFile: "unused.json",
 		UpstreamBaseURL: upstreamURL,
 		MaxRequestBytes: maxRequestBytes,
-	}, credential.Credential{Type: "claude", AccessToken: "upstream-access-token"})
+	}, credential.Credential{
+		Type:        "claude",
+		AccessToken: "upstream-access-token",
+		AccountUUID: "11111111-1111-4111-8111-111111111111",
+		DeviceID:    strings.Repeat("a", 64),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

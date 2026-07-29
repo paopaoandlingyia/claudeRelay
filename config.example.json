@@ -4,6 +4,5 @@
   "credentials_file": "data/credentials.json",
   "upstream_base_url": "https://api.anthropic.com",
   "upstream_proxy": "",
-  "max_request_bytes": 33554432,
-  "sign_existing_cch": true
+  "max_request_bytes": 33554432
 }
