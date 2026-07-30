@@ -106,8 +106,9 @@ POST   /admin/v1/accounts/{alias}/cooldown/clear
 POST   /admin/v1/accounts/{alias}/check
 ```
 
-`import` accepts a pasted CLIProxyAPI credential document and behaves exactly like the command-line
-importer, including leaving the account disabled. `check` counts tokens for a trivial prompt to
+`import` accepts a pasted CLIProxyAPI credential document and leaves the account disabled. It
+rejects an existing alias or account identity unless the caller explicitly sends `replace: true`;
+the console requires an additional confirmation before doing so. `check` counts tokens for a trivial prompt to
 prove the account still reaches upstream; it never refreshes, so a disabled account can be verified
 without this relay taking ownership of its refresh-token chain. `refresh` obeys the same ownership
 rules as automatic refresh and is rejected for a disabled account or while the global emergency

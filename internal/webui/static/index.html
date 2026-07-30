@@ -221,6 +221,10 @@
       <label for="importCredential">凭据 JSON</label>
       <textarea id="importCredential" rows="8" spellcheck="false" placeholder='{"type":"claude","access_token":"…","refresh_token":"…"}'></textarea>
       <p class="note">粘贴 CLIProxyAPI 的 Claude 凭据文件内容。导入后账号保持关闭，令牌不会回显。</p>
+      <label class="check-row" for="importReplace">
+        <input id="importReplace" type="checkbox">
+        <span>允许替换具有相同别名或账号身份的现有凭据</span>
+      </label>
       <button id="submitImportButton" class="btn btn-primary btn-block" type="button">导入</button>
       <p id="importError" class="form-error" role="alert"></p>
     </form>

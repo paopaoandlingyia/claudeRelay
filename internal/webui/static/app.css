@@ -161,6 +161,8 @@ input[type="text"], input[type="password"], textarea, select {
 input[type="text"], input[type="password"], select { height: 34px; padding: 0 10px; }
 textarea { padding: 8px 10px; font-family: var(--mono); font-size: 12px; line-height: 1.55; resize: vertical; }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.check-row { display: flex; align-items: flex-start; gap: 8px; color: var(--muted); font-weight: 500; line-height: 1.5; }
+.check-row input { margin-top: 2px; accent-color: var(--accent); }
 
 .secret-field { position: relative; }
 .secret-field input { padding-right: 62px; }

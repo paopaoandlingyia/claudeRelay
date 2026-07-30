@@ -178,6 +178,76 @@ func TestImportAccountFromConsoleArrivesDisabled(t *testing.T) {
 	if recorder := adminRequest(t, server, http.MethodPost, "/admin/v1/accounts/import", `{"alias":"bad","credential":"not json"}`); recorder.Code != http.StatusBadRequest {
 		t.Errorf("invalid credential status = %d, want 400", recorder.Code)
 	}
+	existing := `{"alias":"default","credential":"{\"type\":\"claude\",\"access_token\":\"replacement\"}"}`
+	if recorder := adminRequest(t, server, http.MethodPost, "/admin/v1/accounts/import", existing); recorder.Code != http.StatusConflict {
+		t.Errorf("implicit replacement status = %d, want 409", recorder.Code)
+	}
+	explicit := `{"alias":"default","credential":"{\"type\":\"claude\",\"access_token\":\"replacement\"}","replace":true}`
+	if recorder := adminRequest(t, server, http.MethodPost, "/admin/v1/accounts/import", explicit); recorder.Code != http.StatusCreated {
+		t.Errorf("explicit replacement status = %d, want 201, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAdminResponsesAreNotCacheableAndCannotBeFramed(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "https://upstream.invalid", 1024)
+	recorder := adminRequest(t, server, http.MethodGet, "/admin/v1/overview", "")
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := recorder.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+		t.Errorf("Content-Security-Policy = %q", got)
+	}
+}
+
+func TestOverviewAvailabilityAccountsForRefreshableExpiry(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "https://upstream.invalid", 1024)
+	account, _, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.UpdateTokens(t.Context(), account.ID, "expired", "refresh", "2020-01-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	decode := func() overviewResponse {
+		recorder := adminRequest(t, server, http.MethodGet, "/admin/v1/overview", "")
+		var overview overviewResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &overview); err != nil {
+			t.Fatal(err)
+		}
+		return overview
+	}
+	overview := decode()
+	if overview.Accounts.Available != 1 || overview.Accounts.Expired != 1 {
+		t.Errorf("refreshable totals = %#v", overview.Accounts)
+	}
+	server.cfg.AutoRefresh = false
+	overview = decode()
+	if overview.Accounts.Available != 0 {
+		t.Errorf("available with refresh disabled = %d, want 0", overview.Accounts.Available)
+	}
+}
+
+func TestForcedRefreshRechecksEnabledState(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "https://upstream.invalid", 1024)
+	account, _, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.UpdateTokens(t.Context(), account.ID, "access", "refresh", time.Now().Add(time.Hour).Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.SetAccountEnabled(t.Context(), account.Alias, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tokens.refreshNow(t.Context(), account); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("refreshNow error = %v, want disabled-account rejection", err)
+	}
 }
 
 func TestOverviewAndRequestsExposeRelayActivity(t *testing.T) {

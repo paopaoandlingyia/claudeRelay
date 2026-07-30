@@ -105,6 +105,9 @@ verified without this relay taking over its refresh-token chain.
 
 Deleting an account removes its cooldowns and sticky bindings through the existing foreign keys. It
 does not revoke the Anthropic authorization, and the console says so at the confirmation step.
+Pasted imports reject an existing alias or account identity by default. Replacement requires an
+explicit API flag and a second console confirmation because it changes credentials and disables the
+account immediately.
 
 Schema version 3 adds `accounts.last_refresh_at` so a healthy account is distinguishable from one
 whose refresh chain silently stopped rotating. The upgrade only adds a column and changes no

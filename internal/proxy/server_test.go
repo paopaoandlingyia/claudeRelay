@@ -68,6 +68,25 @@ func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	}
 }
 
+func TestFailedAlternateSelectionDoesNotDoubleCountAccount(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 1024)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+
+	stat := server.metrics.AccountStats()["default"]
+	if stat.Requests != 1 || stat.Failures != 1 {
+		t.Fatalf("account stats = %#v, want one failed upstream attempt", stat)
+	}
+}
+
 func TestForwardAddsStandardAnthropicHeadersWhenMissing(t *testing.T) {
 	t.Parallel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

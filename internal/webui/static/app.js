@@ -113,7 +113,7 @@ function renderStats() {
   const totals = overview.accounts || {};
   const summary = overview.requests || {};
 
-  const available = Math.max(0, (totals.enabled || 0) - (totals.cooling || 0));
+  const available = totals.available || 0;
   setStat("statAvailable", available, available === 0 && (totals.total || 0) > 0 ? "is-bad" : "");
   $("statAvailableNote").textContent = `共 ${totals.total || 0} 个账号，${totals.enabled || 0} 个已启用`;
 
@@ -157,6 +157,9 @@ function accountStatus(account) {
     };
   }
   if (isExpired(account)) {
+    if (state.overview?.auto_refresh_enabled && account.has_refresh_token) {
+      return { label: "待刷新", css: "badge-warn", note: "下一次请求时将自动续期" };
+    }
     return { label: "令牌过期", css: "badge-bad", note: "刷新令牌或重新授权后才能使用" };
   }
   return { label: "可用", css: "badge-ok", note: "参与缓存亲和调度" };
@@ -485,6 +488,7 @@ async function runAction(path, options, successMessage) {
 async function submitImport() {
   const alias = $("importAlias").value.trim();
   const credential = $("importCredential").value.trim();
+  const replace = $("importReplace").checked;
   const error = $("importError");
   error.textContent = "";
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(alias)) {
@@ -495,19 +499,38 @@ async function submitImport() {
     error.textContent = "请粘贴凭据 JSON。";
     return;
   }
+  if (replace) {
+    $("importDialog").close();
+    const accepted = await confirmDialog({
+      title: `替换 ${alias} 的现有凭据`,
+      lead: "如果该别名或账号身份已经存在，其 OAuth 令牌将被替换并立即停用。",
+      items: [
+        "确认粘贴的是目标账号的完整凭据",
+        "替换后需要重新手动启用账号",
+      ],
+      accept: "确认替换",
+      danger: true,
+    });
+    if (!accepted) {
+      $("importDialog").showModal();
+      return;
+    }
+  }
   const element = $("submitImportButton");
   setBusy(element, true, "导入中");
   try {
     await api("/admin/v1/accounts/import", {
       method: "POST",
-      body: JSON.stringify({ alias, credential }),
+      body: JSON.stringify({ alias, credential, replace }),
     });
-    $("importDialog").close();
+    if ($("importDialog").open) $("importDialog").close();
     $("importAlias").value = "";
     $("importCredential").value = "";
+    $("importReplace").checked = false;
     showToast(`${alias} 已导入，当前为停用状态`);
     await refreshAll();
   } catch (requestError) {
+    if (!$("importDialog").open) $("importDialog").showModal();
     error.textContent = requestError.message;
   } finally {
     setBusy(element, false);

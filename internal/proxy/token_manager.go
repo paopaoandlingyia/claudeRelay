@@ -35,6 +35,9 @@ func (m *tokenManager) refreshNow(ctx context.Context, account store.Account) (s
 	if !found {
 		return store.Account{}, fmt.Errorf("account %q was removed before token refresh", account.Alias)
 	}
+	if !current.Enabled {
+		return store.Account{}, fmt.Errorf("account %q was disabled before token refresh", current.Alias)
+	}
 	if current.RefreshToken == "" {
 		return store.Account{}, fmt.Errorf("account %q cannot refresh because its refresh token is missing", current.Alias)
 	}

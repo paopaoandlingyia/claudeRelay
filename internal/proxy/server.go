@@ -120,7 +120,21 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/check", s.checkAccount)
 	mux.HandleFunc("POST /admin/v1/oauth/claude/start", s.startClaudeOAuth)
 	mux.HandleFunc("POST /admin/v1/oauth/claude/exchange", s.exchangeClaudeOAuth)
-	return withRequestID(s.authenticate(mux))
+	return withRequestID(s.securityHeaders(s.authenticate(mux)))
+}
+
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		if strings.HasPrefix(r.URL.Path, "/admin/") {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Pragma", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
@@ -199,6 +213,13 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	for attempt := 0; attempt < 2; attempt++ {
 		selected, err = s.selector.selectAccount(incoming.Context(), route, forcedAlias, excluded)
 		if err != nil {
+			// A failed alternate selection has no final account. Keep the first
+			// failed attempt only in Failover so per-account metrics do not count
+			// the same account twice.
+			if event.Failover != nil {
+				event.Account = ""
+				event.Selection = ""
+			}
 			fail(http.StatusServiceUnavailable, "api_error", err.Error())
 			return
 		}

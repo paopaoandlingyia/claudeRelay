@@ -131,10 +131,11 @@ type overviewResponse struct {
 }
 
 type accountTotals struct {
-	Total   int `json:"total"`
-	Enabled int `json:"enabled"`
-	Cooling int `json:"cooling"`
-	Expired int `json:"expired"`
+	Total     int `json:"total"`
+	Enabled   int `json:"enabled"`
+	Available int `json:"available"`
+	Cooling   int `json:"cooling"`
+	Expired   int `json:"expired"`
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -161,14 +162,19 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 
 	totals := accountTotals{Total: len(accounts)}
 	for _, account := range accounts {
+		expired := account.Credential.IsExpired(now)
 		if account.Enabled {
 			totals.Enabled++
 		}
 		if account.Enabled && cooling[account.ID] {
 			totals.Cooling++
 		}
-		if account.Credential.IsExpired(now) {
+		if expired {
 			totals.Expired++
+		}
+		refreshable := s.cfg.AutoRefresh && strings.TrimSpace(account.RefreshToken) != ""
+		if account.Enabled && !cooling[account.ID] && (!expired || refreshable) {
+			totals.Available++
 		}
 	}
 	sticky := 0
@@ -436,6 +442,7 @@ func upstreamErrorMessage(body []byte, status int) string {
 type importRequest struct {
 	Alias      string `json:"alias"`
 	Credential string `json:"credential"`
+	Replace    bool   `json:"replace"`
 }
 
 // importAccount accepts a pasted CLIProxyAPI credential document so migration
@@ -456,6 +463,20 @@ func (s *Server) importAccount(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
+	}
+	if !request.Replace {
+		accounts, listErr := s.store.AllAccounts(r.Context())
+		if listErr != nil {
+			writeError(w, http.StatusInternalServerError, "api_error", "failed to check existing accounts")
+			return
+		}
+		for _, existing := range accounts {
+			if strings.EqualFold(existing.Alias, request.Alias) || existing.AccountUUID == cred.AccountUUID {
+				writeError(w, http.StatusConflict, "invalid_request_error",
+					fmt.Sprintf("account %q already exists; explicit replacement is required", existing.Alias))
+				return
+			}
+		}
 	}
 	account, err := s.store.ImportAccount(r.Context(), request.Alias, cred)
 	if err != nil {
