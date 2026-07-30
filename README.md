@@ -29,7 +29,7 @@ go build -o claude-relay.exe ./cmd/claude-relay
 For the recommended single-instance server deployment, use the included `compose.yaml`. The
 container runs as a non-root user, keeps SQLite in a private named volume, and binds only to the
 host loopback interface by default. See [`docs/deployment.md`](docs/deployment.md) for migration,
-HTTPS, proxy, backup, and upgrade instructions.
+HTTPS, private GHCR images, proxy, backup, and upgrade instructions.
 
 ## Import a CLIProxyAPI credential
 

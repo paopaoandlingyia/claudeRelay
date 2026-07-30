@@ -25,6 +25,36 @@ docker compose up -d --build
 docker compose ps
 ```
 
+## Deploy the private GHCR image
+
+GitHub Actions tests every push and pull request and builds Linux images for AMD64 and ARM64. A
+successful push to `main` publishes `ghcr.io/paopaoandlingyia/clauderelay:latest`; a `v*` Git tag
+also publishes semantic-version tags. Action dependencies are pinned to full commit hashes.
+
+Because the repository and package are private, authenticate the server to GHCR with a GitHub token
+that can read packages:
+
+```powershell
+$env:GHCR_TOKEN | docker login ghcr.io -u paopaoandlingyia --password-stdin
+```
+
+Add this line to the server's `.env`:
+
+```text
+CLAUDE_RELAY_IMAGE=ghcr.io/paopaoandlingyia/clauderelay:latest
+```
+
+Then deploy or update without compiling on the server:
+
+```powershell
+docker compose pull
+docker compose up -d --no-build
+```
+
+The token is needed only by Docker to pull the private image; do not put it in `.env` or
+`compose.yaml`. If repository policy prevents `GITHUB_TOKEN` from publishing packages, allow this
+workflow read/write package permission in the repository Actions settings.
+
 The default port mapping is `127.0.0.1:8567:8567`, so the API and WebUI are not directly exposed
 to the network. Open `http://127.0.0.1:8567/` on the server or publish it through an HTTPS reverse
 proxy. A minimal Caddy site is:

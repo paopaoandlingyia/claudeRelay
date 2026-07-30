@@ -2,7 +2,7 @@ services:
   claude-relay:
     build:
       context: .
-    image: claude-relay:local
+    image: ${CLAUDE_RELAY_IMAGE:-claude-relay:local}
     restart: unless-stopped
     init: true
     environment:
