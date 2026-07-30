@@ -13,7 +13,8 @@ const defaultMaxRequestBytes int64 = 32 << 20
 
 type Config struct {
 	Listen          string `json:"listen"`
-	APIKey          string `json:"api_key"`
+	RelayAPIKey     string `json:"relay_api_key"`
+	AdminAPIKey     string `json:"admin_api_key"`
 	DatabaseFile    string `json:"database_file"`
 	CredentialsFile string `json:"credentials_file"`
 	UpstreamBaseURL string `json:"upstream_base_url"`
@@ -46,7 +47,10 @@ func applyEnvironment(cfg *Config) error {
 		cfg.Listen = value
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_API_KEY")); value != "" {
-		cfg.APIKey = value
+		cfg.RelayAPIKey = value
+	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_ADMIN_API_KEY")); value != "" {
+		cfg.AdminAPIKey = value
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_CREDENTIALS_FILE")); value != "" {
 		cfg.CredentialsFile = value
@@ -75,7 +79,8 @@ func applyEnvironment(cfg *Config) error {
 
 func (cfg *Config) validate() error {
 	cfg.Listen = strings.TrimSpace(cfg.Listen)
-	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
+	cfg.RelayAPIKey = strings.TrimSpace(cfg.RelayAPIKey)
+	cfg.AdminAPIKey = strings.TrimSpace(cfg.AdminAPIKey)
 	cfg.DatabaseFile = strings.TrimSpace(cfg.DatabaseFile)
 	cfg.CredentialsFile = strings.TrimSpace(cfg.CredentialsFile)
 	cfg.UpstreamBaseURL = strings.TrimRight(strings.TrimSpace(cfg.UpstreamBaseURL), "/")
@@ -87,8 +92,14 @@ func (cfg *Config) validate() error {
 	if cfg.Listen == "" {
 		return fmt.Errorf("config listen is required")
 	}
-	if cfg.APIKey == "" {
-		return fmt.Errorf("config api_key or CLAUDE_RELAY_API_KEY is required")
+	if cfg.RelayAPIKey == "" {
+		return fmt.Errorf("config relay_api_key or CLAUDE_RELAY_API_KEY is required")
+	}
+	if cfg.AdminAPIKey == "" {
+		return fmt.Errorf("config admin_api_key or CLAUDE_RELAY_ADMIN_API_KEY is required")
+	}
+	if cfg.RelayAPIKey == cfg.AdminAPIKey {
+		return fmt.Errorf("relay and admin API keys must be different")
 	}
 	if cfg.DatabaseFile == "" {
 		cfg.DatabaseFile = "data/claude-relay.db"

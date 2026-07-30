@@ -64,3 +64,14 @@ The Docker build context is allowlisted to Go source and the non-secret containe
 local databases, OAuth credentials, captures, and developer configuration cannot enter the image.
 Runtime secrets are supplied through environment variables. Windows tray integration is deferred
 because it would add a second platform-specific lifecycle without improving the server-first goal.
+
+## 2026-07-30: relay and administration keys are separate
+
+Model callers and account operators have different authority. The relay key authenticates native
+Anthropic message and token-count requests, including the private `X-Claude-Relay-Account`
+override. The administration key authenticates WebUI data, OAuth flows, and account activation.
+Neither key grants the other role, and configuration rejects identical values.
+
+This remains a small private deployment rather than a user/role system. There is one key per role,
+no billing identity, and no per-caller quota. Splitting the keys prevents an API consumer from
+taking ownership of OAuth refresh tokens without introducing a general access-control platform.

@@ -6,7 +6,7 @@ round-robin rotation, or Claude Code prompt injection.
 
 ## Current scope
 
-- Multiple imported Claude OAuth credentials and one downstream API key
+- Multiple imported Claude OAuth credentials with separate relay and administration API keys
 - `POST /v1/messages` and `POST /v1/messages/count_tokens`
 - Transparent JSON and SSE responses
 - Minimum subscription attribution for ordinary Anthropic requests
@@ -56,6 +56,7 @@ The schema upgrade that introduced activation also disables every pre-existing a
 ```powershell
 Copy-Item config.example.json config.json
 $env:CLAUDE_RELAY_API_KEY = "replace-with-a-long-random-key"
+$env:CLAUDE_RELAY_ADMIN_API_KEY = "replace-with-a-different-long-random-key"
 .\claude-relay.exe serve -config config.json
 ```
 
@@ -64,7 +65,7 @@ Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a 
 
 ## WebUI
 
-Open `http://127.0.0.1:8567/` and sign in with the downstream API key from the configuration. The
+Open `http://127.0.0.1:8567/` and sign in with the administration API key from the configuration. The
 embedded UI lists accounts, makes activation state explicit, and walks through the server-oriented
 Claude OAuth copy/paste flow. OAuth imports remain disabled until manually enabled.
 
@@ -75,8 +76,8 @@ over a network, because the shared downstream key grants both relay and account-
 
 ## Account management
 
-Management endpoints use the same downstream API key as message requests. They never return access
-or refresh tokens.
+Management endpoints accept only the administration API key and never return access or refresh
+tokens. The relay API key cannot access the WebUI data, OAuth operations, or account activation.
 
 ```http
 GET  /admin/v1/accounts
@@ -134,11 +135,12 @@ Private deployments can force an account for one request:
 X-Claude-Relay-Account: personal
 ```
 
-The alias is stripped before forwarding upstream. A missing, disabled, or cooling account produces
+The alias is available to callers authenticated with the relay API key and is stripped before
+forwarding upstream. A missing, disabled, or cooling account produces
 an error instead of silently selecting another account. A forced alias that conflicts with the
 account identity in an immutable signed CCH request is also rejected. Successful responses include
 `X-Claude-Relay-Account` so a trusted caller can inspect the selected alias. Anyone holding the
-single downstream API key can use this override, so aliases should not contain email addresses or
+relay API key can use this override, so aliases should not contain email addresses or
 other sensitive data.
 
 Transient `429`, `529`, network, upstream `5xx`, and token-refresh failures may move an unpinned

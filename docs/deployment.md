@@ -6,7 +6,7 @@ rotation, sticky routing, and SQLite are intentionally single-instance boundarie
 
 ## Start with Docker Compose
 
-Copy the environment template and replace the API key:
+Copy the environment template and generate two different API keys:
 
 ```powershell
 Copy-Item .env.example .env
@@ -17,7 +17,8 @@ $rng.Dispose()
 -join ($bytes | ForEach-Object { $_.ToString("x2") })
 ```
 
-Put the generated value in `.env`, then start the service:
+Run the generation command twice and put different values in `CLAUDE_RELAY_API_KEY` and
+`CLAUDE_RELAY_ADMIN_API_KEY` in `.env`, then start the service:
 
 ```powershell
 docker compose up -d --build
@@ -34,9 +35,10 @@ relay.example.com {
 }
 ```
 
-Anyone holding the shared API key can relay requests, manage accounts, and choose explicit account
-aliases. Treat both the key and the WebUI as administrative access. Do not publish port 8567 to the
-internet without TLS and an appropriate network boundary.
+The relay key can call Anthropic endpoints and choose explicit account aliases, but cannot read or
+change account administration. The separate administration key controls the WebUI, OAuth, and
+account activation, but cannot call model endpoints. Treat the administration key as privileged
+access. Do not publish port 8567 to the internet without TLS and an appropriate network boundary.
 
 ## Configuration
 
@@ -44,7 +46,8 @@ The image contains only non-secret defaults. Compose passes these supported runt
 
 | Environment variable | Purpose | Compose default |
 | --- | --- | --- |
-| `CLAUDE_RELAY_API_KEY` | Shared API and management key | Required |
+| `CLAUDE_RELAY_API_KEY` | Relay key for messages, token counting, and account override | Required |
+| `CLAUDE_RELAY_ADMIN_API_KEY` | Administration key for WebUI, OAuth, and account state | Required and must differ |
 | `CLAUDE_RELAY_UPSTREAM_PROXY` | Optional outbound HTTP(S) proxy | Empty |
 | `CLAUDE_RELAY_MAX_REQUEST_BYTES` | Maximum request body size | `33554432` |
 | `CLAUDE_RELAY_AUTO_REFRESH_ENABLED` | Emergency global OAuth refresh switch | `true` |

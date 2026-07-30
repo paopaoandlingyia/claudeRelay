@@ -120,8 +120,12 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if provided == "" {
 			provided = strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		}
+		expected := s.cfg.RelayAPIKey
+		if strings.HasPrefix(r.URL.Path, "/admin/") {
+			expected = s.cfg.AdminAPIKey
+		}
 		providedHash := sha256.Sum256([]byte(provided))
-		expectedHash := sha256.Sum256([]byte(s.cfg.APIKey))
+		expectedHash := sha256.Sum256([]byte(expected))
 		if subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) != 1 {
 			writeError(w, http.StatusUnauthorized, "authentication_error", "invalid API key")
 			return
@@ -156,7 +160,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		return
 	}
 	includeMetadata := incoming.URL.Path == "/v1/messages"
-	route, routeErr := deriveRequestRoute(body, incoming.Header, s.cfg.APIKey)
+	route, routeErr := deriveRequestRoute(body, incoming.Header, s.cfg.RelayAPIKey)
 	if routeErr != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", routeErr.Error())
 		return

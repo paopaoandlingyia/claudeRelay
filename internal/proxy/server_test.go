@@ -293,6 +293,35 @@ func TestAuthenticationRejectsWrongKey(t *testing.T) {
 	}
 }
 
+func TestRelayAndAdminAuthenticationAreSeparated(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "http://127.0.0.1:1", 1024)
+
+	adminWithRelayKey := httptest.NewRecorder()
+	adminRequest := httptest.NewRequest(http.MethodGet, "/admin/v1/accounts", nil)
+	adminRequest.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(adminWithRelayKey, adminRequest)
+	if adminWithRelayKey.Code != http.StatusUnauthorized {
+		t.Fatalf("relay key on admin endpoint status = %d", adminWithRelayKey.Code)
+	}
+
+	relayWithAdminKey := httptest.NewRecorder()
+	relayRequest := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	relayRequest.Header.Set("x-api-key", "admin-key")
+	server.routes().ServeHTTP(relayWithAdminKey, relayRequest)
+	if relayWithAdminKey.Code != http.StatusUnauthorized {
+		t.Fatalf("admin key on relay endpoint status = %d", relayWithAdminKey.Code)
+	}
+
+	adminWithAdminKey := httptest.NewRecorder()
+	authorizedAdminRequest := httptest.NewRequest(http.MethodGet, "/admin/v1/accounts", nil)
+	authorizedAdminRequest.Header.Set("x-api-key", "admin-key")
+	server.routes().ServeHTTP(adminWithAdminKey, authorizedAdminRequest)
+	if adminWithAdminKey.Code != http.StatusOK {
+		t.Fatalf("admin key on admin endpoint status = %d", adminWithAdminKey.Code)
+	}
+}
+
 func TestWebUIIsPublicButManagementAPIStillRequiresAuthentication(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t, "http://127.0.0.1:1", 4096)
@@ -449,7 +478,7 @@ func TestAdminAccountLifecycleDoesNotExposeTokens(t *testing.T) {
 	server := newTestServer(t, "http://127.0.0.1:1", 4096)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/admin/v1/accounts", nil)
-	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set("x-api-key", "admin-key")
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
@@ -460,7 +489,7 @@ func TestAdminAccountLifecycleDoesNotExposeTokens(t *testing.T) {
 
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/admin/v1/accounts/default/disable", nil)
-	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set("x-api-key", "admin-key")
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"enabled":false`) {
 		t.Fatalf("disable status = %d body = %s", recorder.Code, recorder.Body.String())
@@ -490,7 +519,7 @@ func TestOAuthManagementFlowImportsDisabledAccount(t *testing.T) {
 
 	startRecorder := httptest.NewRecorder()
 	startRequest := httptest.NewRequest(http.MethodPost, "/admin/v1/oauth/claude/start", strings.NewReader(`{"alias":"oauth-account"}`))
-	startRequest.Header.Set("x-api-key", "downstream-key")
+	startRequest.Header.Set("x-api-key", "admin-key")
 	server.routes().ServeHTTP(startRecorder, startRequest)
 	if startRecorder.Code != http.StatusOK {
 		t.Fatalf("start status = %d body = %s", startRecorder.Code, startRecorder.Body.String())
@@ -510,7 +539,7 @@ func TestOAuthManagementFlowImportsDisabledAccount(t *testing.T) {
 	exchangeBody, _ := json.Marshal(map[string]string{"session_id": started.SessionID, "code": "auth-code#" + state})
 	exchangeRecorder := httptest.NewRecorder()
 	exchangeRequest := httptest.NewRequest(http.MethodPost, "/admin/v1/oauth/claude/exchange", strings.NewReader(string(exchangeBody)))
-	exchangeRequest.Header.Set("x-api-key", "downstream-key")
+	exchangeRequest.Header.Set("x-api-key", "admin-key")
 	server.routes().ServeHTTP(exchangeRecorder, exchangeRequest)
 	if exchangeRecorder.Code != http.StatusCreated || !strings.Contains(exchangeRecorder.Body.String(), `"enabled":false`) {
 		t.Fatalf("exchange status = %d body = %s", exchangeRecorder.Code, exchangeRecorder.Body.String())
@@ -580,7 +609,8 @@ func newTestServer(t *testing.T, upstreamURL string, maxRequestBytes int64) *Ser
 	}
 	server, err := NewServer(config.Config{
 		Listen:          "127.0.0.1:0",
-		APIKey:          "downstream-key",
+		RelayAPIKey:     "downstream-key",
+		AdminAPIKey:     "admin-key",
 		CredentialsFile: "unused.json",
 		UpstreamBaseURL: upstreamURL,
 		MaxRequestBytes: maxRequestBytes,
