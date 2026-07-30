@@ -293,6 +293,32 @@ func TestAuthenticationRejectsWrongKey(t *testing.T) {
 	}
 }
 
+func TestWebUIIsPublicButManagementAPIStillRequiresAuthentication(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+
+	page := httptest.NewRecorder()
+	server.routes().ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Claude Relay") {
+		t.Fatalf("Web UI status = %d body = %s", page.Code, page.Body.String())
+	}
+	if got := page.Header().Get("Content-Security-Policy"); got == "" {
+		t.Fatal("Web UI omitted Content-Security-Policy")
+	}
+
+	asset := httptest.NewRecorder()
+	server.routes().ServeHTTP(asset, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if asset.Code != http.StatusOK || !strings.Contains(asset.Body.String(), "claudeRelayAdminKey") {
+		t.Fatalf("Web UI asset status = %d", asset.Code)
+	}
+
+	admin := httptest.NewRecorder()
+	server.routes().ServeHTTP(admin, httptest.NewRequest(http.MethodGet, "/admin/v1/accounts", nil))
+	if admin.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated management status = %d", admin.Code)
+	}
+}
+
 func TestRequestBodyLimit(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t, "http://127.0.0.1:1", 4)

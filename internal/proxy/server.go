@@ -18,6 +18,7 @@ import (
 	"github.com/local/claude-relay/internal/claudeoauth"
 	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/store"
+	"github.com/local/claude-relay/internal/webui"
 )
 
 var allowedPaths = map[string]struct{}{
@@ -96,6 +97,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", webui.Index)
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/", webui.Assets()))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /v1/messages", s.forward)
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.forward)
@@ -109,7 +112,7 @@ func (s *Server) routes() http.Handler {
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/assets/") {
 			next.ServeHTTP(w, r)
 			return
 		}

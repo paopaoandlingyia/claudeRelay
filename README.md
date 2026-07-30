@@ -13,7 +13,7 @@ round-robin rotation, or Claude Code prompt injection.
 - Byte-for-byte body pass-through when an official client CCH is present
 - Cache-affinity account selection, one-hour sticky sessions, and one bounded transient failover
 - Disabled-by-default account imports and manual activation
-- PKCE OAuth login endpoints for the future WebUI
+- Embedded account-management WebUI and PKCE OAuth login
 - On-demand rotating OAuth refresh for enabled accounts
 
 The dated protocol conclusions and unresolved questions are centralized in
@@ -56,6 +56,17 @@ $env:CLAUDE_RELAY_API_KEY = "replace-with-a-long-random-key"
 
 Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a URL such as
 `http://127.0.0.1:7890` when upstream traffic must use a local proxy.
+
+## WebUI
+
+Open `http://127.0.0.1:8567/` and sign in with the downstream API key from the configuration. The
+embedded UI lists accounts, makes activation state explicit, and walks through the server-oriented
+Claude OAuth copy/paste flow. OAuth imports remain disabled until manually enabled.
+
+The UI stores the management key in the current tab's `sessionStorage`; it is not written to the
+server or persistent browser storage. The static login page is public, while every management API
+remains authenticated. Put the service behind an HTTPS reverse proxy before accessing the WebUI
+over a network, because the shared downstream key grants both relay and account-management access.
 
 ## Account management
 
