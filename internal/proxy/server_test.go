@@ -614,6 +614,8 @@ func newTestServer(t *testing.T, upstreamURL string, maxRequestBytes int64) *Ser
 		CredentialsFile: "unused.json",
 		UpstreamBaseURL: upstreamURL,
 		MaxRequestBytes: maxRequestBytes,
+		RequestLogSize:  50,
+		AutoRefresh:     true,
 	}, database)
 	if err != nil {
 		t.Fatal(err)

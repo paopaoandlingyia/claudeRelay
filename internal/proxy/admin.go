@@ -2,22 +2,52 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/local/claude-relay/internal/credential"
+	"github.com/local/claude-relay/internal/metrics"
 	"github.com/local/claude-relay/internal/store"
 )
 
+// checkModel is the cheapest model accepted by the OAuth subscription surface,
+// used only to prove that an account's access token still reaches upstream.
+const checkModel = "claude-haiku-4-5-20251001"
+
+// Every timestamp in an administration response is epoch milliseconds, so the
+// console never has to track which field uses which unit.
+func epochMillis(unixSeconds int64) int64 {
+	if unixSeconds == 0 {
+		return 0
+	}
+	return unixSeconds * 1000
+}
+
+type cooldownView struct {
+	Model   string `json:"model,omitempty"`
+	UntilAt int64  `json:"until_at"`
+	Reason  string `json:"reason,omitempty"`
+}
+
 type accountView struct {
-	Alias           string `json:"alias"`
-	Enabled         bool   `json:"enabled"`
-	Email           string `json:"email,omitempty"`
-	AccountUUID     string `json:"account_uuid"`
-	ExpiresAt       string `json:"expires_at,omitempty"`
-	HasRefreshToken bool   `json:"has_refresh_token"`
+	Alias           string              `json:"alias"`
+	Enabled         bool                `json:"enabled"`
+	Email           string              `json:"email,omitempty"`
+	AccountUUID     string              `json:"account_uuid"`
+	ExpiresAt       string              `json:"expires_at,omitempty"`
+	HasRefreshToken bool                `json:"has_refresh_token"`
+	CreatedAt       int64               `json:"created_at,omitempty"`
+	LastRefreshAt   int64               `json:"last_refresh_at,omitempty"`
+	Cooldown        *cooldownView       `json:"cooldown,omitempty"`
+	StickySessions  int                 `json:"sticky_sessions"`
+	Stats           metrics.AccountStat `json:"stats"`
 }
 
 func accountResponse(account store.Account) accountView {
@@ -28,7 +58,47 @@ func accountResponse(account store.Account) accountView {
 		AccountUUID:     account.AccountUUID,
 		ExpiresAt:       account.ExpiresAt,
 		HasRefreshToken: strings.TrimSpace(account.RefreshToken) != "",
+		CreatedAt:       epochMillis(account.CreatedAt),
+		LastRefreshAt:   epochMillis(account.LastRefreshAt),
 	}
+}
+
+// accountViews decorates stored accounts with the live routing state that makes
+// "enabled" different from "actually receiving traffic".
+func (s *Server) accountViews(r *http.Request, accounts []store.Account) ([]accountView, error) {
+	now := time.Now()
+	cooldowns, err := s.store.ActiveCooldowns(r.Context(), now)
+	if err != nil {
+		return nil, err
+	}
+	latest := make(map[int64]cooldownView, len(cooldowns))
+	for _, cooldown := range cooldowns {
+		if existing, seen := latest[cooldown.AccountID]; seen && existing.UntilAt >= cooldown.UntilAt {
+			continue
+		}
+		latest[cooldown.AccountID] = cooldownView{
+			Model:   cooldown.Model,
+			UntilAt: epochMillis(cooldown.UntilAt),
+			Reason:  cooldown.Reason,
+		}
+	}
+	bindings, err := s.store.SessionBindingCounts(r.Context(), now)
+	if err != nil {
+		return nil, err
+	}
+	stats := s.metrics.AccountStats()
+
+	views := make([]accountView, 0, len(accounts))
+	for _, account := range accounts {
+		view := accountResponse(account)
+		if cooldown, cooling := latest[account.ID]; cooling {
+			view.Cooldown = &cooldown
+		}
+		view.StickySessions = bindings[account.ID]
+		view.Stats = stats[account.Alias]
+		views = append(views, view)
+	}
+	return views, nil
 }
 
 func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
@@ -37,11 +107,148 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "api_error", "failed to list accounts")
 		return
 	}
-	views := make([]accountView, 0, len(accounts))
-	for _, account := range accounts {
-		views = append(views, accountResponse(account))
+	views, err := s.accountViews(r, accounts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to read account routing state")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": views, "auto_refresh_enabled": s.cfg.AutoRefresh})
+}
+
+type overviewResponse struct {
+	Version         string          `json:"version"`
+	StartedAt       int64           `json:"started_at"`
+	Listen          string          `json:"listen"`
+	Endpoint        string          `json:"endpoint"`
+	Upstream        string          `json:"upstream"`
+	UpstreamProxy   string          `json:"upstream_proxy,omitempty"`
+	AutoRefresh     bool            `json:"auto_refresh_enabled"`
+	MaxRequestBytes int64           `json:"max_request_bytes"`
+	RelayAPIKey     string          `json:"relay_api_key"`
+	Accounts        accountTotals   `json:"accounts"`
+	StickySessions  int             `json:"sticky_sessions"`
+	Requests        metrics.Summary `json:"requests"`
+}
+
+type accountTotals struct {
+	Total   int `json:"total"`
+	Enabled int `json:"enabled"`
+	Cooling int `json:"cooling"`
+	Expired int `json:"expired"`
+}
+
+func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	accounts, err := s.store.AllAccounts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to list accounts")
+		return
+	}
+	cooldowns, err := s.store.ActiveCooldowns(r.Context(), now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to read account cooldowns")
+		return
+	}
+	cooling := make(map[int64]bool, len(cooldowns))
+	for _, cooldown := range cooldowns {
+		cooling[cooldown.AccountID] = true
+	}
+	bindings, err := s.store.SessionBindingCounts(r.Context(), now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to count session bindings")
+		return
+	}
+
+	totals := accountTotals{Total: len(accounts)}
+	for _, account := range accounts {
+		if account.Enabled {
+			totals.Enabled++
+		}
+		if account.Enabled && cooling[account.ID] {
+			totals.Cooling++
+		}
+		if account.Credential.IsExpired(now) {
+			totals.Expired++
+		}
+	}
+	sticky := 0
+	for _, count := range bindings {
+		sticky += count
+	}
+
+	writeJSON(w, http.StatusOK, overviewResponse{
+		Version:         buildVersion(),
+		StartedAt:       s.startedAt.UnixMilli(),
+		Listen:          s.cfg.Listen,
+		Endpoint:        relayEndpoint(r),
+		Upstream:        s.upstream.String(),
+		UpstreamProxy:   s.cfg.UpstreamProxy,
+		AutoRefresh:     s.cfg.AutoRefresh,
+		MaxRequestBytes: s.cfg.MaxRequestBytes,
+		RelayAPIKey:     s.cfg.RelayAPIKey,
+		Accounts:        totals,
+		StickySessions:  sticky,
+		Requests:        s.metrics.Summary(now),
+	})
+}
+
+// relayEndpoint reconstructs the address a model client should target, honouring
+// the forwarded headers a reverse proxy in front of the relay would set.
+func relayEndpoint(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		scheme = strings.ToLower(strings.SplitN(forwarded, ",", 2)[0])
+	}
+	host := r.Host
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		host = strings.TrimSpace(strings.SplitN(forwarded, ",", 2)[0])
+	}
+	return scheme + "://" + host
+}
+
+func buildVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	revision, modified := "", false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	if revision == "" {
+		return "dev"
+	}
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	if modified {
+		return revision + "+dirty"
+	}
+	return revision
+}
+
+func (s *Server) listRequests(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "limit must be a positive integer")
+			return
+		}
+		limit = min(parsed, 1000)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"requests": s.metrics.Recent(limit),
+		"summary":  s.metrics.Summary(time.Now()),
+	})
 }
 
 func (s *Server) setAccountEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
@@ -52,6 +259,210 @@ func (s *Server) setAccountEnabled(w http.ResponseWriter, r *http.Request, enabl
 		return
 	}
 	writeJSON(w, http.StatusOK, accountResponse(account))
+}
+
+func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
+	alias := strings.TrimSpace(r.PathValue("alias"))
+	account, err := s.store.DeleteAccount(r.Context(), alias)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found_error", err.Error())
+		return
+	}
+	s.metrics.Forget(account.Alias)
+	writeJSON(w, http.StatusOK, map[string]any{"alias": account.Alias, "deleted": true})
+}
+
+type renameRequest struct {
+	Alias string `json:"alias"`
+}
+
+func (s *Server) renameAccount(w http.ResponseWriter, r *http.Request) {
+	var request renameRequest
+	if err := decodeAdminJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	current := strings.TrimSpace(r.PathValue("alias"))
+	account, err := s.store.RenameAccount(r.Context(), current, request.Alias)
+	if err != nil {
+		writeError(w, http.StatusConflict, "invalid_request_error", err.Error())
+		return
+	}
+	s.metrics.Forget(current)
+	writeJSON(w, http.StatusOK, accountResponse(account))
+}
+
+func (s *Server) clearAccountCooldown(w http.ResponseWriter, r *http.Request) {
+	alias := strings.TrimSpace(r.PathValue("alias"))
+	account, found, err := s.store.AccountByAlias(r.Context(), alias)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to read account")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "not_found_error", fmt.Sprintf("account %q was not found", alias))
+		return
+	}
+	removed, err := s.store.ClearCooldowns(r.Context(), account.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to clear cooldowns")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"alias": account.Alias, "cleared": removed})
+}
+
+// refreshAccount performs an operator-triggered token rotation. It obeys the same
+// ownership rules as automatic refresh: only an enabled account may rotate, and
+// the global emergency stop still wins.
+func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
+	alias := strings.TrimSpace(r.PathValue("alias"))
+	account, found, err := s.store.AccountByAlias(r.Context(), alias)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to read account")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "not_found_error", fmt.Sprintf("account %q was not found", alias))
+		return
+	}
+	if !s.cfg.AutoRefresh {
+		writeError(w, http.StatusConflict, "invalid_request_error", "automatic refresh is globally disabled")
+		return
+	}
+	if !account.Enabled {
+		writeError(w, http.StatusConflict, "invalid_request_error", "enable the account before it may refresh its tokens")
+		return
+	}
+	refreshed, err := s.tokens.refreshNow(r.Context(), account)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "authentication_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, accountResponse(refreshed))
+}
+
+type checkResponse struct {
+	Alias      string `json:"alias"`
+	OK         bool   `json:"ok"`
+	Status     int    `json:"status,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+	Detail     string `json:"detail,omitempty"`
+}
+
+// checkAccount proves an account still reaches upstream by counting tokens for a
+// trivial prompt. It never refreshes, so a disabled account can be verified
+// without this relay taking ownership of its refresh-token chain.
+func (s *Server) checkAccount(w http.ResponseWriter, r *http.Request) {
+	alias := strings.TrimSpace(r.PathValue("alias"))
+	account, found, err := s.store.AccountByAlias(r.Context(), alias)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to read account")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "not_found_error", fmt.Sprintf("account %q was not found", alias))
+		return
+	}
+	if account.Credential.IsExpired(time.Now()) {
+		writeJSON(w, http.StatusOK, checkResponse{
+			Alias:  account.Alias,
+			OK:     false,
+			Detail: "access token has expired; refresh the account before checking",
+		})
+		return
+	}
+
+	body := []byte(`{"model":"` + checkModel + `","messages":[{"role":"user","content":"ping"}]}`)
+	attributed, _, err := addSubscriptionAttribution(body, http.Header{}, account.Credential, false, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to build check request")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	target := *s.upstream
+	target.Path = strings.TrimRight(s.upstream.Path, "/") + "/v1/messages/count_tokens"
+	target.RawQuery = "beta=true"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(attributed))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to build check request")
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+account.AccessToken)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("anthropic-version", "2023-06-01")
+	request.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	request.Header.Set("User-Agent", observedClientUserAgent)
+	request.Host = s.upstream.Host
+
+	started := time.Now()
+	response, err := s.client.Do(request)
+	if err != nil {
+		writeJSON(w, http.StatusOK, checkResponse{
+			Alias:      account.Alias,
+			OK:         false,
+			DurationMS: time.Since(started).Milliseconds(),
+			Detail:     "upstream request failed: " + err.Error(),
+		})
+		return
+	}
+	defer func() { _ = response.Body.Close() }()
+	preview, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+	result := checkResponse{
+		Alias:      account.Alias,
+		OK:         response.StatusCode < 400,
+		Status:     response.StatusCode,
+		DurationMS: time.Since(started).Milliseconds(),
+	}
+	if !result.OK {
+		result.Detail = upstreamErrorMessage(preview, response.StatusCode)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func upstreamErrorMessage(body []byte, status int) string {
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil && strings.TrimSpace(payload.Error.Message) != "" {
+		return payload.Error.Message
+	}
+	return http.StatusText(status)
+}
+
+type importRequest struct {
+	Alias      string `json:"alias"`
+	Credential string `json:"credential"`
+}
+
+// importAccount accepts a pasted CLIProxyAPI credential document so migration
+// does not require shell access to the server. The account arrives disabled,
+// exactly like the command-line importer.
+func (s *Server) importAccount(w http.ResponseWriter, r *http.Request) {
+	var request importRequest
+	if err := decodeAdminJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	request.Alias = strings.TrimSpace(request.Alias)
+	if err := store.ValidateAlias(request.Alias); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	cred, err := credential.ParseImport([]byte(request.Credential))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	account, err := s.store.ImportAccount(r.Context(), request.Alias, cred)
+	if err != nil {
+		writeError(w, http.StatusConflict, "api_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, accountResponse(account))
 }
 
 type oauthStartRequest struct {

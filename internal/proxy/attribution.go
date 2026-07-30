@@ -18,6 +18,9 @@ const (
 	// Captured from the official Claude Desktop / Claude Code 2.1.219 build on 2026-07-30.
 	// This is a compatibility identifier, not a claim that claude-relay is Claude Desktop.
 	observedBillingAttribution = "x-anthropic-billing-header: cc_version=2.1.219.0a7; cc_entrypoint=claude-desktop;"
+	// Sent only by relay-generated account checks, which have no client request
+	// headers to pass through. Captured alongside the billing attribution above.
+	observedClientUserAgent = "claude-cli/2.1.219 (external, claude-desktop, agent-sdk/0.3.219)"
 )
 
 var sessionHeaderNames = []string{

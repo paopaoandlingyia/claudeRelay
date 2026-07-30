@@ -16,10 +16,22 @@ import (
 )
 
 type Account struct {
-	ID      int64
-	Alias   string
-	Enabled bool
+	ID            int64
+	Alias         string
+	Enabled       bool
+	CreatedAt     int64
+	UpdatedAt     int64
+	LastRefreshAt int64
 	credential.Credential
+}
+
+// Cooldown is an active routing exclusion for one account, optionally scoped to
+// a single model. An empty Model means the account is excluded from all models.
+type Cooldown struct {
+	AccountID int64
+	Model     string
+	UntilAt   int64
+	Reason    string
 }
 
 type Store struct {
@@ -65,7 +77,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
 	}
-	if version > 2 {
+	if version > 3 {
 		return fmt.Errorf("database schema version %d is newer than this build supports", version)
 	}
 	statements := []string{
@@ -85,7 +97,8 @@ func (s *Store) initialize(ctx context.Context) error {
 			extra_json TEXT NOT NULL DEFAULT '{}',
 			enabled INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL
+			updated_at INTEGER NOT NULL,
+			last_refresh_at INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS accounts_uuid_idx ON accounts(account_uuid)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS accounts_uuid_unique_idx ON accounts(account_uuid)`,
@@ -116,9 +129,50 @@ func (s *Store) initialize(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, `UPDATE accounts SET enabled=0`); err != nil {
 			return fmt.Errorf("disable accounts during schema migration: %w", err)
 		}
-		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=2`); err != nil {
+	}
+	if version < 3 {
+		// Version 3 records when a refresh-token rotation last succeeded so the
+		// console can distinguish a healthy account from a stale one.
+		if err := s.ensureColumn(ctx, "accounts", "last_refresh_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=3`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
+	}
+	return nil
+}
+
+// ensureColumn adds a column when an older database predates it. The row scan
+// completes before the ALTER statement because the pool holds a single connection.
+func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	present := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("inspect table %s: %w", table, err)
+		}
+		if strings.EqualFold(name, column) {
+			present = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	if present {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, definition)); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
 	}
 	return nil
 }
@@ -243,7 +297,7 @@ func (s *Store) AllAccounts(ctx context.Context) ([]Account, error) {
 	return accounts, rows.Err()
 }
 
-const accountColumns = `a.id,a.alias,a.enabled,a.type,a.access_token,a.refresh_token,a.expires_at,a.email,a.account_uuid,a.device_id,a.extra_json`
+const accountColumns = `a.id,a.alias,a.enabled,a.type,a.access_token,a.refresh_token,a.expires_at,a.email,a.account_uuid,a.device_id,a.extra_json,a.created_at,a.updated_at,a.last_refresh_at`
 
 type scanner interface{ Scan(...any) error }
 
@@ -252,7 +306,8 @@ func scanAccount(row scanner) (Account, error) {
 	var extra string
 	if err := row.Scan(&account.ID, &account.Alias, &account.Enabled, &account.Type,
 		&account.AccessToken, &account.RefreshToken, &account.ExpiresAt, &account.Email,
-		&account.AccountUUID, &account.DeviceID, &extra); err != nil {
+		&account.AccountUUID, &account.DeviceID, &extra,
+		&account.CreatedAt, &account.UpdatedAt, &account.LastRefreshAt); err != nil {
 		return Account{}, fmt.Errorf("scan account: %w", err)
 	}
 	if extra != "" && extra != "null" {
@@ -295,9 +350,110 @@ func (s *Store) SetAccountEnabled(ctx context.Context, alias string, enabled boo
 	return account, err
 }
 
+// DeleteAccount removes an account together with its cooldowns and session
+// bindings. The relay stops being the owner of that refresh-token chain, so a
+// caller must be sure the credential is either revoked or managed elsewhere.
+func (s *Store) DeleteAccount(ctx context.Context, alias string) (Account, error) {
+	account, found, err := s.AccountByAlias(ctx, alias)
+	if err != nil {
+		return Account{}, err
+	}
+	if !found {
+		return Account{}, fmt.Errorf("account %q was not found", alias)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE id=?`, account.ID); err != nil {
+		return Account{}, fmt.Errorf("delete account: %w", err)
+	}
+	return account, nil
+}
+
+// RenameAccount changes the alias used by routing, logs, and the private
+// selection header. Account identity, tokens, and enabled state are preserved.
+func (s *Store) RenameAccount(ctx context.Context, alias, newAlias string) (Account, error) {
+	newAlias = strings.TrimSpace(newAlias)
+	if err := ValidateAlias(newAlias); err != nil {
+		return Account{}, err
+	}
+	account, found, err := s.AccountByAlias(ctx, alias)
+	if err != nil {
+		return Account{}, err
+	}
+	if !found {
+		return Account{}, fmt.Errorf("account %q was not found", alias)
+	}
+	if strings.EqualFold(account.Alias, newAlias) {
+		return account, nil
+	}
+	if _, taken, err := s.AccountByAlias(ctx, newAlias); err != nil {
+		return Account{}, err
+	} else if taken {
+		return Account{}, fmt.Errorf("account alias %q is already in use", newAlias)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE accounts SET alias=?,updated_at=? WHERE id=?`,
+		newAlias, time.Now().Unix(), account.ID); err != nil {
+		return Account{}, fmt.Errorf("rename account: %w", err)
+	}
+	renamed, _, err := s.AccountByID(ctx, account.ID)
+	return renamed, err
+}
+
+// ActiveCooldowns returns every routing exclusion that has not yet expired.
+func (s *Store) ActiveCooldowns(ctx context.Context, now time.Time) ([]Cooldown, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT account_id,model,until_at,reason FROM account_cooldowns
+		WHERE until_at>? ORDER BY until_at DESC`, now.Unix())
+	if err != nil {
+		return nil, fmt.Errorf("list account cooldowns: %w", err)
+	}
+	defer rows.Close()
+	var cooldowns []Cooldown
+	for rows.Next() {
+		var cooldown Cooldown
+		if err := rows.Scan(&cooldown.AccountID, &cooldown.Model, &cooldown.UntilAt, &cooldown.Reason); err != nil {
+			return nil, fmt.Errorf("scan account cooldown: %w", err)
+		}
+		cooldowns = append(cooldowns, cooldown)
+	}
+	return cooldowns, rows.Err()
+}
+
+// ClearCooldowns returns an account to rotation immediately and reports how many
+// exclusions were removed.
+func (s *Store) ClearCooldowns(ctx context.Context, accountID int64) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM account_cooldowns WHERE account_id=?`, accountID)
+	if err != nil {
+		return 0, fmt.Errorf("clear account cooldowns: %w", err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("inspect cleared cooldowns: %w", err)
+	}
+	return removed, nil
+}
+
+// SessionBindingCounts reports how many live sticky bindings each account holds.
+func (s *Store) SessionBindingCounts(ctx context.Context, now time.Time) (map[int64]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT account_id,COUNT(*) FROM session_bindings
+		WHERE expires_at>? GROUP BY account_id`, now.Unix())
+	if err != nil {
+		return nil, fmt.Errorf("count session bindings: %w", err)
+	}
+	defer rows.Close()
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var accountID int64
+		var count int
+		if err := rows.Scan(&accountID, &count); err != nil {
+			return nil, fmt.Errorf("scan session binding count: %w", err)
+		}
+		counts[accountID] = count
+	}
+	return counts, rows.Err()
+}
+
 func (s *Store) UpdateTokens(ctx context.Context, id int64, accessToken, refreshToken, expiresAt string) (Account, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET access_token=?,refresh_token=?,expires_at=?,updated_at=? WHERE id=?`,
-		accessToken, refreshToken, expiresAt, time.Now().Unix(), id)
+	now := time.Now().Unix()
+	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET access_token=?,refresh_token=?,expires_at=?,updated_at=?,last_refresh_at=? WHERE id=?`,
+		accessToken, refreshToken, expiresAt, now, now, id)
 	if err != nil {
 		return Account{}, fmt.Errorf("persist refreshed tokens: %w", err)
 	}

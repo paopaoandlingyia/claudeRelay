@@ -13,7 +13,8 @@ round-robin rotation, or Claude Code prompt injection.
 - Byte-for-byte body pass-through when an official client CCH is present
 - Cache-affinity account selection, one-hour sticky sessions, and one bounded transient failover
 - Disabled-by-default account imports and manual activation
-- Embedded account-management WebUI and PKCE OAuth login
+- Embedded management console with PKCE OAuth login, credential paste-import, and account removal
+- Bounded in-memory request records exposing routing, failover, and cooldown state
 - On-demand rotating OAuth refresh for enabled accounts
 
 The dated protocol conclusions and unresolved questions are centralized in
@@ -63,27 +64,55 @@ $env:CLAUDE_RELAY_ADMIN_API_KEY = "replace-with-a-different-long-random-key"
 Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a URL such as
 `http://127.0.0.1:7890` when upstream traffic must use a local proxy.
 
-## WebUI
+## Console
 
-Open `http://127.0.0.1:8567/` and sign in with the administration API key from the configuration. The
-embedded UI lists accounts, makes activation state explicit, and walks through the server-oriented
-Claude OAuth copy/paste flow. OAuth imports remain disabled until manually enabled.
+Open `http://127.0.0.1:8567/` and sign in with the administration API key from the configuration.
+The console is a single dense screen with three sections:
 
-The UI stores the management key in the current tab's `sessionStorage`; it is not written to the
-server or persistent browser storage. The static login page is public, while every management API
-remains authenticated. Put the service behind an HTTPS reverse proxy before accessing the WebUI
-over a network, because the shared downstream key grants both relay and account-management access.
+- **账号** — every account with its real routing state: enabled, cooling down (with the reason and
+  remaining time), token expiry, last successful refresh, traffic totals, and live sticky bindings.
+  Per-account actions cover enable/disable, connectivity check, forced token refresh, cooldown
+  release, rename, and deletion.
+- **请求** — the recent request records described below, filterable by account and by failures only.
+- **接入** — the relay endpoint, the relay API key, copy-ready Claude Code / PowerShell / curl
+  snippets, and the effective runtime parameters.
+
+It polls every five seconds while the tab is visible, checks `/healthz` for the status indicator,
+and follows the system light/dark preference with a manual override. The management key lives in
+the current tab's `sessionStorage`; it is not written to the server or to persistent browser
+storage. The static login page is public, while every management API remains authenticated.
+
+The console shows the relay API key so a working client configuration can be copied in one step.
+The administration key already outranks the relay key, so this does not widen the trust boundary —
+but it does mean anyone who reaches the console holds both roles. Put the service behind an HTTPS
+reverse proxy before exposing it over a network.
 
 ## Account management
 
 Management endpoints accept only the administration API key and never return access or refresh
-tokens. The relay API key cannot access the WebUI data, OAuth operations, or account activation.
+tokens. The relay API key cannot access console data, OAuth operations, or account activation.
+Every timestamp in an administration response is epoch milliseconds.
 
 ```http
-GET  /admin/v1/accounts
-POST /admin/v1/accounts/{alias}/enable
-POST /admin/v1/accounts/{alias}/disable
+GET    /admin/v1/overview
+GET    /admin/v1/accounts
+POST   /admin/v1/accounts/import
+DELETE /admin/v1/accounts/{alias}
+POST   /admin/v1/accounts/{alias}/enable
+POST   /admin/v1/accounts/{alias}/disable
+POST   /admin/v1/accounts/{alias}/rename
+POST   /admin/v1/accounts/{alias}/refresh
+POST   /admin/v1/accounts/{alias}/cooldown/clear
+POST   /admin/v1/accounts/{alias}/check
 ```
+
+`import` accepts a pasted CLIProxyAPI credential document and behaves exactly like the command-line
+importer, including leaving the account disabled. `check` counts tokens for a trivial prompt to
+prove the account still reaches upstream; it never refreshes, so a disabled account can be verified
+without this relay taking ownership of its refresh-token chain. `refresh` obeys the same ownership
+rules as automatic refresh and is rejected for a disabled account or while the global emergency
+stop is set. `delete` removes the account with its cooldowns and sticky bindings but does not
+revoke the authorization at Anthropic.
 
 Disabled accounts cannot be selected automatically or through `X-Claude-Relay-Account`, and they
 never trigger token refresh. Enabling an account means this relay becomes the sole owner of its
@@ -167,6 +196,21 @@ adds `?beta=true` to the upstream endpoint.
 Each response includes `X-Claude-Relay-Request-ID`. A caller may supply a short ID containing only
 letters, digits, dots, colons, underscores, or hyphens; otherwise the relay generates one. The ID
 appears in request logs for correlation and is not forwarded to Anthropic.
+
+## Request records
+
+```http
+GET /admin/v1/requests?limit=100
+```
+
+The relay keeps the last `request_log_size` requests in a fixed-size in-memory ring, 500 by default.
+Each record holds only metadata: request ID, timestamp, path, model, selected account, why that
+account was selected, status, duration, and the account a request failed over from. Prompts,
+response bodies, headers, and credentials are never recorded, nothing is written to disk, and
+restarting the process clears the history. Set `request_log_size` to `0` to disable it entirely.
+
+A failed attempt counts against the account that failed even when the retry succeeded elsewhere,
+so a rate-limited account is visible in its own totals rather than hidden behind the failover.
 
 ## Legacy CCH research utility
 

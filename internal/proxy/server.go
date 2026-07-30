@@ -17,6 +17,7 @@ import (
 
 	"github.com/local/claude-relay/internal/claudeoauth"
 	"github.com/local/claude-relay/internal/config"
+	"github.com/local/claude-relay/internal/metrics"
 	"github.com/local/claude-relay/internal/store"
 	"github.com/local/claude-relay/internal/webui"
 )
@@ -35,6 +36,8 @@ type Server struct {
 	client     *http.Client
 	oauth      *claudeoauth.Client
 	tokens     *tokenManager
+	metrics    *metrics.Recorder
+	startedAt  time.Time
 }
 
 func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
@@ -55,12 +58,14 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	}
 	oauthClient := claudeoauth.New(&http.Client{Transport: transport, Timeout: 60 * time.Second})
 	server := &Server{
-		cfg:      cfg,
-		store:    database,
-		selector: accountSelector{store: database},
-		upstream: upstream,
-		client:   &http.Client{Transport: transport},
-		oauth:    oauthClient,
+		cfg:       cfg,
+		store:     database,
+		selector:  accountSelector{store: database},
+		upstream:  upstream,
+		client:    &http.Client{Transport: transport},
+		oauth:     oauthClient,
+		metrics:   metrics.New(cfg.RequestLogSize),
+		startedAt: time.Now(),
 	}
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
 	server.httpServer = &http.Server{
@@ -102,9 +107,17 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /v1/messages", s.forward)
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.forward)
+	mux.HandleFunc("GET /admin/v1/overview", s.overview)
+	mux.HandleFunc("GET /admin/v1/requests", s.listRequests)
 	mux.HandleFunc("GET /admin/v1/accounts", s.listAccounts)
+	mux.HandleFunc("POST /admin/v1/accounts/import", s.importAccount)
+	mux.HandleFunc("DELETE /admin/v1/accounts/{alias}", s.deleteAccount)
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/enable", func(w http.ResponseWriter, r *http.Request) { s.setAccountEnabled(w, r, true) })
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/disable", func(w http.ResponseWriter, r *http.Request) { s.setAccountEnabled(w, r, false) })
+	mux.HandleFunc("POST /admin/v1/accounts/{alias}/rename", s.renameAccount)
+	mux.HandleFunc("POST /admin/v1/accounts/{alias}/refresh", s.refreshAccount)
+	mux.HandleFunc("POST /admin/v1/accounts/{alias}/cooldown/clear", s.clearAccountCooldown)
+	mux.HandleFunc("POST /admin/v1/accounts/{alias}/check", s.checkAccount)
 	mux.HandleFunc("POST /admin/v1/oauth/claude/start", s.startClaudeOAuth)
 	mux.HandleFunc("POST /admin/v1/oauth/claude/exchange", s.exchangeClaudeOAuth)
 	return withRequestID(s.authenticate(mux))
@@ -142,8 +155,20 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	requestID := requestIDFromContext(incoming.Context())
+	started := time.Now()
+	event := metrics.Event{RequestID: requestID, Time: started, Path: incoming.URL.Path}
+	defer func() {
+		event.Duration = time.Since(started)
+		s.metrics.Record(event)
+	}()
+	fail := func(status int, errorType, message string) {
+		event.Status = status
+		event.Error = message
+		writeError(w, status, errorType, message)
+	}
+
 	if _, ok := allowedPaths[incoming.URL.Path]; !ok {
-		writeError(w, http.StatusNotFound, "not_found_error", "unsupported endpoint")
+		fail(http.StatusNotFound, "not_found_error", "unsupported endpoint")
 		return
 	}
 	limited := http.MaxBytesReader(w, incoming.Body, s.cfg.MaxRequestBytes)
@@ -154,43 +179,46 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body is too large")
+			fail(http.StatusRequestEntityTooLarge, "invalid_request_error", "request body is too large")
 			return
 		}
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
+		fail(http.StatusBadRequest, "invalid_request_error", "failed to read request body")
 		return
 	}
 	includeMetadata := incoming.URL.Path == "/v1/messages"
 	route, routeErr := deriveRequestRoute(body, incoming.Header, s.cfg.RelayAPIKey)
 	if routeErr != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", routeErr.Error())
+		fail(http.StatusBadRequest, "invalid_request_error", routeErr.Error())
 		return
 	}
+	event.Model = route.Model
 	forcedAlias := incoming.Header.Get(accountHeader)
 	excluded := make(map[int64]bool)
-	started := time.Now()
 	var response *http.Response
 	var selected selection
 	for attempt := 0; attempt < 2; attempt++ {
 		selected, err = s.selector.selectAccount(incoming.Context(), route, forcedAlias, excluded)
 		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "api_error", err.Error())
+			fail(http.StatusServiceUnavailable, "api_error", err.Error())
 			return
 		}
+		event.Account = selected.Account.Alias
+		event.Selection = selected.Source
 		freshAccount, refreshErr := s.tokens.ensureFresh(incoming.Context(), selected.Account)
 		if refreshErr != nil {
 			_ = s.store.Cooldown(incoming.Context(), selected.Account.ID, "", time.Now().Add(time.Minute), "oauth_refresh_failed")
 			if selected.Pinned || strings.TrimSpace(forcedAlias) != "" || attempt == 1 {
-				writeError(w, http.StatusServiceUnavailable, "authentication_error", refreshErr.Error())
+				fail(http.StatusServiceUnavailable, "authentication_error", refreshErr.Error())
 				return
 			}
 			excluded[selected.Account.ID] = true
+			event.Failover = &metrics.Failover{Account: selected.Account.Alias, Error: refreshErr.Error()}
 			continue
 		}
 		selected.Account = freshAccount
 		transformedBody, changed, transformErr := addSubscriptionAttribution(body, incoming.Header, selected.Account.Credential, includeMetadata, route.ConversationKey)
 		if transformErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request_error", transformErr.Error())
+			fail(http.StatusBadRequest, "invalid_request_error", transformErr.Error())
 			return
 		}
 		if changed {
@@ -207,21 +235,27 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		if selected.Pinned || strings.TrimSpace(forcedAlias) != "" || attempt == 1 {
 			break
 		}
+		failover := metrics.Failover{Account: selected.Account.Alias}
 		if response != nil {
+			failover.Status = response.StatusCode
 			_ = response.Body.Close()
 			response = nil
+		} else if err != nil {
+			failover.Error = err.Error()
 		}
+		event.Failover = &failover
 		excluded[selected.Account.ID] = true
 	}
 	if err != nil {
 		slog.Error("upstream request failed", "request_id", requestID, "path", incoming.URL.Path, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
-		writeError(w, http.StatusBadGateway, "api_error", "upstream request failed")
+		fail(http.StatusBadGateway, "api_error", "upstream request failed")
 		return
 	}
 	if response == nil {
-		writeError(w, http.StatusBadGateway, "api_error", "upstream request failed")
+		fail(http.StatusBadGateway, "api_error", "upstream request failed")
 		return
 	}
+	event.Status = response.StatusCode
 	defer func() {
 		if err := response.Body.Close(); err != nil {
 			slog.Warn("close upstream response", "request_id", requestID, "error", err)
@@ -234,6 +268,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	w.WriteHeader(response.StatusCode)
 	if _, err := io.Copy(flushWriter{ResponseWriter: w}, response.Body); err != nil {
 		slog.Warn("relay response interrupted", "request_id", requestID, "path", incoming.URL.Path, "status", response.StatusCode, "error", err)
+		event.Error = "response interrupted"
 		return
 	}
 	if response.StatusCode < 400 {

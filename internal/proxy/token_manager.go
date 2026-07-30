@@ -19,6 +19,32 @@ type tokenManager struct {
 	locks       sync.Map
 }
 
+// refreshNow rotates an account's tokens regardless of how much lifetime the
+// current access token has left. Callers are responsible for enforcing the
+// ownership rules that ensureFresh checks inline.
+func (m *tokenManager) refreshNow(ctx context.Context, account store.Account) (store.Account, error) {
+	lockValue, _ := m.locks.LoadOrStore(account.ID, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	current, found, err := m.store.AccountByID(ctx, account.ID)
+	if err != nil {
+		return store.Account{}, err
+	}
+	if !found {
+		return store.Account{}, fmt.Errorf("account %q was removed before token refresh", account.Alias)
+	}
+	if current.RefreshToken == "" {
+		return store.Account{}, fmt.Errorf("account %q cannot refresh because its refresh token is missing", current.Alias)
+	}
+	refreshed, err := m.oauth.Refresh(ctx, current.RefreshToken)
+	if err != nil {
+		return store.Account{}, fmt.Errorf("refresh account %q: %w", current.Alias, err)
+	}
+	return m.store.UpdateTokens(ctx, current.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt.Format(time.RFC3339))
+}
+
 func (m *tokenManager) ensureFresh(ctx context.Context, selected store.Account) (store.Account, error) {
 	if selected.ExpiresAt == "" {
 		return selected, nil

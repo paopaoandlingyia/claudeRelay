@@ -6,5 +6,6 @@
   "upstream_base_url": "https://api.anthropic.com",
   "upstream_proxy": "",
   "max_request_bytes": 33554432,
-  "auto_refresh_enabled": true
+  "auto_refresh_enabled": true,
+  "request_log_size": 500
 }

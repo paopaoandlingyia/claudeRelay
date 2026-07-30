@@ -87,3 +87,44 @@ If horizontal replicas become a demonstrated requirement, persistence and refres
 be redesigned together. A durable database such as PostgreSQL would own accounts and OAuth token
 rotation; Redis could then be considered only for short-lived routing state and coordination. It
 must not be added independently as a partial multi-instance workaround.
+
+## 2026-07-31: the console reports routing state, not just stored state
+
+The first WebUI only rendered what the `accounts` table stores, so `enabled` was presented as if it
+meant "receiving traffic". It does not: an enabled account can be excluded by an active cooldown,
+and an account holding sticky bindings behaves differently from an idle one. The console now reads
+the live routing inputs — cooldowns, sticky binding counts, and token expiry — and derives a single
+status per account. Operator actions cover the full lifecycle that previously required SQLite or
+shell access: paste-import, rename, delete, forced refresh, cooldown release, and a connectivity
+check.
+
+Two ownership rules stay enforced on the server rather than in the interface. A forced refresh
+requires an enabled account and an active global refresh switch, because refreshing is exactly what
+account activation grants. A connectivity check never refreshes, so a disabled account can be
+verified without this relay taking over its refresh-token chain.
+
+Deleting an account removes its cooldowns and sticky bindings through the existing foreign keys. It
+does not revoke the Anthropic authorization, and the console says so at the confirmation step.
+
+Schema version 3 adds `accounts.last_refresh_at` so a healthy account is distinguishable from one
+whose refresh chain silently stopped rotating. The upgrade only adds a column and changes no
+account state.
+
+## 2026-07-31: request records are bounded, in-memory, and metadata only
+
+Routing was previously unobservable: cache affinity, sticky sessions, and bounded failover decided
+which subscription served a request, and nothing surfaced those decisions. A fixed-size ring of
+request records now backs the console, holding request ID, timestamp, path, model, selected account,
+selection source, status, duration, and the account a request failed over from.
+
+The ring stores no prompts, response bodies, headers, or credentials, is never persisted, and is
+cleared on restart. `request_log_size` bounds it and `0` disables it, so the feature cannot grow
+into an unbounded local log. Container logs remain the retained record; this is a live view.
+
+A failed attempt is attributed to the account that failed even when the retry succeeded on another
+account. Without that, the account being rate-limited would be invisible in every per-account total
+while a healthy account absorbed its traffic.
+
+Response bodies are still not inspected. Reading per-account token usage would require tapping the
+streaming pass-through, which conflicts with the byte-for-byte forwarding guarantee, so usage
+accounting is deferred rather than approximated.

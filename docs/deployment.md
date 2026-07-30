@@ -110,6 +110,12 @@ request-related logs. Callers may supply a value of at most 64 characters using 
 dots, colons, underscores, and hyphens; invalid or missing values are replaced with a random ID.
 Relay request IDs are deliberately removed before forwarding upstream.
 
+The console shows the same information without shell access, reading the last
+`CLAUDE_RELAY_REQUEST_LOG_SIZE` requests from an in-memory ring (500 by default, `0` disables it).
+That ring holds the same metadata fields as the container log, is never written to the volume, and
+is cleared whenever the container restarts. It is a live operations view, not an audit trail —
+container logs remain the retained record.
+
 ## Move the existing database
 
 Fully stop the native `claude-relay.exe` before copying SQLite. From the repository directory,

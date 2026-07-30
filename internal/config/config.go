@@ -9,7 +9,11 @@ import (
 	"strings"
 )
 
-const defaultMaxRequestBytes int64 = 32 << 20
+const (
+	defaultMaxRequestBytes int64 = 32 << 20
+	defaultRequestLogSize        = 500
+	maxRequestLogSize            = 10000
+)
 
 type Config struct {
 	Listen          string `json:"listen"`
@@ -21,6 +25,7 @@ type Config struct {
 	UpstreamProxy   string `json:"upstream_proxy"`
 	MaxRequestBytes int64  `json:"max_request_bytes"`
 	AutoRefresh     bool   `json:"auto_refresh_enabled"`
+	RequestLogSize  int    `json:"request_log_size"`
 }
 
 func Load(path string) (Config, error) {
@@ -29,7 +34,7 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 
-	cfg := Config{AutoRefresh: true}
+	cfg := Config{AutoRefresh: true, RequestLogSize: defaultRequestLogSize}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
@@ -71,6 +76,13 @@ func applyEnvironment(cfg *Config) error {
 		}
 		cfg.MaxRequestBytes = parsed
 	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_REQUEST_LOG_SIZE")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("parse CLAUDE_RELAY_REQUEST_LOG_SIZE: %w", err)
+		}
+		cfg.RequestLogSize = parsed
+	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_AUTO_REFRESH_ENABLED")); value != "" {
 		cfg.AutoRefresh = strings.EqualFold(value, "true") || value == "1"
 	}
@@ -106,6 +118,9 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.MaxRequestBytes < 1 {
 		return fmt.Errorf("config max_request_bytes must be positive")
+	}
+	if cfg.RequestLogSize < 0 || cfg.RequestLogSize > maxRequestLogSize {
+		return fmt.Errorf("config request_log_size must be between 0 and %d", maxRequestLogSize)
 	}
 	parsed, err := url.Parse(cfg.UpstreamBaseURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
