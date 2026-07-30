@@ -51,3 +51,16 @@ SQLite in WAL mode is the single-instance persistence boundary. The database hol
 and must live on a private server volume; the service requests owner-only file permissions on
 platforms that support POSIX modes. Redis and horizontal multi-instance coordination are deferred
 until there is a demonstrated need.
+
+## 2026-07-30: single-container deployment boundary
+
+The supported production topology is one relay process backed by one private SQLite volume. Docker
+Compose is a packaging and lifecycle layer, not a horizontal scaling mechanism. The container runs
+without root privileges or Linux capabilities, exposes a local health check, and publishes port
+8567 on the host loopback interface by default. Public access belongs behind an HTTPS reverse
+proxy; the application does not duplicate TLS certificate management.
+
+The Docker build context is allowlisted to Go source and the non-secret container configuration so
+local databases, OAuth credentials, captures, and developer configuration cannot enter the image.
+Runtime secrets are supplied through environment variables. Windows tray integration is deferred
+because it would add a second platform-specific lifecycle without improving the server-first goal.

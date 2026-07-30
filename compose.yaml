@@ -1,0 +1,29 @@
+services:
+  claude-relay:
+    build:
+      context: .
+    image: claude-relay:local
+    restart: unless-stopped
+    init: true
+    environment:
+      CLAUDE_RELAY_API_KEY: ${CLAUDE_RELAY_API_KEY:?set CLAUDE_RELAY_API_KEY in .env}
+      CLAUDE_RELAY_UPSTREAM_PROXY: ${CLAUDE_RELAY_UPSTREAM_PROXY:-}
+      CLAUDE_RELAY_MAX_REQUEST_BYTES: ${CLAUDE_RELAY_MAX_REQUEST_BYTES:-33554432}
+      CLAUDE_RELAY_AUTO_REFRESH_ENABLED: ${CLAUDE_RELAY_AUTO_REFRESH_ENABLED:-true}
+    ports:
+      - "${CLAUDE_RELAY_BIND_ADDRESS:-127.0.0.1}:8567:8567"
+    volumes:
+      - claude-relay-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    stop_grace_period: 20s
+
+volumes:
+  claude-relay-data:
+    name: claude-relay-data

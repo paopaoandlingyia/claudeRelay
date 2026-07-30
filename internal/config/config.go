@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -31,14 +32,16 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
-	applyEnvironment(&cfg)
+	if err := applyEnvironment(&cfg); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-func applyEnvironment(cfg *Config) {
+func applyEnvironment(cfg *Config) error {
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_LISTEN")); value != "" {
 		cfg.Listen = value
 	}
@@ -54,9 +57,20 @@ func applyEnvironment(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_UPSTREAM_BASE_URL")); value != "" {
 		cfg.UpstreamBaseURL = value
 	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_UPSTREAM_PROXY")); value != "" {
+		cfg.UpstreamProxy = value
+	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_MAX_REQUEST_BYTES")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("parse CLAUDE_RELAY_MAX_REQUEST_BYTES: %w", err)
+		}
+		cfg.MaxRequestBytes = parsed
+	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_AUTO_REFRESH_ENABLED")); value != "" {
 		cfg.AutoRefresh = strings.EqualFold(value, "true") || value == "1"
 	}
+	return nil
 }
 
 func (cfg *Config) validate() error {

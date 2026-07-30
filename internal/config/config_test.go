@@ -44,3 +44,42 @@ func TestAutoRefreshDefaultsOnAndCanBeDisabled(t *testing.T) {
 		t.Fatal("explicit automatic refresh disable was ignored")
 	}
 }
+
+func TestContainerEnvironmentOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"listen":"127.0.0.1:8567","api_key":"file-key","database_file":"relay.db","upstream_base_url":"https://api.anthropic.com"}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_RELAY_LISTEN", "0.0.0.0:8567")
+	t.Setenv("CLAUDE_RELAY_API_KEY", "environment-key")
+	t.Setenv("CLAUDE_RELAY_DATABASE_FILE", "/data/claude-relay.db")
+	t.Setenv("CLAUDE_RELAY_UPSTREAM_PROXY", "http://proxy:7890")
+	t.Setenv("CLAUDE_RELAY_MAX_REQUEST_BYTES", "1048576")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "0.0.0.0:8567" || cfg.APIKey != "environment-key" {
+		t.Fatalf("server environment overrides = listen %q key %q", cfg.Listen, cfg.APIKey)
+	}
+	if cfg.DatabaseFile != "/data/claude-relay.db" || cfg.UpstreamProxy != "http://proxy:7890" {
+		t.Fatalf("runtime environment overrides = database %q proxy %q", cfg.DatabaseFile, cfg.UpstreamProxy)
+	}
+	if cfg.MaxRequestBytes != 1048576 {
+		t.Fatalf("max request bytes = %d", cfg.MaxRequestBytes)
+	}
+}
+
+func TestInvalidEnvironmentRequestLimitFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"listen":"127.0.0.1:8567","api_key":"key","database_file":"relay.db","upstream_base_url":"https://api.anthropic.com"}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_RELAY_MAX_REQUEST_BYTES", "not-a-number")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() accepted an invalid environment request limit")
+	}
+}
