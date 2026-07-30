@@ -92,6 +92,24 @@ The container runs as UID/GID `10001`, drops Linux capabilities, uses a read-onl
 and writes only to `/data` and a small temporary filesystem. The health check calls `/healthz`
 inside the container and does not require the API key.
 
+## Logs and request tracing
+
+Follow the service log with:
+
+```powershell
+docker compose logs -f --tail=100 claude-relay
+```
+
+Compose uses Docker's `json-file` driver with three 10 MiB files, limiting retained container logs
+to approximately 30 MiB. Logs contain paths, selected account aliases, routing sources, upstream
+status, duration, and errors. They do not contain prompts, request bodies, API/OAuth tokens,
+metadata identities, email addresses, or usage token counts.
+
+Every response carries `X-Claude-Relay-Request-ID`, and the same value appears as `request_id` in
+request-related logs. Callers may supply a value of at most 64 characters using letters, digits,
+dots, colons, underscores, and hyphens; invalid or missing values are replaced with a random ID.
+Relay request IDs are deliberately removed before forwarding upstream.
+
 ## Move the existing database
 
 Fully stop the native `claude-relay.exe` before copying SQLite. From the repository directory,

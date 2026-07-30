@@ -107,7 +107,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/disable", func(w http.ResponseWriter, r *http.Request) { s.setAccountEnabled(w, r, false) })
 	mux.HandleFunc("POST /admin/v1/oauth/claude/start", s.startClaudeOAuth)
 	mux.HandleFunc("POST /admin/v1/oauth/claude/exchange", s.exchangeClaudeOAuth)
-	return s.authenticate(mux)
+	return withRequestID(s.authenticate(mux))
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
@@ -141,6 +141,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
+	requestID := requestIDFromContext(incoming.Context())
 	if _, ok := allowedPaths[incoming.URL.Path]; !ok {
 		writeError(w, http.StatusNotFound, "not_found_error", "unsupported endpoint")
 		return
@@ -148,7 +149,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	limited := http.MaxBytesReader(w, incoming.Body, s.cfg.MaxRequestBytes)
 	body, err := io.ReadAll(limited)
 	if closeErr := limited.Close(); closeErr != nil {
-		slog.Warn("close incoming request", "error", closeErr)
+		slog.Warn("close incoming request", "request_id", requestID, "error", closeErr)
 	}
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
@@ -193,7 +194,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			return
 		}
 		if changed {
-			slog.Info("added subscription attribution", "path", incoming.URL.Path, "account", selected.Account.Alias)
+			slog.Info("added subscription attribution", "request_id", requestID, "path", incoming.URL.Path, "account", selected.Account.Alias)
 		}
 		response, err = s.doUpstream(incoming, transformedBody, selected.Account.AccessToken)
 		if err == nil && !retryableStatus(response.StatusCode) {
@@ -213,7 +214,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		excluded[selected.Account.ID] = true
 	}
 	if err != nil {
-		slog.Error("upstream request failed", "path", incoming.URL.Path, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
+		slog.Error("upstream request failed", "request_id", requestID, "path", incoming.URL.Path, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
 		writeError(w, http.StatusBadGateway, "api_error", "upstream request failed")
 		return
 	}
@@ -223,23 +224,24 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	}
 	defer func() {
 		if err := response.Body.Close(); err != nil {
-			slog.Warn("close upstream response", "error", err)
+			slog.Warn("close upstream response", "request_id", requestID, "error", err)
 		}
 	}()
 
 	copyResponseHeaders(w.Header(), response.Header)
+	w.Header().Set(requestIDHeader, requestID)
 	w.Header().Set("X-Claude-Relay-Account", selected.Account.Alias)
 	w.WriteHeader(response.StatusCode)
 	if _, err := io.Copy(flushWriter{ResponseWriter: w}, response.Body); err != nil {
-		slog.Warn("relay response interrupted", "path", incoming.URL.Path, "status", response.StatusCode, "error", err)
+		slog.Warn("relay response interrupted", "request_id", requestID, "path", incoming.URL.Path, "status", response.StatusCode, "error", err)
 		return
 	}
 	if response.StatusCode < 400 {
 		if bindErr := s.store.Bind(incoming.Context(), route.ConversationKey, selected.Account.ID, stickySessionTTL); bindErr != nil {
-			slog.Warn("persist session binding", "error", bindErr)
+			slog.Warn("persist session binding", "request_id", requestID, "error", bindErr)
 		}
 	}
-	slog.Info("request completed", "path", incoming.URL.Path, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
+	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
 }
 
 func (s *Server) doUpstream(incoming *http.Request, body []byte, accessToken string) (*http.Response, error) {

@@ -164,6 +164,10 @@ The relay supplies `anthropic-version: 2023-06-01` and `content-type: applicatio
 the client omits them. It replaces downstream authentication with the imported OAuth token and
 adds `?beta=true` to the upstream endpoint.
 
+Each response includes `X-Claude-Relay-Request-ID`. A caller may supply a short ID containing only
+letters, digits, dots, colons, underscores, or hyphens; otherwise the relay generates one. The ID
+appears in request logs for correlation and is not forwarded to Anthropic.
+
 ## Legacy CCH research utility
 
 The offline `sign-cch` command retains the old 2.1.215-era candidate algorithm for reproducibility.

@@ -75,3 +75,15 @@ Neither key grants the other role, and configuration rejects identical values.
 This remains a small private deployment rather than a user/role system. There is one key per role,
 no billing identity, and no per-caller quota. Splitting the keys prevents an API consumer from
 taking ownership of OAuth refresh tokens without introducing a general access-control platform.
+
+## 2026-07-31: SQLite remains the single-instance state store
+
+Redis is not part of the supported single-server topology. Adding it would introduce another
+authenticated service, backup policy, expiry model, and consistency boundary without removing the
+need for durable OAuth credential storage. SQLite in WAL mode already covers the current account,
+cooldown, and sticky-binding workload with one private volume.
+
+If horizontal replicas become a demonstrated requirement, persistence and refresh ownership must
+be redesigned together. A durable database such as PostgreSQL would own accounts and OAuth token
+rotation; Redis could then be considered only for short-lived routing state and coordination. It
+must not be added independently as a partial multi-instance workaround.
