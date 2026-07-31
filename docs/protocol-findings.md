@@ -11,6 +11,8 @@ available model generation changes.
 - **Capture:** observed in an exact or visually inspected official-client request.
 - **Acceptance test:** changed one request field and recorded the upstream response.
 - **Binary inspection:** observed in the official packaged Claude Code executable.
+- **Source inspection:** observed in current third-party client source but not yet confirmed by our
+  own live request.
 - **Inference:** best current explanation, not an Anthropic contract.
 
 ## Stable native API behavior
@@ -140,6 +142,22 @@ For `/v1/messages/count_tokens`, the same system normalization is applied so its
 the billing block that the corresponding Messages request would send. Metadata is not added because
 the count-tokens schema rejects it, and metadata does not contribute prompt tokens.
 
+## OAuth subscription usage surface
+
+- **Source inspection:** the current CLIProxyAPI Management Center requests
+  `GET /api/oauth/usage` with the account bearer token and
+  `anthropic-beta: oauth-2025-04-20`. It separately requests `GET /api/oauth/profile` for the plan
+  label. These are private OAuth surfaces, not documented public Anthropic APIs.
+- The observed usage schema has optional named windows: `five_hour`, `seven_day`,
+  `seven_day_oauth_apps`, `seven_day_opus`, `seven_day_sonnet`, `seven_day_cowork`, and the internal
+  `iguana_necktie` field used for Fable. Each named window carries utilization and an optional reset
+  time. `extra_usage` may carry its enabled state, monthly limit, used credits, and utilization.
+- **Current policy:** expose only fields actually returned. Absence of a weekly or model-specific
+  window is not interpreted as either zero capacity or unlimited capacity. Profile failure does not
+  invalidate a successful usage response.
+- The relay keeps successful readings in memory for two minutes and never uses them for routing,
+  billing, cooldowns, or account activation.
+
 ## Deferred questions
 
 - Derive and independently verify the post-2.1.215 CCH algorithm from multiple exact raw captures.
@@ -148,3 +166,5 @@ the count-tokens schema rejects it, and metadata does not contribute prompt toke
 - Verify subscription-side usage classification in addition to HTTP success.
 - Revisit the captured billing version constant when the official client changes.
 - Decide whether to add native Anthropic count-token routing to the New API deployment.
+- Confirm the private usage/profile response shapes against a live subscription and recheck them
+  whenever the management UI or Anthropic client changes.

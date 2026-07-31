@@ -37,6 +37,7 @@ type Server struct {
 	oauth      *claudeoauth.Client
 	tokens     *tokenManager
 	metrics    *metrics.Recorder
+	usage      *accountUsageManager
 	startedAt  time.Time
 }
 
@@ -68,6 +69,7 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 		startedAt: time.Now(),
 	}
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
+	server.usage = newAccountUsageManager(database, server.tokens, server.client, upstream)
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.routes(),
@@ -119,6 +121,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/refresh", s.refreshAccount)
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/cooldown/clear", s.clearAccountCooldown)
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/check", s.checkAccount)
+	mux.HandleFunc("GET /admin/v1/accounts/{alias}/usage", func(w http.ResponseWriter, r *http.Request) { s.accountUsage(w, r, false) })
+	mux.HandleFunc("POST /admin/v1/accounts/{alias}/usage/refresh", func(w http.ResponseWriter, r *http.Request) { s.accountUsage(w, r, true) })
 	mux.HandleFunc("POST /admin/v1/oauth/claude/start", s.startClaudeOAuth)
 	mux.HandleFunc("POST /admin/v1/oauth/claude/exchange", s.exchangeClaudeOAuth)
 	return withRequestID(s.securityHeaders(s.authenticate(mux)))

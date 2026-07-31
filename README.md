@@ -73,8 +73,9 @@ The console is a single dense screen with three sections:
 
 - **账号** — every account with its pool and real routing state: enabled, cooling down (with the reason and
   remaining time), token expiry, last successful refresh, traffic totals, and live sticky bindings.
-  Per-account actions cover enable/disable, connectivity check, forced token refresh, cooldown
-  release, rename, and deletion.
+  The table also reads the subscription's available five-hour and optional weekly/model-specific
+  OAuth usage windows. Per-account actions cover usage refresh, enable/disable, connectivity check,
+  forced token refresh, cooldown release, rename, and deletion.
 - **请求** — the recent request records described below, filterable by account and by failures only.
 - **接入** — the relay endpoint, both ingress API keys, copy-ready Claude Code / PowerShell / curl
   snippets, and the effective runtime parameters.
@@ -107,6 +108,8 @@ POST   /admin/v1/accounts/{alias}/pool
 POST   /admin/v1/accounts/{alias}/refresh
 POST   /admin/v1/accounts/{alias}/cooldown/clear
 POST   /admin/v1/accounts/{alias}/check
+GET    /admin/v1/accounts/{alias}/usage
+POST   /admin/v1/accounts/{alias}/usage/refresh
 ```
 
 `import` accepts a pasted CLIProxyAPI credential document and leaves the account disabled. It
@@ -117,6 +120,14 @@ without this relay taking ownership of its refresh-token chain. `refresh` obeys 
 rules as automatic refresh and is rejected for a disabled account or while the global emergency
 stop is set. `delete` removes the account with its cooldowns and sticky bindings but does not
 revoke the authorization at Anthropic.
+
+The usage endpoint reads Anthropic's private OAuth usage surface and returns only windows actually
+present in the upstream response. A missing weekly or model-specific limit is omitted rather than
+invented as zero or unlimited. Successful readings are cached in memory for two minutes; the
+refresh endpoint bypasses that cache. Profile lookup is optional, so an unavailable plan label does
+not hide valid quota windows. Enabled accounts follow the normal token-refresh ownership rules,
+while viewing a disabled account never rotates its refresh token. This is current-state observation,
+not request billing or historical usage accounting.
 
 Disabled accounts cannot be selected automatically or through `X-Claude-Relay-Account`, and they
 never trigger token refresh. Enabling an account means this relay becomes the sole owner of its

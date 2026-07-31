@@ -3,11 +3,16 @@
 const $ = (id) => document.getElementById(id);
 const POLL_INTERVAL = 5000;
 const REQUEST_LIMIT = 200;
+const USAGE_REFRESH_INTERVAL = 120_000;
+const USAGE_RETRY_INTERVAL = 120_000;
 
 const state = {
   apiKey: sessionStorage.getItem("claudeRelayAdminKey") || "",
   overview: null,
   accounts: [],
+  accountUsage: {},
+  usageLoading: new Set(),
+  usageAttemptedAt: {},
   requests: [],
   autoRefreshEnabled: true,
   panel: "accounts",
@@ -61,6 +66,43 @@ async function loadRequests() {
   state.requests = Array.isArray(payload.requests) ? payload.requests : [];
 }
 
+async function loadAccountUsage(account, { force = false, notify = false } = {}) {
+  const alias = account.alias;
+  if (!alias || state.usageLoading.has(alias)) return false;
+  state.usageLoading.add(alias);
+  state.usageAttemptedAt[alias] = Date.now();
+  renderAccounts();
+  try {
+    const path = `/admin/v1/accounts/${encodeURIComponent(alias)}/usage${force ? "/refresh" : ""}`;
+    const usage = await api(path, force ? { method: "POST" } : {});
+    state.accountUsage[alias] = { status: "success", ...usage, refresh_error: "" };
+    if (notify) showToast(`${alias} 的订阅额度已刷新`);
+    return true;
+  } catch (error) {
+    const previous = state.accountUsage[alias];
+    state.accountUsage[alias] = previous?.status === "success"
+      ? { ...previous, refresh_error: error.message }
+      : { status: "error", error: error.message };
+    if (notify) showToast(error.message, true);
+    return false;
+  } finally {
+    state.usageLoading.delete(alias);
+    renderAccounts();
+  }
+}
+
+function refreshStaleAccountUsage() {
+  const now = Date.now();
+  for (const account of state.accounts) {
+    const usage = state.accountUsage[account.alias];
+    const attemptedAt = state.usageAttemptedAt[account.alias] || 0;
+    const interval = usage?.status === "success" ? USAGE_REFRESH_INTERVAL : USAGE_RETRY_INTERVAL;
+    if (!state.usageLoading.has(account.alias) && now - attemptedAt >= interval) {
+      void loadAccountUsage(account);
+    }
+  }
+}
+
 async function refreshAll({ notify = false, includeRequests = null } = {}) {
   if (inFlight) return;
   inFlight = true;
@@ -71,6 +113,7 @@ async function refreshAll({ notify = false, includeRequests = null } = {}) {
     const [healthy] = await Promise.all([probeHealth(), ...tasks]);
     renderHealth(healthy);
     render();
+    refreshStaleAccountUsage();
     if (notify) showToast("已刷新");
   } catch (error) {
     if (state.apiKey) showToast(error.message, true);
@@ -212,6 +255,8 @@ function accountRow(account) {
       ? (account.last_refresh_at ? `上次刷新 ${formatRelative(account.last_refresh_at)}` : "可自动续期，尚未刷新过")
       : "无刷新令牌"),
   )));
+
+  row.appendChild(cell(accountUsageSummary(account), "quota-cell"));
 
   const stats = account.stats || {};
   row.appendChild(cell(stack(
@@ -357,6 +402,67 @@ function accountPoolView(pool) {
   return { label: "compatible", css: "badge-off badge-plain", note: "普通兼容入口" };
 }
 
+const USAGE_WINDOW_LABELS = {
+  five_hour: "5 小时",
+  seven_day: "7 天",
+  seven_day_oauth_apps: "OAuth 应用 7 天",
+  seven_day_opus: "Opus 7 天",
+  seven_day_sonnet: "Sonnet 7 天",
+  seven_day_cowork: "Cowork 7 天",
+  seven_day_fable: "Fable 7 天",
+};
+
+function accountUsageSummary(account) {
+  const usage = state.accountUsage[account.alias];
+  const loading = state.usageLoading.has(account.alias);
+  if (!usage) return stack(small(loading ? "正在读取…" : "尚未读取"));
+  if (usage.status === "error") {
+    const content = stack(badge("读取失败", "badge-bad"), small(usage.error || "未知错误"));
+    content.title = usage.error || "";
+    return content;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "quota-list";
+  if (usage.plan_type) {
+    const plan = document.createElement("small");
+    plan.className = "quota-plan";
+    plan.textContent = `套餐 ${usage.plan_type.toUpperCase()}`;
+    wrapper.appendChild(plan);
+  }
+  const windows = Array.isArray(usage.windows) ? usage.windows : [];
+  for (const window of windows) wrapper.appendChild(quotaMeter(window));
+  if (windows.length === 0) wrapper.appendChild(small("上游未返回额度窗口"));
+  const fetched = document.createElement("small");
+  fetched.className = "quota-fetched";
+  fetched.textContent = loading ? "正在刷新…" : `更新于 ${formatRelative(usage.fetched_at)}`;
+  if (usage.refresh_error) fetched.title = `最近刷新失败：${usage.refresh_error}`;
+  wrapper.appendChild(fetched);
+  return wrapper;
+}
+
+function quotaMeter(window) {
+  const remaining = Math.max(0, Math.min(100, Number(window.remaining_percent) || 0));
+  const wrapper = document.createElement("div");
+  wrapper.className = "quota-mini";
+  wrapper.title = formatUsageReset(window.resets_at);
+  const heading = document.createElement("div");
+  heading.className = "quota-mini-head";
+  const label = document.createElement("span");
+  label.textContent = USAGE_WINDOW_LABELS[window.id] || window.id;
+  const percent = document.createElement("strong");
+  percent.textContent = `${Math.round(remaining)}%`;
+  heading.append(label, percent);
+  const track = document.createElement("div");
+  track.className = "quota-track";
+  const fill = document.createElement("span");
+  fill.className = remaining <= 20 ? "quota-low" : remaining <= 50 ? "quota-mid" : "";
+  fill.style.width = `${remaining}%`;
+  track.appendChild(fill);
+  wrapper.append(heading, track);
+  return wrapper;
+}
+
 function evidenceSummary(evidence) {
   if (!evidence) return "无证据";
   const checks = [
@@ -454,20 +560,44 @@ function openActions(account) {
   $("actionsTitle").textContent = account.alias;
 
   const detail = $("actionsDetail");
-  detail.replaceChildren(
+  const detailRows = [
     detailRow("账号池", account.pool || "compatible"),
     detailRow("账号身份", account.account_uuid || "—"),
     detailRow("邮箱", account.email || "未记录"),
     detailRow("导入于", account.created_at ? new Date(account.created_at).toLocaleString() : "—"),
     detailRow("令牌到期", account.expires_at ? new Date(account.expires_at).toLocaleString() : "未知"),
     detailRow("上次刷新", account.last_refresh_at ? new Date(account.last_refresh_at).toLocaleString() : "尚未刷新"),
-  );
+  ];
+  const usage = state.accountUsage[account.alias];
+  if (usage?.status === "success") {
+    if (usage.plan_type) detailRows.push(detailRow("订阅套餐", usage.plan_type.toUpperCase()));
+    for (const window of usage.windows || []) {
+      detailRows.push(detailRow(
+        `额度 · ${USAGE_WINDOW_LABELS[window.id] || window.id}`,
+        `${Math.round(window.remaining_percent)}% 剩余 · ${formatUsageReset(window.resets_at)}`,
+      ));
+    }
+    if (usage.extra_usage?.enabled) {
+      detailRows.push(detailRow(
+        "额外用量",
+        `$${(usage.extra_usage.used_credits_cents / 100).toFixed(2)} / $${(usage.extra_usage.monthly_limit_cents / 100).toFixed(2)}`,
+      ));
+    }
+    detailRows.push(detailRow("额度获取时间", new Date(usage.fetched_at).toLocaleString()));
+  } else if (usage?.status === "error") {
+    detailRows.push(detailRow("订阅额度", `读取失败：${usage.error}`));
+  }
+  detail.replaceChildren(...detailRows);
 
   const list = $("actionsList");
   list.replaceChildren();
 
   list.appendChild(button("复制账号 UUID", "btn", () => copyText(account.account_uuid, "账号 UUID 已复制")));
   list.appendChild(button("重命名", "btn", () => { $("actionsDialog").close(); openRename(account); }));
+  list.appendChild(button("刷新订阅额度", "btn", async () => {
+    $("actionsDialog").close();
+    await loadAccountUsage(account, { force: true, notify: true });
+  }));
 
   const targetPool = account.pool === "official" ? "compatible" : "official";
   list.appendChild(button(`移至 ${targetPool} 账号池`, "btn", async () => {
@@ -902,6 +1032,15 @@ function formatExpiry(value) {
   const diff = expiry - Date.now();
   if (diff <= 0) return "已过期";
   return `${formatDuration(diff)}后到期`;
+}
+
+function formatUsageReset(value) {
+  if (!value) return "未提供重置时间";
+  const reset = Date.parse(value);
+  if (!Number.isFinite(reset)) return "重置时间未知";
+  const diff = reset - Date.now();
+  if (diff > 0) return `${formatDuration(diff)}后重置`;
+  return new Date(reset).toLocaleString();
 }
 
 function formatRelative(millis) {

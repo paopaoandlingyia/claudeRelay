@@ -164,3 +164,20 @@ enabled state, cooldowns, and OAuth tokens. Existing and newly imported accounts
 There is one API key per ingress rather than arbitrary named groups. This directly matches the two
 New API token/channel groups in scope and avoids introducing group administration, per-user ACLs,
 quota logic, or weighted routing.
+
+## 2026-07-31: subscription usage is a cached management observation
+
+Account capacity is read from Anthropic's private OAuth usage endpoint rather than estimated from
+relayed token counts. Only named windows actually returned upstream are exposed; absent weekly or
+model-specific fields carry no inferred meaning. The optional profile request may add a plan label
+but cannot make an otherwise valid usage reading fail.
+
+Successful results live in a two-minute in-memory cache. The console refreshes this data on its own
+slower cadence and offers an explicit cache-bypassing action, so the five-second operations poll
+does not become one upstream request per account. No quota snapshot is written to SQLite and no
+history, billing identity, or scheduling decision is derived from it.
+
+Usage reads share the configured outbound proxy. Enabled accounts may use the existing synchronized
+OAuth refresh path when their access token is near expiry. Disabled accounts are read only while
+their current access token remains valid, preserving the rule that observation cannot take over a
+refresh-token chain.
