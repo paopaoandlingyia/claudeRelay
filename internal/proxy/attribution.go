@@ -15,9 +15,9 @@ import (
 
 const (
 	billingAttributionPrefix = "x-anthropic-billing-header:"
-	// Captured from the official Claude Desktop / Claude Code 2.1.219 build on 2026-07-30.
+	// Captured from Claude Code 2.1.219 using a third-party API URL on 2026-07-31.
 	// This is a compatibility identifier, not a claim that claude-relay is Claude Desktop.
-	observedBillingAttribution = "x-anthropic-billing-header: cc_version=2.1.219.0a7; cc_entrypoint=claude-desktop;"
+	observedBillingAttribution = "x-anthropic-billing-header: cc_version=2.1.219.0a7; cc_entrypoint=claude-desktop-3p;"
 	// Sent only by relay-generated account checks, which have no client request
 	// headers to pass through. Captured alongside the billing attribution above.
 	observedClientUserAgent = "claude-cli/2.1.219 (external, claude-desktop, agent-sdk/0.3.219)"

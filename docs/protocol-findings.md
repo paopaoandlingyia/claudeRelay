@@ -48,8 +48,11 @@ does not by itself prove how Anthropic classified subscription usage.
 
 - **Acceptance test:** the smallest successful synthetic block contained only `cc_version` and
   `cc_entrypoint`. The reserved prefix or either field alone was rejected.
-- The relay currently uses the captured `2.1.219.0a7` identifier for synthetic requests. It is a
-  dated compatibility constant and must be revisited after client changes.
+- **Acceptance test:** Sonnet 5 and Opus 5 both accepted the minimum block with
+  `cc_entrypoint=claude-desktop-3p` through the deployed third-party API path.
+- The relay currently uses the captured `2.1.219.0a7` identifier and
+  `cc_entrypoint=claude-desktop-3p` for synthetic requests. This matches its deployment role but is
+  a dated compatibility constant that must be revisited after client changes.
 - A third-party algorithm claiming to derive the final three hex characters from message content
   produced `68d` for both exact captured requests, while the official value was `0a7`. It is not
   used here.

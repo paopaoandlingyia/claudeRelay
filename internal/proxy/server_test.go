@@ -199,7 +199,8 @@ func TestForwardAddsMinimumAttributionAndStableHeaderSession(t *testing.T) {
 	second := decodeBody(t, bodies[1])
 	firstSystem := first["system"].([]any)
 	billing := firstSystem[0].(map[string]any)["text"].(string)
-	if billing != observedBillingAttribution || strings.Contains(billing, "cch=") {
+	const expectedBilling = "x-anthropic-billing-header: cc_version=2.1.219.0a7; cc_entrypoint=claude-desktop-3p;"
+	if billing != expectedBilling || strings.Contains(billing, "cch=") {
 		t.Fatalf("billing attribution = %q", billing)
 	}
 	if got := firstSystem[1].(map[string]any)["text"]; got != "ordinary prompt" {
