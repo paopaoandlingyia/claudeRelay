@@ -195,6 +195,12 @@ function accountRow(account) {
     small(account.email || shortenUUID(account.account_uuid)),
   ), "identity-cell"));
 
+  const pool = accountPoolView(account.pool);
+  row.appendChild(cell(stack(
+    badge(pool.label, pool.css),
+    small(pool.note),
+  )));
+
   row.appendChild(cell(stack(
     badge(status.label, status.css),
     small(status.note),
@@ -290,6 +296,9 @@ function requestRow(record) {
   path.title = record.path || "";
   row.appendChild(cell(path));
 
+  const requestPool = accountPoolView(record.account_pool);
+  row.appendChild(cell(badge(requestPool.label, requestPool.css)));
+
   const client = clientClassView(record.client_class);
   const clientCell = cell(stack(
     badge(client.label, client.css),
@@ -343,6 +352,11 @@ function endpointLabel(path) {
   return path || "—";
 }
 
+function accountPoolView(pool) {
+  if (pool === "official") return { label: "official", css: "badge-ok", note: "仅 Claude Code 入口" };
+  return { label: "compatible", css: "badge-off badge-plain", note: "普通兼容入口" };
+}
+
 function evidenceSummary(evidence) {
   if (!evidence) return "无证据";
   const checks = [
@@ -369,19 +383,23 @@ function renderConnect() {
   const overview = state.overview;
   if (!overview) return;
   const endpoint = overview.endpoint || location.origin;
-  const key = overview.relay_api_key || "";
-  const shown = state.relayKeyVisible ? key : maskKey(key);
+  const compatibleKey = overview.relay_api_key || "";
+  const officialKey = overview.official_api_key || "";
+  const shownCompatible = state.relayKeyVisible ? compatibleKey : maskKey(compatibleKey);
+  const shownOfficial = officialKey ? (state.relayKeyVisible ? officialKey : maskKey(officialKey)) : "未配置";
+  const claudeCodeKey = officialKey ? shownOfficial : shownCompatible;
 
   $("connectEndpoint").textContent = endpoint;
-  $("connectKey").textContent = shown;
+  $("connectKey").textContent = shownCompatible;
+  $("connectOfficialKey").textContent = shownOfficial;
   $("toggleRelayKey").textContent = state.relayKeyVisible ? "隐藏" : "显示";
 
   $("snippetBash").textContent =
-    `export ANTHROPIC_BASE_URL="${endpoint}"\nexport ANTHROPIC_AUTH_TOKEN="${shown}"`;
+    `export ANTHROPIC_BASE_URL="${endpoint}"\nexport ANTHROPIC_AUTH_TOKEN="${claudeCodeKey}"`;
   $("snippetPowershell").textContent =
-    `$env:ANTHROPIC_BASE_URL = "${endpoint}"\n$env:ANTHROPIC_AUTH_TOKEN = "${shown}"`;
+    `$env:ANTHROPIC_BASE_URL = "${endpoint}"\n$env:ANTHROPIC_AUTH_TOKEN = "${claudeCodeKey}"`;
   $("snippetCurl").textContent =
-    `curl ${endpoint}/v1/messages \\\n  -H "x-api-key: ${shown}" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":16,` +
+    `curl ${endpoint}/v1/messages \\\n  -H "x-api-key: ${shownCompatible}" \\\n  -H "anthropic-version: 2023-06-01" \\\n  -H "content-type: application/json" \\\n  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":16,` +
     `"messages":[{"role":"user","content":"ping"}]}'`;
 
   $("runtimeListen").textContent = overview.listen || "—";
@@ -437,6 +455,7 @@ function openActions(account) {
 
   const detail = $("actionsDetail");
   detail.replaceChildren(
+    detailRow("账号池", account.pool || "compatible"),
     detailRow("账号身份", account.account_uuid || "—"),
     detailRow("邮箱", account.email || "未记录"),
     detailRow("导入于", account.created_at ? new Date(account.created_at).toLocaleString() : "—"),
@@ -449,6 +468,26 @@ function openActions(account) {
 
   list.appendChild(button("复制账号 UUID", "btn", () => copyText(account.account_uuid, "账号 UUID 已复制")));
   list.appendChild(button("重命名", "btn", () => { $("actionsDialog").close(); openRename(account); }));
+
+  const targetPool = account.pool === "official" ? "compatible" : "official";
+  list.appendChild(button(`移至 ${targetPool} 账号池`, "btn", async () => {
+    $("actionsDialog").close();
+    const accepted = await confirmDialog({
+      title: `移动 ${account.alias} 到 ${targetPool}`,
+      lead: "账号会立即退出当前账号池并进入目标账号池。",
+      items: [
+        "现有粘性会话绑定会被清除",
+        "账号的启用状态和冷却状态保持不变",
+        targetPool === "official" ? "之后只接收通过 Claude Code 检测的 Official 入口请求" : "之后只接收兼容入口请求",
+      ],
+      accept: "确认移动",
+    });
+    if (!accepted) return;
+    await runAction(`/admin/v1/accounts/${encodeURIComponent(account.alias)}/pool`, {
+      method: "POST",
+      body: JSON.stringify({ pool: targetPool }),
+    }, `${account.alias} 已移至 ${targetPool} 账号池`);
+  }));
 
   const refresh = button("立即刷新令牌", "btn", () => {
     $("actionsDialog").close();
@@ -1014,15 +1053,19 @@ $("toggleRelayKey").addEventListener("click", () => {
   renderConnect();
 });
 $("copyRelayKey").addEventListener("click", () => copyText(state.overview?.relay_api_key, "中转密钥已复制"));
+$("copyOfficialKey").addEventListener("click", () => copyText(state.overview?.official_api_key, "Official 入口密钥已复制"));
 for (const element of document.querySelectorAll(".copy-endpoint")) {
   element.addEventListener("click", () => copyText(state.overview?.endpoint || location.origin, "请求地址已复制"));
 }
 for (const element of document.querySelectorAll("[data-copy]")) {
   element.addEventListener("click", () => {
     const source = $(element.dataset.copy).textContent;
-    const key = state.overview?.relay_api_key;
-    // Snippets render a masked key while hidden, but copying should stay usable.
-    const resolved = key && !state.relayKeyVisible ? source.split(maskKey(key)).join(key) : source;
+    const compatibleKey = state.overview?.relay_api_key;
+    const officialKey = state.overview?.official_api_key;
+    // Snippets render masked keys while hidden, but copying should stay usable.
+    let resolved = source;
+    if (!state.relayKeyVisible && compatibleKey) resolved = resolved.split(maskKey(compatibleKey)).join(compatibleKey);
+    if (!state.relayKeyVisible && officialKey) resolved = resolved.split(maskKey(officialKey)).join(officialKey);
     copyText(resolved, "已复制到剪贴板");
   });
 }

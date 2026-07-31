@@ -25,6 +25,7 @@ type requestRoute struct {
 	AccountUUID     string
 	Model           string
 	SignedBilling   bool
+	AccountPool     string
 	Client          clientObservation
 }
 
@@ -33,7 +34,7 @@ type metadataIdentity struct {
 	SessionID   string `json:"session_id"`
 }
 
-func deriveRequestRoute(body []byte, headers http.Header, apiKey string) (requestRoute, error) {
+func deriveRequestRoute(body []byte, headers http.Header, accountPool string) (requestRoute, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -43,7 +44,7 @@ func deriveRequestRoute(body []byte, headers http.Header, apiKey string) (reques
 	if root == nil {
 		return requestRoute{}, fmt.Errorf("request body must be a JSON object")
 	}
-	route := requestRoute{}
+	route := requestRoute{AccountPool: accountPool}
 	route.Model, _ = root["model"].(string)
 	_, _, route.SignedBilling, _ = inspectSystem(root["system"])
 	route.Client = classifyClient(root, headers)
@@ -54,7 +55,7 @@ func deriveRequestRoute(body []byte, headers http.Header, apiKey string) (reques
 	if session == "" {
 		session = identity.SessionID
 	}
-	scope := shortHash(apiKey)
+	scope := shortHash(accountPool)
 	if session != "" {
 		route.ConversationKey = "session:" + shortHash(scope+"\x00"+session)
 	}
@@ -226,6 +227,9 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if !found || !account.Enabled {
 			return selection{}, fmt.Errorf("requested account %q is unavailable", forcedAlias)
 		}
+		if account.Pool != route.AccountPool {
+			return selection{}, fmt.Errorf("requested account %q is outside the %s pool", forcedAlias, route.AccountPool)
+		}
 		cooling, err := s.store.IsCooling(ctx, account.ID, route.Model, time.Now())
 		if err != nil {
 			return selection{}, err
@@ -240,7 +244,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	}
 
 	if route.AccountUUID != "" {
-		account, found, err := s.store.AccountByUUID(ctx, route.AccountUUID)
+		account, found, err := s.store.AccountByUUID(ctx, route.AccountUUID, route.AccountPool)
 		if err != nil {
 			return selection{}, err
 		}
@@ -260,7 +264,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	}
 
 	if route.ConversationKey != "" {
-		account, found, err := s.store.BoundAccount(ctx, route.ConversationKey, time.Now())
+		account, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.AccountPool, time.Now())
 		if err != nil {
 			return selection{}, err
 		}
@@ -276,7 +280,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		}
 	}
 
-	accounts, err := s.store.Accounts(ctx, route.Model, time.Now())
+	accounts, err := s.store.Accounts(ctx, route.AccountPool, route.Model, time.Now())
 	if err != nil {
 		return selection{}, err
 	}
@@ -293,7 +297,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		}
 	}
 	if chosen == nil {
-		return selection{}, fmt.Errorf("no healthy Claude subscription account is available")
+		return selection{}, fmt.Errorf("no healthy Claude subscription account is available in the %s pool", route.AccountPool)
 	}
 	return selection{Account: *chosen, Source: "cache_affinity"}, nil
 }

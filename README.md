@@ -6,7 +6,8 @@ round-robin rotation, or Claude Code prompt injection.
 
 ## Current scope
 
-- Multiple imported Claude OAuth credentials with separate relay and administration API keys
+- Multiple imported Claude OAuth credentials split between isolated compatible and official pools
+- Separate compatible, official, and administration API keys
 - `POST /v1/messages` and `POST /v1/messages/count_tokens`
 - Transparent JSON and SSE responses
 - Minimum subscription attribution for ordinary Anthropic requests
@@ -57,6 +58,7 @@ The schema upgrade that introduced activation also disables every pre-existing a
 ```powershell
 Copy-Item config.example.json config.json
 $env:CLAUDE_RELAY_API_KEY = "replace-with-a-long-random-key"
+$env:CLAUDE_RELAY_OFFICIAL_API_KEY = "replace-with-a-different-long-random-key"
 $env:CLAUDE_RELAY_ADMIN_API_KEY = "replace-with-a-different-long-random-key"
 .\claude-relay.exe serve -config config.json
 ```
@@ -69,12 +71,12 @@ Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a 
 Open `http://127.0.0.1:8567/` and sign in with the administration API key from the configuration.
 The console is a single dense screen with three sections:
 
-- **账号** — every account with its real routing state: enabled, cooling down (with the reason and
+- **账号** — every account with its pool and real routing state: enabled, cooling down (with the reason and
   remaining time), token expiry, last successful refresh, traffic totals, and live sticky bindings.
   Per-account actions cover enable/disable, connectivity check, forced token refresh, cooldown
   release, rename, and deletion.
 - **请求** — the recent request records described below, filterable by account and by failures only.
-- **接入** — the relay endpoint, the relay API key, copy-ready Claude Code / PowerShell / curl
+- **接入** — the relay endpoint, both ingress API keys, copy-ready Claude Code / PowerShell / curl
   snippets, and the effective runtime parameters.
 
 It polls every five seconds while the tab is visible, checks `/healthz` for the status indicator,
@@ -82,15 +84,15 @@ and follows the system light/dark preference with a manual override. The managem
 the current tab's `sessionStorage`; it is not written to the server or to persistent browser
 storage. The static login page is public, while every management API remains authenticated.
 
-The console shows the relay API key so a working client configuration can be copied in one step.
-The administration key already outranks the relay key, so this does not widen the trust boundary —
-but it does mean anyone who reaches the console holds both roles. Put the service behind an HTTPS
-reverse proxy before exposing it over a network.
+The console shows both ingress API keys so working client configurations can be copied in one step.
+The administration key already controls account placement and credentials, so this does not widen
+the trust boundary — but it does mean anyone who signs in to the console can obtain all three roles.
+Put the service behind an HTTPS reverse proxy before exposing it over a network.
 
 ## Account management
 
 Management endpoints accept only the administration API key and never return access or refresh
-tokens. The relay API key cannot access console data, OAuth operations, or account activation.
+tokens. Neither ingress API key can access console data, OAuth operations, or account activation.
 Every timestamp in an administration response is epoch milliseconds.
 
 ```http
@@ -101,6 +103,7 @@ DELETE /admin/v1/accounts/{alias}
 POST   /admin/v1/accounts/{alias}/enable
 POST   /admin/v1/accounts/{alias}/disable
 POST   /admin/v1/accounts/{alias}/rename
+POST   /admin/v1/accounts/{alias}/pool
 POST   /admin/v1/accounts/{alias}/refresh
 POST   /admin/v1/accounts/{alias}/cooldown/clear
 POST   /admin/v1/accounts/{alias}/check
@@ -153,6 +156,17 @@ whenever its endpoints or client behavior change.
 
 ## Account selection
 
+Every account belongs to exactly one pool. New and upgraded accounts start in `compatible`.
+Requests authenticated by `relay_api_key` can select only compatible accounts. Requests
+authenticated by `official_api_key` must have a recognized Claude Code shape and can select only
+official accounts. The current accepted shape is either `User-Agent: claude-cli/...` together with
+`X-Claude-Code-Session-Id` and `X-App: cli`, or the older complete billing/CCH/structured-metadata
+shape. This is a traffic policy, not proof that the caller is an authentic Anthropic binary.
+
+Changing an account's pool immediately clears its sticky bindings. Cooldowns and OAuth ownership
+state remain with the account. `X-Claude-Relay-Account` is resolved only inside the authenticated
+ingress pool and cannot cross the boundary.
+
 The relay first honors an explicit private account alias, then an account UUID already present in
 official-client metadata, then a persisted sticky binding, and finally cache-affinity rendezvous
 hashing across healthy accounts. Cache affinity is derived from the caller's existing cache
@@ -165,12 +179,12 @@ Private deployments can force an account for one request:
 X-Claude-Relay-Account: personal
 ```
 
-The alias is available to callers authenticated with the relay API key and is stripped before
-forwarding upstream. A missing, disabled, or cooling account produces
+The alias is available to callers authenticated with either ingress API key, resolved only inside
+that key's account pool, and stripped before forwarding upstream. A missing, disabled, or cooling account produces
 an error instead of silently selecting another account. A forced alias that conflicts with the
 account identity in an immutable signed CCH request is also rejected. Successful responses include
 `X-Claude-Relay-Account` so a trusted caller can inspect the selected alias. Anyone holding the
-relay API key can use this override, so aliases should not contain email addresses or
+corresponding ingress API key can use this override, so aliases should not contain email addresses or
 other sensitive data.
 
 Transient `429`, `529`, network, upstream `5xx`, and token-refresh failures may move an unpinned
@@ -206,7 +220,7 @@ GET /admin/v1/requests?limit=100
 ```
 
 The relay keeps the last `request_log_size` requests in a fixed-size in-memory ring, 500 by default.
-Each record holds only metadata: request ID, timestamp, path, model, selected account, why that
+Each record holds only metadata: request ID, timestamp, ingress pool, path, model, selected account, why that
 account was selected, status, duration, the account a request failed over from, and a versioned
 client-shape observation. That observation stores booleans for billing-block, CCH, structured
 metadata, known entrypoint, version, Claude User-Agent, Claude Code session header, and `X-App: cli`
@@ -229,6 +243,17 @@ without trusting them as authentication. New API channel header overrides can co
 
 A failed attempt counts against the account that failed even when the retry succeeded elsewhere,
 so a rate-limited account is visible in its own totals rather than hidden behind the failover.
+
+## New API grouping
+
+Create two Anthropic channels pointing at the same relay URL. Use `relay_api_key` for the channel
+available to the compatible New API group, and `official_api_key` for the channel available to the
+official group. On the official channel, preserve the three client identification headers with the
+override shown above. Request-body pass-through alone does not preserve them.
+
+The official New API group should be issued only to Claude Code users. The relay rejects a request
+that reaches the official key without the required shape before selecting an account. Conversely,
+compatible traffic never consumes an official-pool account even when it supplies an account alias.
 
 ## Legacy CCH research utility
 

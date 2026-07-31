@@ -115,6 +115,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/enable", func(w http.ResponseWriter, r *http.Request) { s.setAccountEnabled(w, r, true) })
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/disable", func(w http.ResponseWriter, r *http.Request) { s.setAccountEnabled(w, r, false) })
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/rename", s.renameAccount)
+	mux.HandleFunc("POST /admin/v1/accounts/{alias}/pool", s.setAccountPool)
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/refresh", s.refreshAccount)
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/cooldown/clear", s.clearAccountCooldown)
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/check", s.checkAccount)
@@ -147,18 +148,40 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if provided == "" {
 			provided = strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		}
-		expected := s.cfg.RelayAPIKey
 		if strings.HasPrefix(r.URL.Path, "/admin/") {
-			expected = s.cfg.AdminAPIKey
+			if !secureKeyEqual(provided, s.cfg.AdminAPIKey) {
+				writeError(w, http.StatusUnauthorized, "authentication_error", "invalid API key")
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
 		}
-		providedHash := sha256.Sum256([]byte(provided))
-		expectedHash := sha256.Sum256([]byte(expected))
-		if subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) != 1 {
+		pool := ""
+		switch {
+		case secureKeyEqual(provided, s.cfg.RelayAPIKey):
+			pool = store.AccountPoolCompatible
+		case s.cfg.OfficialAPIKey != "" && secureKeyEqual(provided, s.cfg.OfficialAPIKey):
+			pool = store.AccountPoolOfficial
+		default:
 			writeError(w, http.StatusUnauthorized, "authentication_error", "invalid API key")
 			return
 		}
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), ingressPoolContextKey{}, pool)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+type ingressPoolContextKey struct{}
+
+func secureKeyEqual(provided, expected string) bool {
+	providedHash := sha256.Sum256([]byte(provided))
+	expectedHash := sha256.Sum256([]byte(expected))
+	return subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1
+}
+
+func ingressPool(ctx context.Context) string {
+	pool, _ := ctx.Value(ingressPoolContextKey{}).(string)
+	return pool
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -200,7 +223,9 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		return
 	}
 	includeMetadata := incoming.URL.Path == "/v1/messages"
-	route, routeErr := deriveRequestRoute(body, incoming.Header, s.cfg.RelayAPIKey)
+	pool := ingressPool(incoming.Context())
+	event.AccountPool = pool
+	route, routeErr := deriveRequestRoute(body, incoming.Header, pool)
 	if routeErr != nil {
 		fail(http.StatusBadRequest, "invalid_request_error", routeErr.Error())
 		return
@@ -217,6 +242,11 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		ClaudeUserAgent:    route.Client.Evidence.ClaudeUserAgent,
 		ClaudeCodeSession:  route.Client.Evidence.ClaudeCodeSession,
 		XAppCLI:            route.Client.Evidence.XAppCLI,
+	}
+	if pool == store.AccountPoolOfficial && route.Client.Class != clientClassCCCandidate {
+		slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "account_pool", pool, "client_class", route.Client.Class)
+		fail(http.StatusForbidden, "permission_error", "official ingress requires a Claude Code-shaped request")
+		return
 	}
 	forcedAlias := incoming.Header.Get(accountHeader)
 	excluded := make(map[int64]bool)
@@ -263,7 +293,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			event.RelayAction = "unchanged"
 		}
 		if changed {
-			slog.Info("added subscription attribution", "request_id", requestID, "path", incoming.URL.Path, "account", selected.Account.Alias)
+			slog.Info("added subscription attribution", "request_id", requestID, "path", incoming.URL.Path, "account_pool", pool, "account", selected.Account.Alias)
 		}
 		response, err = s.doUpstream(incoming, transformedBody, selected.Account.AccessToken)
 		if err == nil && !retryableStatus(response.StatusCode) {
@@ -288,7 +318,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		excluded[selected.Account.ID] = true
 	}
 	if err != nil {
-		slog.Error("upstream request failed", "request_id", requestID, "path", incoming.URL.Path, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
+		slog.Error("upstream request failed", "request_id", requestID, "path", incoming.URL.Path, "account_pool", pool, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
 		fail(http.StatusBadGateway, "api_error", "upstream request failed")
 		return
 	}
@@ -317,7 +347,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			slog.Warn("persist session binding", "request_id", requestID, "error", bindErr)
 		}
 	}
-	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
+	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "account_pool", pool, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
 }
 
 func (s *Server) doUpstream(incoming *http.Request, body []byte, accessToken string) (*http.Response, error) {

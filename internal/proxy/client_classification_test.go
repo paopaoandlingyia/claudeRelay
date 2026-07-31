@@ -3,6 +3,8 @@ package proxy
 import (
 	"net/http"
 	"testing"
+
+	"github.com/local/claude-relay/internal/store"
 )
 
 func TestClassifyClientEvidence(t *testing.T) {
@@ -92,7 +94,7 @@ func TestClassifyClientEvidence(t *testing.T) {
 			if test.xApp != "" {
 				headers.Set("X-App", test.xApp)
 			}
-			route, err := deriveRequestRoute([]byte(test.body), headers, "relay-key")
+			route, err := deriveRequestRoute([]byte(test.body), headers, store.AccountPoolCompatible)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -78,6 +78,101 @@ func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	}
 }
 
+func TestOfficialIngressRejectsNonClaudeCodeShape(t *testing.T) {
+	t.Parallel()
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 1024)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+	request.Header.Set("x-api-key", "official-downstream-key")
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("official gate allowed %d upstream calls", upstreamCalls)
+	}
+	records := server.metrics.Recent(1)
+	if len(records) != 1 || records[0].AccountPool != store.AccountPoolOfficial ||
+		records[0].ClientClass != clientClassCompatible || records[0].Account != "" {
+		t.Fatalf("rejected request record = %#v", records)
+	}
+}
+
+func TestIngressKeysRouteWithinTheirOwnAccountPools(t *testing.T) {
+	t.Parallel()
+	var authorizations []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	importTestAccount(t, server.store, "compatible", "token-compatible", "22222222-2222-4222-8222-222222222222", "b")
+	if _, err := server.store.SetAccountPool(t.Context(), "default", store.AccountPoolOfficial); err != nil {
+		t.Fatal(err)
+	}
+
+	send := func(key, session string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+			strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+		request.Header.Set("x-api-key", key)
+		request.Header.Set("User-Agent", "claude-cli/2.1.219")
+		request.Header.Set(claudeCodeSessionHeader, session)
+		request.Header.Set("X-App", "cli")
+		recorder := httptest.NewRecorder()
+		server.routes().ServeHTTP(recorder, request)
+		return recorder
+	}
+	if recorder := send("official-downstream-key", "official-session"); recorder.Code != http.StatusOK {
+		t.Fatalf("official status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := send("downstream-key", "compatible-session"); recorder.Code != http.StatusOK {
+		t.Fatalf("compatible status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if len(authorizations) != 2 || authorizations[0] != "Bearer upstream-access-token" ||
+		authorizations[1] != "Bearer token-compatible" {
+		t.Fatalf("pool authorizations = %#v", authorizations)
+	}
+	records := server.metrics.Recent(2)
+	if len(records) != 2 || records[0].AccountPool != store.AccountPoolCompatible ||
+		records[1].AccountPool != store.AccountPoolOfficial {
+		t.Fatalf("request pools = %#v", records)
+	}
+}
+
+func TestForcedAccountCannotCrossIngressPool(t *testing.T) {
+	t.Parallel()
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	if _, err := server.store.SetAccountPool(t.Context(), "default", store.AccountPoolOfficial); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set(accountHeader, "default")
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "outside the compatible pool") {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("cross-pool override made %d upstream calls", upstreamCalls)
+	}
+}
+
 func TestFailedAlternateSelectionDoesNotDoubleCountAccount(t *testing.T) {
 	t.Parallel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -490,11 +585,11 @@ func TestSignedRequestRejectsConflictingForcedAccount(t *testing.T) {
 func TestRoutingPrefixIgnoresContentAfterCacheBreakpoint(t *testing.T) {
 	t.Parallel()
 	headers := http.Header{}
-	first, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"one"}]}`), headers, "key")
+	first, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"one"}]}`), headers, store.AccountPoolCompatible)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`), headers, "key")
+	second, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`), headers, store.AccountPoolCompatible)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,6 +735,7 @@ func newTestServer(t *testing.T, upstreamURL string, maxRequestBytes int64) *Ser
 	server, err := NewServer(config.Config{
 		Listen:          "127.0.0.1:0",
 		RelayAPIKey:     "downstream-key",
+		OfficialAPIKey:  "official-downstream-key",
 		AdminAPIKey:     "admin-key",
 		CredentialsFile: "unused.json",
 		UpstreamBaseURL: upstreamURL,

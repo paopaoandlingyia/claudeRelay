@@ -6,7 +6,7 @@ rotation, sticky routing, and SQLite are intentionally single-instance boundarie
 
 ## Start with Docker Compose
 
-Copy the environment template and generate two different API keys:
+Copy the environment template and generate three different API keys:
 
 ```powershell
 Copy-Item .env.example .env
@@ -17,8 +17,8 @@ $rng.Dispose()
 -join ($bytes | ForEach-Object { $_.ToString("x2") })
 ```
 
-Run the generation command twice and put different values in `CLAUDE_RELAY_API_KEY` and
-`CLAUDE_RELAY_ADMIN_API_KEY` in `.env`, then start the service:
+Run the generation command three times and put different values in `CLAUDE_RELAY_API_KEY`,
+`CLAUDE_RELAY_OFFICIAL_API_KEY`, and `CLAUDE_RELAY_ADMIN_API_KEY` in `.env`, then start the service:
 
 ```powershell
 docker compose up -d --build
@@ -65,10 +65,12 @@ relay.example.com {
 }
 ```
 
-The relay key can call Anthropic endpoints and choose explicit account aliases, but cannot read or
-change account administration. The separate administration key controls the WebUI, OAuth, and
-account activation, but cannot call model endpoints. Treat the administration key as privileged
-access. Do not publish port 8567 to the internet without TLS and an appropriate network boundary.
+The compatible and official relay keys can call Anthropic endpoints and choose explicit aliases
+inside their own account pools, but cannot read or change account administration. The official key
+also rejects requests that do not match the observed Claude Code shape. The separate administration
+key controls the WebUI, OAuth, account pools, and activation, but cannot call model endpoints.
+Treat the administration key as privileged access. Do not publish port 8567 to the internet without
+TLS and an appropriate network boundary.
 
 ## Configuration
 
@@ -77,6 +79,7 @@ The image contains only non-secret defaults. Compose passes these supported runt
 | Environment variable | Purpose | Compose default |
 | --- | --- | --- |
 | `CLAUDE_RELAY_API_KEY` | Relay key for messages, token counting, and account override | Required |
+| `CLAUDE_RELAY_OFFICIAL_API_KEY` | Optional Claude Code-shaped ingress, isolated to official accounts | Empty |
 | `CLAUDE_RELAY_ADMIN_API_KEY` | Administration key for WebUI, OAuth, and account state | Required and must differ |
 | `CLAUDE_RELAY_UPSTREAM_PROXY` | Optional outbound HTTP(S) proxy | Empty |
 | `CLAUDE_RELAY_MAX_REQUEST_BYTES` | Maximum request body size | `33554432` |
@@ -101,8 +104,8 @@ docker compose logs -f --tail=100 claude-relay
 ```
 
 Compose uses Docker's `json-file` driver with three 10 MiB files, limiting retained container logs
-to approximately 30 MiB. Logs contain paths, selected account aliases, routing sources, upstream
-status, duration, and errors. They do not contain prompts, request bodies, API/OAuth tokens,
+to approximately 30 MiB. Logs contain paths, ingress pools, selected account aliases, routing
+sources, upstream status, duration, and errors. They do not contain prompts, request bodies, API/OAuth tokens,
 metadata identities, email addresses, or usage token counts.
 
 Every response carries `X-Claude-Relay-Request-ID`, and the same value appears as `request_id` in
@@ -115,6 +118,32 @@ The console shows the same information without shell access, reading the last
 That ring holds the same metadata fields as the container log, is never written to the volume, and
 is cleared whenever the container restarts. It is a live operations view, not an audit trail —
 container logs remain the retained record.
+
+## Connect through New API
+
+Attach Claude Relay to the same Docker network as New API and use the relay container name and
+port (for example `http://claude-relay:8567`) as the channel base URL. `localhost:8567` inside the
+New API container refers to New API itself, not this relay.
+
+Create two Anthropic channels:
+
+1. A compatible channel using `CLAUDE_RELAY_API_KEY`, assigned only to the compatible token group.
+2. An official channel using `CLAUDE_RELAY_OFFICIAL_API_KEY`, assigned only to the official token
+   group.
+
+Enable request-body pass-through on both. The official channel must also copy the original client
+headers explicitly:
+
+```json
+{
+  "User-Agent": "{client_header:User-Agent}",
+  "X-Claude-Code-Session-Id": "{client_header:X-Claude-Code-Session-Id}",
+  "X-App": "{client_header:X-App}"
+}
+```
+
+Move at least one enabled relay account into each pool in the WebUI. A pool with no enabled,
+healthy account returns an explicit unavailable error; the relay never borrows from the other pool.
 
 ## Move the existing database
 

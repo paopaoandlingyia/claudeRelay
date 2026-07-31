@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/local/claude-relay/internal/metrics"
+	"github.com/local/claude-relay/internal/store"
 )
 
 func adminRequest(t *testing.T, server *Server, method, path, body string) *httptest.ResponseRecorder {
@@ -72,6 +73,43 @@ func TestListAccountsReportsCooldownAndStickySessions(t *testing.T) {
 	}
 	if view.CreatedAt == 0 {
 		t.Error("created_at was not reported")
+	}
+	if view.Pool != store.AccountPoolCompatible {
+		t.Errorf("pool = %q, want compatible", view.Pool)
+	}
+}
+
+func TestSetAccountPoolClearsStickySessions(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "https://upstream.invalid", 1024)
+	account, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("account lookup failed: found=%v err=%v", found, err)
+	}
+	if err := server.store.Bind(t.Context(), "route-key", account.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := adminRequest(t, server, http.MethodPost, "/admin/v1/accounts/default/pool", `{"pool":"official"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var view accountView
+	if err := json.Unmarshal(recorder.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Pool != store.AccountPoolOfficial {
+		t.Fatalf("pool = %q, want official", view.Pool)
+	}
+	counts, err := server.store.SessionBindingCounts(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("sticky sessions survived pool move: %v", counts)
+	}
+	if recorder := adminRequest(t, server, http.MethodPost, "/admin/v1/accounts/default/pool", `{"pool":"other"}`); recorder.Code != http.StatusBadRequest {
+		t.Errorf("invalid pool status = %d, want 400", recorder.Code)
 	}
 }
 
@@ -274,6 +312,9 @@ func TestOverviewAndRequestsExposeRelayActivity(t *testing.T) {
 	}
 	if overview.RelayAPIKey != "downstream-key" {
 		t.Errorf("relay_api_key = %q, want the configured relay key", overview.RelayAPIKey)
+	}
+	if overview.OfficialAPIKey != "official-downstream-key" {
+		t.Errorf("official_api_key = %q, want the configured official key", overview.OfficialAPIKey)
 	}
 	if overview.Accounts.Total != 1 || overview.Accounts.Enabled != 1 {
 		t.Errorf("account totals = %#v", overview.Accounts)

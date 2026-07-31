@@ -54,6 +54,7 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 	}
 	t.Setenv("CLAUDE_RELAY_LISTEN", "0.0.0.0:8567")
 	t.Setenv("CLAUDE_RELAY_API_KEY", "environment-key")
+	t.Setenv("CLAUDE_RELAY_OFFICIAL_API_KEY", "environment-official-key")
 	t.Setenv("CLAUDE_RELAY_ADMIN_API_KEY", "environment-admin-key")
 	t.Setenv("CLAUDE_RELAY_DATABASE_FILE", "/data/claude-relay.db")
 	t.Setenv("CLAUDE_RELAY_UPSTREAM_PROXY", "http://proxy:7890")
@@ -63,14 +64,35 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != "0.0.0.0:8567" || cfg.RelayAPIKey != "environment-key" || cfg.AdminAPIKey != "environment-admin-key" {
-		t.Fatalf("server environment overrides = listen %q relay key %q admin key %q", cfg.Listen, cfg.RelayAPIKey, cfg.AdminAPIKey)
+	if cfg.Listen != "0.0.0.0:8567" || cfg.RelayAPIKey != "environment-key" ||
+		cfg.OfficialAPIKey != "environment-official-key" || cfg.AdminAPIKey != "environment-admin-key" {
+		t.Fatalf("server environment overrides = listen %q compatible key %q official key %q admin key %q",
+			cfg.Listen, cfg.RelayAPIKey, cfg.OfficialAPIKey, cfg.AdminAPIKey)
 	}
 	if cfg.DatabaseFile != "/data/claude-relay.db" || cfg.UpstreamProxy != "http://proxy:7890" {
 		t.Fatalf("runtime environment overrides = database %q proxy %q", cfg.DatabaseFile, cfg.UpstreamProxy)
 	}
 	if cfg.MaxRequestBytes != 1048576 {
 		t.Fatalf("max request bytes = %d", cfg.MaxRequestBytes)
+	}
+}
+
+func TestOfficialKeyIsOptionalAndMustBeDistinct(t *testing.T) {
+	t.Setenv("CLAUDE_RELAY_OFFICIAL_API_KEY", "")
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"listen":"127.0.0.1:8567","relay_api_key":"relay-key","official_api_key":"relay-key","admin_api_key":"admin-key","database_file":"relay.db","upstream_base_url":"https://api.anthropic.com"}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() accepted an official key matching the compatible key")
+	}
+	raw = `{"listen":"127.0.0.1:8567","relay_api_key":"relay-key","admin_api_key":"admin-key","database_file":"relay.db","upstream_base_url":"https://api.anthropic.com"}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load() rejected an omitted official key: %v", err)
 	}
 }
 

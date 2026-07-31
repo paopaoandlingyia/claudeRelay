@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,64 @@ import (
 
 	"github.com/local/claude-relay/internal/credential"
 )
+
+func TestSchemaV3MigratesExistingAccountsToCompatiblePool(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "relay.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`
+		CREATE TABLE accounts (
+			id INTEGER PRIMARY KEY,
+			alias TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			type TEXT NOT NULL,
+			access_token TEXT NOT NULL,
+			refresh_token TEXT NOT NULL DEFAULT '',
+			expires_at TEXT NOT NULL DEFAULT '',
+			email TEXT NOT NULL DEFAULT '',
+			account_uuid TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			extra_json TEXT NOT NULL DEFAULT '{}',
+			enabled INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			last_refresh_at INTEGER NOT NULL DEFAULT 0
+		);
+		INSERT INTO accounts (
+			alias,type,access_token,account_uuid,device_id,enabled,created_at,updated_at
+		) VALUES ('legacy','claude','secret','11111111-1111-4111-8111-111111111111','device',1,1,1);
+		PRAGMA user_version=3;
+	`)
+	if err != nil {
+		_ = legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	account, found, err := database.AccountByAlias(context.Background(), "legacy")
+	if err != nil || !found {
+		t.Fatalf("legacy account lookup: found=%v err=%v", found, err)
+	}
+	if account.Pool != AccountPoolCompatible || !account.Enabled {
+		t.Fatalf("migrated account = %#v", account)
+	}
+	var version int
+	if err := database.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 4 {
+		t.Fatalf("schema version = %d, want 4", version)
+	}
+}
 
 func TestImportBindingAndCooldown(t *testing.T) {
 	t.Parallel()
@@ -39,14 +98,14 @@ func TestImportBindingAndCooldown(t *testing.T) {
 	if err := database.Bind(context.Background(), "route", account.ID, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	bound, found, err := database.BoundAccount(context.Background(), "route", time.Now())
+	bound, found, err := database.BoundAccount(context.Background(), "route", AccountPoolCompatible, time.Now())
 	if err != nil || !found || bound.ID != account.ID {
 		t.Fatalf("bound account = %#v found=%v err=%v", bound, found, err)
 	}
 	if err := database.Cooldown(context.Background(), account.ID, "model", time.Now().Add(time.Minute), "test"); err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := database.Accounts(context.Background(), "model", time.Now())
+	accounts, err := database.Accounts(context.Background(), AccountPoolCompatible, "model", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,12 +259,49 @@ func TestClearCooldownsRestoresRouting(t *testing.T) {
 	if removed != 1 {
 		t.Errorf("cleared %d cooldowns, want 1", removed)
 	}
-	accounts, err := database.Accounts(ctx, "claude-opus-5", time.Now())
+	accounts, err := database.Accounts(ctx, AccountPoolCompatible, "claude-opus-5", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(accounts) != 1 {
 		t.Errorf("routable accounts = %d, want 1 after clearing the cooldown", len(accounts))
+	}
+}
+
+func TestSetAccountPoolClearsBindingsAndSeparatesRouting(t *testing.T) {
+	t.Parallel()
+	database := newTestStore(t)
+	ctx := context.Background()
+	account := importTestAccount(t, database, "primary", "11111111-1111-4111-8111-111111111111")
+	if account.Pool != AccountPoolCompatible {
+		t.Fatalf("fresh account pool = %q", account.Pool)
+	}
+	if _, err := database.SetAccountEnabled(ctx, account.Alias, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Bind(ctx, "route", account.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := database.SetAccountPool(ctx, account.Alias, AccountPoolOfficial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.Pool != AccountPoolOfficial || !moved.Enabled {
+		t.Fatalf("moved account = %#v", moved)
+	}
+	if _, found, err := database.BoundAccount(ctx, "route", AccountPoolOfficial, time.Now()); err != nil || found {
+		t.Fatalf("old binding survived pool move: found=%v err=%v", found, err)
+	}
+	compatible, err := database.Accounts(ctx, AccountPoolCompatible, "claude-test", time.Now())
+	if err != nil || len(compatible) != 0 {
+		t.Fatalf("compatible accounts = %#v err=%v", compatible, err)
+	}
+	official, err := database.Accounts(ctx, AccountPoolOfficial, "claude-test", time.Now())
+	if err != nil || len(official) != 1 || official[0].ID != account.ID {
+		t.Fatalf("official accounts = %#v err=%v", official, err)
+	}
+	if _, err := database.SetAccountPool(ctx, account.Alias, "unknown"); err == nil {
+		t.Fatal("invalid account pool was accepted")
 	}
 }
 

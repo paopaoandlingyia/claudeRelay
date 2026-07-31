@@ -75,6 +75,7 @@
           <thead>
             <tr>
               <th>账号</th>
+              <th>账号池</th>
               <th>状态</th>
               <th>访问令牌</th>
               <th>流量</th>
@@ -108,6 +109,7 @@
               <th>结果</th>
               <th>模型</th>
               <th>端点</th>
+              <th>入口</th>
               <th>客户端</th>
               <th>账号</th>
               <th>选择依据</th>
@@ -133,14 +135,21 @@
             <div class="value-row"><code id="connectEndpoint" class="mono">—</code><button class="btn btn-inline copy-endpoint" type="button">复制</button></div>
           </div>
           <div class="kv">
-            <span>中转密钥</span>
+            <span>兼容入口密钥</span>
             <div class="value-row">
               <code id="connectKey" class="mono">—</code>
               <button id="toggleRelayKey" class="btn btn-inline" type="button">显示</button>
               <button id="copyRelayKey" class="btn btn-inline" type="button">复制</button>
             </div>
           </div>
-          <p class="note">中转密钥用于模型请求，与当前登录使用的管理密钥不同。指定账号可加请求头 <code class="mono">X-Claude-Relay-Account: 别名</code>。</p>
+          <div class="kv">
+            <span>Official 入口密钥</span>
+            <div class="value-row">
+              <code id="connectOfficialKey" class="mono">未配置</code>
+              <button id="copyOfficialKey" class="btn btn-inline" type="button">复制</button>
+            </div>
+          </div>
+          <p class="note">兼容入口只使用 compatible 账号池；Official 入口仅接受识别为 Claude Code 的请求，并只使用 official 账号池。指定账号也不能跨池。</p>
         </div>
 
         <div class="card">

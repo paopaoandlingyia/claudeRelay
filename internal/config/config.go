@@ -18,6 +18,7 @@ const (
 type Config struct {
 	Listen          string `json:"listen"`
 	RelayAPIKey     string `json:"relay_api_key"`
+	OfficialAPIKey  string `json:"official_api_key"`
 	AdminAPIKey     string `json:"admin_api_key"`
 	DatabaseFile    string `json:"database_file"`
 	CredentialsFile string `json:"credentials_file"`
@@ -53,6 +54,9 @@ func applyEnvironment(cfg *Config) error {
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_API_KEY")); value != "" {
 		cfg.RelayAPIKey = value
+	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_OFFICIAL_API_KEY")); value != "" {
+		cfg.OfficialAPIKey = value
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_ADMIN_API_KEY")); value != "" {
 		cfg.AdminAPIKey = value
@@ -92,6 +96,7 @@ func applyEnvironment(cfg *Config) error {
 func (cfg *Config) validate() error {
 	cfg.Listen = strings.TrimSpace(cfg.Listen)
 	cfg.RelayAPIKey = strings.TrimSpace(cfg.RelayAPIKey)
+	cfg.OfficialAPIKey = strings.TrimSpace(cfg.OfficialAPIKey)
 	cfg.AdminAPIKey = strings.TrimSpace(cfg.AdminAPIKey)
 	cfg.DatabaseFile = strings.TrimSpace(cfg.DatabaseFile)
 	cfg.CredentialsFile = strings.TrimSpace(cfg.CredentialsFile)
@@ -112,6 +117,9 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.RelayAPIKey == cfg.AdminAPIKey {
 		return fmt.Errorf("relay and admin API keys must be different")
+	}
+	if cfg.OfficialAPIKey != "" && (cfg.OfficialAPIKey == cfg.RelayAPIKey || cfg.OfficialAPIKey == cfg.AdminAPIKey) {
+		return fmt.Errorf("official, compatible, and admin API keys must be different")
 	}
 	if cfg.DatabaseFile == "" {
 		cfg.DatabaseFile = "data/claude-relay.db"

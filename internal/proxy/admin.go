@@ -39,6 +39,7 @@ type cooldownView struct {
 type accountView struct {
 	Alias           string              `json:"alias"`
 	Enabled         bool                `json:"enabled"`
+	Pool            string              `json:"pool"`
 	Email           string              `json:"email,omitempty"`
 	AccountUUID     string              `json:"account_uuid"`
 	ExpiresAt       string              `json:"expires_at,omitempty"`
@@ -54,6 +55,7 @@ func accountResponse(account store.Account) accountView {
 	return accountView{
 		Alias:           account.Alias,
 		Enabled:         account.Enabled,
+		Pool:            account.Pool,
 		Email:           account.Email,
 		AccountUUID:     account.AccountUUID,
 		ExpiresAt:       account.ExpiresAt,
@@ -125,6 +127,7 @@ type overviewResponse struct {
 	AutoRefresh     bool            `json:"auto_refresh_enabled"`
 	MaxRequestBytes int64           `json:"max_request_bytes"`
 	RelayAPIKey     string          `json:"relay_api_key"`
+	OfficialAPIKey  string          `json:"official_api_key,omitempty"`
 	Accounts        accountTotals   `json:"accounts"`
 	StickySessions  int             `json:"sticky_sessions"`
 	Requests        metrics.Summary `json:"requests"`
@@ -192,6 +195,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		AutoRefresh:     s.cfg.AutoRefresh,
 		MaxRequestBytes: s.cfg.MaxRequestBytes,
 		RelayAPIKey:     s.cfg.RelayAPIKey,
+		OfficialAPIKey:  s.cfg.OfficialAPIKey,
 		Accounts:        totals,
 		StickySessions:  sticky,
 		Requests:        s.metrics.Summary(now),
@@ -260,6 +264,30 @@ func (s *Server) listRequests(w http.ResponseWriter, r *http.Request) {
 func (s *Server) setAccountEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
 	alias := strings.TrimSpace(r.PathValue("alias"))
 	account, err := s.store.SetAccountEnabled(r.Context(), alias, enabled)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, accountResponse(account))
+}
+
+type accountPoolRequest struct {
+	Pool string `json:"pool"`
+}
+
+func (s *Server) setAccountPool(w http.ResponseWriter, r *http.Request) {
+	var request accountPoolRequest
+	if err := decodeAdminJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	request.Pool = strings.TrimSpace(request.Pool)
+	if err := store.ValidateAccountPool(request.Pool); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	alias := strings.TrimSpace(r.PathValue("alias"))
+	account, err := s.store.SetAccountPool(r.Context(), alias, request.Pool)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found_error", err.Error())
 		return

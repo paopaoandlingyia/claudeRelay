@@ -19,10 +19,25 @@ type Account struct {
 	ID            int64
 	Alias         string
 	Enabled       bool
+	Pool          string
 	CreatedAt     int64
 	UpdatedAt     int64
 	LastRefreshAt int64
 	credential.Credential
+}
+
+const (
+	AccountPoolCompatible = "compatible"
+	AccountPoolOfficial   = "official"
+)
+
+func ValidateAccountPool(pool string) error {
+	switch strings.TrimSpace(pool) {
+	case AccountPoolCompatible, AccountPoolOfficial:
+		return nil
+	default:
+		return fmt.Errorf("account pool must be %q or %q", AccountPoolCompatible, AccountPoolOfficial)
+	}
 }
 
 // Cooldown is an active routing exclusion for one account, optionally scoped to
@@ -77,7 +92,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
 	}
-	if version > 3 {
+	if version > 4 {
 		return fmt.Errorf("database schema version %d is newer than this build supports", version)
 	}
 	statements := []string{
@@ -98,7 +113,8 @@ func (s *Store) initialize(ctx context.Context) error {
 			enabled INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
-			last_refresh_at INTEGER NOT NULL DEFAULT 0
+			last_refresh_at INTEGER NOT NULL DEFAULT 0,
+			account_pool TEXT NOT NULL DEFAULT 'compatible' CHECK(account_pool IN ('compatible','official'))
 		)`,
 		`CREATE INDEX IF NOT EXISTS accounts_uuid_idx ON accounts(account_uuid)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS accounts_uuid_unique_idx ON accounts(account_uuid)`,
@@ -137,6 +153,17 @@ func (s *Store) initialize(ctx context.Context) error {
 			return err
 		}
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=3`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	if version < 4 {
+		// Existing accounts remain in the compatible pool so an upgrade cannot
+		// unexpectedly expose them through the stricter official ingress.
+		if err := s.ensureColumn(ctx, "accounts", "account_pool",
+			"TEXT NOT NULL DEFAULT 'compatible' CHECK(account_pool IN ('compatible','official'))"); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=4`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}
@@ -260,11 +287,14 @@ func (s *Store) AccountCount(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-func (s *Store) Accounts(ctx context.Context, model string, now time.Time) ([]Account, error) {
+func (s *Store) Accounts(ctx context.Context, pool, model string, now time.Time) ([]Account, error) {
+	if err := ValidateAccountPool(pool); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+accountColumns+` FROM accounts a
-		WHERE a.enabled=1 AND NOT EXISTS (
+		WHERE a.enabled=1 AND a.account_pool=? AND NOT EXISTS (
 			SELECT 1 FROM account_cooldowns c WHERE c.account_id=a.id AND c.until_at>? AND (c.model='' OR c.model=?))
-		ORDER BY a.id`, now.Unix(), model)
+		ORDER BY a.id`, pool, now.Unix(), model)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}
@@ -297,14 +327,14 @@ func (s *Store) AllAccounts(ctx context.Context) ([]Account, error) {
 	return accounts, rows.Err()
 }
 
-const accountColumns = `a.id,a.alias,a.enabled,a.type,a.access_token,a.refresh_token,a.expires_at,a.email,a.account_uuid,a.device_id,a.extra_json,a.created_at,a.updated_at,a.last_refresh_at`
+const accountColumns = `a.id,a.alias,a.enabled,a.account_pool,a.type,a.access_token,a.refresh_token,a.expires_at,a.email,a.account_uuid,a.device_id,a.extra_json,a.created_at,a.updated_at,a.last_refresh_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scanAccount(row scanner) (Account, error) {
 	var account Account
 	var extra string
-	if err := row.Scan(&account.ID, &account.Alias, &account.Enabled, &account.Type,
+	if err := row.Scan(&account.ID, &account.Alias, &account.Enabled, &account.Pool, &account.Type,
 		&account.AccessToken, &account.RefreshToken, &account.ExpiresAt, &account.Email,
 		&account.AccountUUID, &account.DeviceID, &extra,
 		&account.CreatedAt, &account.UpdatedAt, &account.LastRefreshAt); err != nil {
@@ -347,6 +377,42 @@ func (s *Store) SetAccountEnabled(ctx context.Context, alias string, enabled boo
 		return Account{}, fmt.Errorf("account %q was not found", alias)
 	}
 	account, _, err := s.AccountByAlias(ctx, alias)
+	return account, err
+}
+
+// SetAccountPool moves an account between routing pools and removes its sticky
+// bindings atomically. Cooldowns remain attached to the credential because a
+// pool change does not make an upstream limit disappear.
+func (s *Store) SetAccountPool(ctx context.Context, alias, pool string) (Account, error) {
+	pool = strings.TrimSpace(pool)
+	if err := ValidateAccountPool(pool); err != nil {
+		return Account{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Account{}, fmt.Errorf("begin account pool update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var id int64
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT id,account_pool FROM accounts WHERE alias=?`, alias).Scan(&id, &current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Account{}, fmt.Errorf("account %q was not found", alias)
+		}
+		return Account{}, fmt.Errorf("read account pool: %w", err)
+	}
+	if current != pool {
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET account_pool=?,updated_at=? WHERE id=?`, pool, time.Now().Unix(), id); err != nil {
+			return Account{}, fmt.Errorf("update account pool: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM session_bindings WHERE account_id=?`, id); err != nil {
+			return Account{}, fmt.Errorf("clear account pool bindings: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Account{}, fmt.Errorf("commit account pool update: %w", err)
+	}
+	account, _, err := s.AccountByID(ctx, id)
 	return account, err
 }
 
@@ -468,17 +534,17 @@ func (s *Store) UpdateTokens(ctx context.Context, id int64, accessToken, refresh
 	return account, err
 }
 
-func (s *Store) AccountByUUID(ctx context.Context, uuid string) (Account, bool, error) {
-	account, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts a WHERE a.account_uuid=? AND a.enabled=1 LIMIT 1`, uuid))
+func (s *Store) AccountByUUID(ctx context.Context, uuid, pool string) (Account, bool, error) {
+	account, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts a WHERE a.account_uuid=? AND a.account_pool=? AND a.enabled=1 LIMIT 1`, uuid, pool))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, false, nil
 	}
 	return account, err == nil, err
 }
 
-func (s *Store) BoundAccount(ctx context.Context, routeKey string, now time.Time) (Account, bool, error) {
+func (s *Store) BoundAccount(ctx context.Context, routeKey, pool string, now time.Time) (Account, bool, error) {
 	account, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM session_bindings b
-		JOIN accounts a ON a.id=b.account_id WHERE b.route_key=? AND b.expires_at>? AND a.enabled=1`, routeKey, now.Unix()))
+		JOIN accounts a ON a.id=b.account_id WHERE b.route_key=? AND b.expires_at>? AND a.account_pool=? AND a.enabled=1`, routeKey, now.Unix(), pool))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, false, nil
 	}
