@@ -73,8 +73,9 @@ The console is a single dense screen with three sections:
 
 - **账号** — every account with its pool and real routing state: enabled, cooling down (with the reason and
   remaining time), token expiry, last successful refresh, traffic totals, and live sticky bindings.
-  The table also reads the subscription's available five-hour and optional weekly/model-specific
-  OAuth usage windows. Per-account actions cover usage refresh, enable/disable, connectivity check,
+  The table can manually read the subscription's available five-hour and optional
+  weekly/model-specific OAuth usage windows; it never queries them automatically. Per-account
+  actions cover usage refresh, enable/disable, connectivity check,
   forced token refresh, cooldown release, rename, and deletion.
 - **请求** — the recent request records described below, filterable by account and by failures only.
 - **接入** — the relay endpoint, both ingress API keys, copy-ready Claude Code / PowerShell / curl

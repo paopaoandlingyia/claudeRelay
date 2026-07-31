@@ -3,8 +3,6 @@
 const $ = (id) => document.getElementById(id);
 const POLL_INTERVAL = 5000;
 const REQUEST_LIMIT = 200;
-const USAGE_REFRESH_INTERVAL = 120_000;
-const USAGE_RETRY_INTERVAL = 120_000;
 
 const state = {
   apiKey: sessionStorage.getItem("claudeRelayAdminKey") || "",
@@ -12,7 +10,6 @@ const state = {
   accounts: [],
   accountUsage: {},
   usageLoading: new Set(),
-  usageAttemptedAt: {},
   requests: [],
   autoRefreshEnabled: true,
   panel: "accounts",
@@ -66,15 +63,14 @@ async function loadRequests() {
   state.requests = Array.isArray(payload.requests) ? payload.requests : [];
 }
 
-async function loadAccountUsage(account, { force = false, notify = false } = {}) {
+async function loadAccountUsage(account, { notify = false } = {}) {
   const alias = account.alias;
   if (!alias || state.usageLoading.has(alias)) return false;
   state.usageLoading.add(alias);
-  state.usageAttemptedAt[alias] = Date.now();
   renderAccounts();
   try {
-    const path = `/admin/v1/accounts/${encodeURIComponent(alias)}/usage${force ? "/refresh" : ""}`;
-    const usage = await api(path, force ? { method: "POST" } : {});
+    const path = `/admin/v1/accounts/${encodeURIComponent(alias)}/usage/refresh`;
+    const usage = await api(path, { method: "POST" });
     state.accountUsage[alias] = { status: "success", ...usage, refresh_error: "" };
     if (notify) showToast(`${alias} 的订阅额度已刷新`);
     return true;
@@ -91,18 +87,6 @@ async function loadAccountUsage(account, { force = false, notify = false } = {})
   }
 }
 
-function refreshStaleAccountUsage() {
-  const now = Date.now();
-  for (const account of state.accounts) {
-    const usage = state.accountUsage[account.alias];
-    const attemptedAt = state.usageAttemptedAt[account.alias] || 0;
-    const interval = usage?.status === "success" ? USAGE_REFRESH_INTERVAL : USAGE_RETRY_INTERVAL;
-    if (!state.usageLoading.has(account.alias) && now - attemptedAt >= interval) {
-      void loadAccountUsage(account);
-    }
-  }
-}
-
 async function refreshAll({ notify = false, includeRequests = null } = {}) {
   if (inFlight) return;
   inFlight = true;
@@ -113,7 +97,6 @@ async function refreshAll({ notify = false, includeRequests = null } = {}) {
     const [healthy] = await Promise.all([probeHealth(), ...tasks]);
     renderHealth(healthy);
     render();
-    refreshStaleAccountUsage();
     if (notify) showToast("已刷新");
   } catch (error) {
     if (state.apiKey) showToast(error.message, true);
@@ -415,9 +398,18 @@ const USAGE_WINDOW_LABELS = {
 function accountUsageSummary(account) {
   const usage = state.accountUsage[account.alias];
   const loading = state.usageLoading.has(account.alias);
-  if (!usage) return stack(small(loading ? "正在读取…" : "尚未读取"));
+  if (!usage) {
+    if (loading) return stack(small("正在读取…"));
+    return button("读取额度", "btn btn-inline", () => {
+      void loadAccountUsage(account, { notify: true });
+    });
+  }
   if (usage.status === "error") {
-    const content = stack(badge("读取失败", "badge-bad"), small(usage.error || "未知错误"));
+    const retry = button(loading ? "读取中" : "重试", "btn btn-inline", () => {
+      void loadAccountUsage(account, { notify: true });
+    });
+    retry.disabled = loading;
+    const content = stack(badge("读取失败", "badge-bad"), small(usage.error || "未知错误"), retry);
     content.title = usage.error || "";
     return content;
   }
@@ -438,6 +430,11 @@ function accountUsageSummary(account) {
   fetched.textContent = loading ? "正在刷新…" : `更新于 ${formatRelative(usage.fetched_at)}`;
   if (usage.refresh_error) fetched.title = `最近刷新失败：${usage.refresh_error}`;
   wrapper.appendChild(fetched);
+  const refresh = button(loading ? "刷新中" : "刷新", "btn btn-inline quota-refresh", () => {
+    void loadAccountUsage(account, { notify: true });
+  });
+  refresh.disabled = loading;
+  wrapper.appendChild(refresh);
   return wrapper;
 }
 
@@ -596,7 +593,7 @@ function openActions(account) {
   list.appendChild(button("重命名", "btn", () => { $("actionsDialog").close(); openRename(account); }));
   list.appendChild(button("刷新订阅额度", "btn", async () => {
     $("actionsDialog").close();
-    await loadAccountUsage(account, { force: true, notify: true });
+    await loadAccountUsage(account, { notify: true });
   }));
 
   const targetPool = account.pool === "official" ? "compatible" : "official";

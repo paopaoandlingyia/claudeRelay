@@ -172,10 +172,11 @@ relayed token counts. Only named windows actually returned upstream are exposed;
 model-specific fields carry no inferred meaning. The optional profile request may add a plan label
 but cannot make an otherwise valid usage reading fail.
 
-Successful results live in a two-minute in-memory cache. The console refreshes this data on its own
-slower cadence and offers an explicit cache-bypassing action, so the five-second operations poll
-does not become one upstream request per account. No quota snapshot is written to SQLite and no
-history, billing identity, or scheduling decision is derived from it.
+Successful results live in a two-minute in-memory cache, but the console never reads or refreshes
+them automatically. Only an explicit per-account action calls the cache-bypassing refresh endpoint,
+so opening the console and its five-second operations poll generate no Anthropic usage requests.
+No quota snapshot is written to SQLite and no history, billing identity, or scheduling decision is
+derived from it.
 
 Usage reads share the configured outbound proxy. Enabled accounts may use the existing synchronized
 OAuth refresh path when their access token is near expiry. Disabled accounts are read only while
