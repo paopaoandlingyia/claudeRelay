@@ -337,6 +337,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .quota-mini-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 10px; }
 .quota-mini-head span { color: var(--muted); }
 .quota-mini-head strong { font-size: 10px; font-variant-numeric: tabular-nums; }
+.quota-reset { color: var(--muted); font-size: 9px; }
 .quota-track { height: 4px; overflow: hidden; border-radius: 999px; background: var(--surface-3); }
 .quota-track span { display: block; height: 100%; border-radius: inherit; background: var(--ok); }
 .quota-track span.quota-mid { background: var(--warn); }

@@ -457,6 +457,12 @@ function quotaMeter(window) {
   fill.style.width = `${remaining}%`;
   track.appendChild(fill);
   wrapper.append(heading, track);
+  if (window.resets_at) {
+    const reset = document.createElement("small");
+    reset.className = "quota-reset";
+    reset.textContent = formatUsageReset(window.resets_at);
+    wrapper.appendChild(reset);
+  }
   return wrapper;
 }
 
