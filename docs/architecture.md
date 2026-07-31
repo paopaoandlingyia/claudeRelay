@@ -131,11 +131,11 @@ while a healthy account absorbed its traffic.
 ## 2026-07-31: client-shape classification starts in observation mode
 
 Before separating compatible and Claude Code-shaped traffic into distinct ingress keys and account
-pools, the relay classifies the raw incoming body without enforcing the result. Version 1 reports
-`cc_candidate` only when one billing block contains a non-empty version, a known entrypoint, and a
-non-empty CCH, and `metadata.user_id` contains the expected structured identity fields. Partial
-evidence is `ambiguous`; no evidence is `compatible`. User-Agent is evidence only and never decides
-the result by itself.
+pools, the relay classifies the raw incoming request without enforcing the result. Version 2
+reports `cc_candidate` for either of two observed shapes: a `claude-cli` User-Agent together with
+`X-Claude-Code-Session-Id` and `X-App: cli`, or the older complete billing/CCH/structured-metadata
+shape. It recognizes `cli`, `claude-desktop`, and `claude-desktop-3p` entrypoints. Partial evidence
+is `ambiguous`; no evidence is `compatible`.
 
 The in-memory request record stores presence booleans and the relay action only. It never stores the
 raw CCH, billing values, User-Agent, account/device/session identities, prompts, or response content.

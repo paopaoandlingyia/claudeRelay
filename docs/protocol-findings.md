@@ -1,6 +1,6 @@
 # Current protocol findings
 
-Last reviewed: 2026-07-30
+Last reviewed: 2026-07-31
 
 This is the compact handoff document for future work. It records what was observed, what was
 experimentally accepted, and what remains an inference. Recheck it whenever Claude Code or the
@@ -53,6 +53,23 @@ does not by itself prove how Anthropic classified subscription usage.
 - A third-party algorithm claiming to derive the final three hex characters from message content
   produced `68d` for both exact captured requests, while the official value was `0a7`. It is not
   used here.
+
+## Claude Code with a third-party API URL
+
+- **Capture:** Claude Code 2.1.219 using a New API URL sent 26 successful `/v1/messages` requests
+  for one interaction. Every request carried a `claude-cli/2.1.219` User-Agent,
+  `X-Claude-Code-Session-Id`, and `X-App: cli`.
+- **Capture:** only 2 of those 26 request bodies contained a billing block. Both were large main
+  requests and used `cc_entrypoint=claude-desktop-3p`; none of the 26 bodies contained `cch=`.
+- **Capture:** a small Haiku helper request contained a JSON-string `metadata.user_id` with
+  `device_id` and `session_id`, but an empty `account_uuid`, and no billing block.
+- **Current classification policy:** either the complete three-header combination above or the
+  older complete billing/CCH/structured-metadata shape is a `cc_candidate`. Individual headers or
+  partial body evidence remain `ambiguous`. These are observable, spoofable request-shape signals,
+  not client authentication.
+- **Capture:** the tested New API deployment returned 404 for
+  `/v1/messages/count_tokens?beta=true`. Claude Code continued, but native count-token
+  compatibility through that gateway remains unresolved.
 
 ## `metadata.user_id`
 
@@ -127,3 +144,4 @@ the count-tokens schema rejects it, and metadata does not contribute prompt toke
   genuine overload/rate-limit responses.
 - Verify subscription-side usage classification in addition to HTTP success.
 - Revisit the captured billing version constant when the official client changes.
+- Decide whether to add native Anthropic count-token routing to the New API deployment.

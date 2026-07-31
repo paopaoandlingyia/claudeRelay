@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const clientClassificationVersion = 1
+const clientClassificationVersion = 2
 
 const (
 	clientClassCompatible  = "compatible"
@@ -21,6 +21,8 @@ type clientEvidence struct {
 	CCH                bool
 	StructuredMetadata bool
 	ClaudeUserAgent    bool
+	ClaudeCodeSession  bool
+	XAppCLI            bool
 }
 
 type clientObservation struct {
@@ -34,12 +36,16 @@ func classifyClient(root map[string]any, headers http.Header) clientObservation 
 	evidence.StructuredMetadata = hasStructuredMetadata(root["metadata"])
 	userAgent := strings.ToLower(strings.TrimSpace(headers.Get("User-Agent")))
 	evidence.ClaudeUserAgent = strings.Contains(userAgent, "claude-cli/")
+	evidence.ClaudeCodeSession = strings.TrimSpace(headers.Get(claudeCodeSessionHeader)) != ""
+	evidence.XAppCLI = strings.EqualFold(strings.TrimSpace(headers.Get("X-App")), "cli")
 
 	class := clientClassCompatible
-	if completeBilling && evidence.StructuredMetadata {
+	completeHeaders := evidence.ClaudeUserAgent && evidence.ClaudeCodeSession && evidence.XAppCLI
+	if completeHeaders || (completeBilling && evidence.StructuredMetadata) {
 		class = clientClassCCCandidate
 	} else if evidence.BillingBlock || evidence.CCVersion || evidence.KnownEntrypoint ||
-		evidence.CCH || evidence.StructuredMetadata || evidence.ClaudeUserAgent {
+		evidence.CCH || evidence.StructuredMetadata || evidence.ClaudeUserAgent ||
+		evidence.ClaudeCodeSession || evidence.XAppCLI {
 		class = clientClassAmbiguous
 	}
 	return clientObservation{Class: class, Version: clientClassificationVersion, Evidence: evidence}
@@ -57,7 +63,7 @@ func billingEvidence(value any) (clientEvidence, bool) {
 		fields := parseBillingFields(strings.TrimSpace(strings.TrimPrefix(trimmed, billingAttributionPrefix)))
 		hasVersion := strings.TrimSpace(fields["cc_version"]) != ""
 		entrypoint := strings.ToLower(strings.TrimSpace(fields["cc_entrypoint"]))
-		knownEntrypoint := entrypoint == "cli" || entrypoint == "claude-desktop"
+		knownEntrypoint := entrypoint == "cli" || entrypoint == "claude-desktop" || entrypoint == "claude-desktop-3p"
 		hasCCH := strings.TrimSpace(fields["cch"]) != ""
 		evidence.CCVersion = evidence.CCVersion || hasVersion
 		evidence.KnownEntrypoint = evidence.KnownEntrypoint || knownEntrypoint

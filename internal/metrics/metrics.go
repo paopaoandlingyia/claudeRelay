@@ -37,6 +37,8 @@ type ClientEvidence struct {
 	CCH                bool `json:"cch"`
 	StructuredMetadata bool `json:"structured_metadata"`
 	ClaudeUserAgent    bool `json:"claude_user_agent"`
+	ClaudeCodeSession  bool `json:"claude_code_session"`
+	XAppCLI            bool `json:"x_app_cli"`
 }
 
 // Failover names the account a request was moved away from. The relay permits at

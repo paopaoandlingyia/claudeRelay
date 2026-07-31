@@ -284,6 +284,12 @@ function requestRow(record) {
 
   row.appendChild(cell(document.createTextNode(record.model || "—")));
 
+  const path = document.createElement("code");
+  path.className = "mono";
+  path.textContent = endpointLabel(record.path);
+  path.title = record.path || "";
+  row.appendChild(cell(path));
+
   const client = clientClassView(record.client_class);
   const clientCell = cell(stack(
     badge(client.label, client.css),
@@ -331,6 +337,12 @@ function clientClassView(value) {
   return { label: "未分类", css: "badge-off" };
 }
 
+function endpointLabel(path) {
+  if (path === "/v1/messages/count_tokens") return "count_tokens";
+  if (path === "/v1/messages") return "messages";
+  return path || "—";
+}
+
 function evidenceSummary(evidence) {
   if (!evidence) return "无证据";
   const checks = [
@@ -340,6 +352,8 @@ function evidenceSummary(evidence) {
     ["cch", evidence.cch],
     ["metadata", evidence.structured_metadata],
     ["ua", evidence.claude_user_agent],
+    ["session", evidence.claude_code_session],
+    ["x-app", evidence.x_app_cli],
   ];
   return checks.map(([label, present]) => `${label} ${present ? "✓" : "·"}`).join(" ");
 }

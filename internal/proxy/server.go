@@ -215,6 +215,8 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		CCH:                route.Client.Evidence.CCH,
 		StructuredMetadata: route.Client.Evidence.StructuredMetadata,
 		ClaudeUserAgent:    route.Client.Evidence.ClaudeUserAgent,
+		ClaudeCodeSession:  route.Client.Evidence.ClaudeCodeSession,
+		XAppCLI:            route.Client.Evidence.XAppCLI,
 	}
 	forcedAlias := incoming.Header.Get(accountHeader)
 	excluded := make(map[int64]bool)

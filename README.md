@@ -186,8 +186,9 @@ never fail over.
   adds a JSON-string user identity with stable account/device identifiers.
 - Token-count requests receive the same billing block but no metadata, because that endpoint's
   schema rejects metadata. The returned count therefore includes the billing text sent to models.
-- `X-Claude-Session-Id`, `X-Session-Id`, or `Session-Id` produces a stable pseudonymous session
-  UUID. Without one, the cache-affinity routing key provides a stable fallback identity.
+- `X-Claude-Code-Session-Id`, `X-Claude-Session-Id`, `X-Session-Id`, or `Session-Id` produces a
+  stable pseudonymous session UUID. The official Claude Code header takes precedence. Without one,
+  the cache-affinity routing key provides a stable fallback identity.
 - No Claude Code identity or software-engineering system prompt is added.
 
 The relay supplies `anthropic-version: 2023-06-01` and `content-type: application/json` only when
@@ -208,10 +209,23 @@ The relay keeps the last `request_log_size` requests in a fixed-size in-memory r
 Each record holds only metadata: request ID, timestamp, path, model, selected account, why that
 account was selected, status, duration, the account a request failed over from, and a versioned
 client-shape observation. That observation stores booleans for billing-block, CCH, structured
-metadata, known entrypoint, version, and Claude User-Agent presence plus whether the relay passed
-the body through or added minimal attribution. Prompts, response bodies, raw headers, CCH values,
-metadata identities, and credentials are never recorded, nothing is written to disk, and restarting
-the process clears the history. Set `request_log_size` to `0` to disable it entirely.
+metadata, known entrypoint, version, Claude User-Agent, Claude Code session header, and `X-App: cli`
+presence plus whether the relay passed the body through or added minimal attribution. The console
+also shows whether the request used `messages` or `count_tokens`. Prompts, response bodies, raw
+headers, CCH values, metadata identities, and credentials are never recorded, nothing is written
+to disk, and restarting the process clears the history. Set `request_log_size` to `0` to disable it
+entirely.
+
+When another gateway sits in front of the relay, pass the three Claude Code identification headers
+without trusting them as authentication. New API channel header overrides can copy them explicitly:
+
+```json
+{
+  "User-Agent": "{client_header:User-Agent}",
+  "X-Claude-Code-Session-Id": "{client_header:X-Claude-Code-Session-Id}",
+  "X-App": "{client_header:X-App}"
+}
+```
 
 A failed attempt counts against the account that failed even when the retry succeeded elsewhere,
 so a rate-limited account is visible in its own totals rather than hidden behind the failover.

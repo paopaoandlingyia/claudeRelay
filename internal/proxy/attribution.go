@@ -24,10 +24,13 @@ const (
 )
 
 var sessionHeaderNames = []string{
+	claudeCodeSessionHeader,
 	"X-Claude-Session-Id",
 	"X-Session-Id",
 	"Session-Id",
 }
+
+const claudeCodeSessionHeader = "X-Claude-Code-Session-Id"
 
 type attributionUserID struct {
 	DeviceID    string `json:"device_id"`

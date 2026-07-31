@@ -186,7 +186,7 @@ func TestForwardAddsMinimumAttributionAndStableHeaderSession(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
 		request.Header.Set("x-api-key", "downstream-key")
-		request.Header.Set("X-Claude-Session-Id", "chat-42")
+		request.Header.Set(claudeCodeSessionHeader, "chat-42")
 		server.routes().ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
