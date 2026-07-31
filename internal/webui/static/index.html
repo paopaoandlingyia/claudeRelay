@@ -111,7 +111,6 @@
             </label>
           </div>
         </div>
-        <div class="panel-subbar"><span id="accountStickySummary" class="muted"></span><span class="list-hint">点击“详情”查看额度、令牌与路由信息</span></div>
         <div id="accountsBody" class="account-list"></div>
         <div id="accountsEmpty" class="empty hidden">
           <div class="empty-icon" aria-hidden="true">+</div>
@@ -292,7 +291,7 @@
       </div>
       <label for="renameAlias">新别名</label>
       <input id="renameAlias" type="text" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="off">
-      <p class="note">别名参与缓存亲和的选择计算，重命名会改变该账号在调度中的位置，并清空它的本地流量统计。</p>
+      <p class="note">别名会影响已有会话路由，重命名会清空该账号的本地流量统计。</p>
       <button id="submitRenameButton" class="btn btn-primary btn-block" type="button">保存</button>
       <p id="renameError" class="form-error" role="alert"></p>
     </form>

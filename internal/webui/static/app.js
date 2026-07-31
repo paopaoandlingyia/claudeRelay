@@ -205,7 +205,7 @@ function accountStatus(account) {
     }
     return { label: "令牌过期", css: "badge-bad", note: "刷新令牌或重新授权后才能使用" };
   }
-  return { label: "可用", css: "badge-ok", note: "参与缓存亲和调度" };
+  return { label: "可用", css: "badge-ok", note: "" };
 }
 
 function isExpired(account) {
@@ -225,10 +225,6 @@ function renderAccounts() {
     ? "没有账号"
     : `${state.accounts.length} 个账号 · ${enabled} 个已启用 · ${state.accounts.length - enabled} 个已停用`;
   $("tabAccountCount").textContent = String(state.accounts.length);
-  $("accountStickySummary").textContent = state.overview?.sticky_sessions
-    ? `${state.overview.sticky_sessions} 个活跃会话`
-    : "暂无活跃会话";
-
   const query = state.accountQuery.trim().toLowerCase();
   const visible = state.accounts.filter((account) => {
     if (query && ![account.alias, account.email, account.account_uuid].some((value) =>
@@ -259,22 +255,26 @@ function accountRow(account) {
   avatar.setAttribute("aria-hidden", "true");
   const identityCopy = document.createElement("div");
   identityCopy.className = "identity-copy";
-  identityCopy.append(strong(account.alias), small(account.email || shortenUUID(account.account_uuid)));
+  const identityLine = document.createElement("div");
+  identityLine.className = "identity-line";
+  identityLine.append(strong(account.alias));
+  const statusBadge = badge(status.label, status.css);
+  statusBadge.classList.add("account-status-badge");
+  statusBadge.title = status.note || status.label;
+  identityLine.append(statusBadge);
+  identityCopy.append(identityLine, small(account.email || shortenUUID(account.account_uuid)));
   const poolBadge = badge(pool.label, pool.css);
+  poolBadge.classList.add("account-pool-badge");
   poolBadge.title = pool.note;
   identityCopy.appendChild(poolBadge);
   identity.append(avatar, identityCopy);
-
-  const stateView = document.createElement("div");
-  stateView.className = "account-state";
-  stateView.append(badge(status.label, status.css), small(status.note));
 
   const stats = account.stats || {};
   const metrics = document.createElement("div");
   metrics.className = "account-metrics";
   metrics.append(
-    accountMetric("请求", stats.requests ? `${stats.requests}` : "—", stats.requests ? `${stats.failures || 0} 次失败` : "本次启动未使用"),
-    accountMetric("会话", account.sticky_sessions ? `${account.sticky_sessions}` : "—", "粘性绑定"),
+    accountMetric("请求", stats.requests ? `${stats.requests}` : "—", stats.requests ? `${stats.failures || 0} 次失败` : ""),
+    accountMetric("会话", account.sticky_sessions ? `${account.sticky_sessions}` : "—", ""),
   );
 
   const actions = document.createElement("div");
@@ -284,7 +284,7 @@ function accountRow(account) {
 
   const main = document.createElement("div");
   main.className = "account-item-main";
-  main.append(identity, stateView, metrics, actions);
+  main.append(identity, accountUsageSummary(account), metrics, actions);
   row.appendChild(main);
 
   return row;
@@ -293,7 +293,8 @@ function accountRow(account) {
 function accountMetric(label, value, noteText) {
   const metric = document.createElement("div");
   metric.className = "account-metric";
-  metric.append(small(label), strong(value), small(noteText));
+  metric.append(small(label), strong(value));
+  if (noteText) metric.appendChild(small(noteText));
   return metric;
 }
 
@@ -431,6 +432,93 @@ const USAGE_WINDOW_LABELS = {
   seven_day_cowork: "Cowork 7 天",
   seven_day_fable: "Fable 7 天",
 };
+
+function accountUsageSummary(account) {
+  const usage = state.accountUsage[account.alias];
+  const loading = state.usageLoading.has(account.alias);
+  const wrapper = document.createElement("div");
+  wrapper.className = "account-usage";
+
+  const heading = document.createElement("div");
+  heading.className = "usage-heading";
+  const title = document.createElement("span");
+  title.className = "usage-title";
+  title.textContent = "订阅额度";
+  heading.appendChild(title);
+  if (usage?.status === "success" && usage.plan_type) {
+    const plan = document.createElement("span");
+    plan.className = "usage-plan";
+    plan.textContent = usage.plan_type.toUpperCase();
+    heading.appendChild(plan);
+  }
+  wrapper.appendChild(heading);
+
+  const refresh = button(loading ? "读取中" : "刷新", "btn btn-inline usage-refresh", () => {
+    void loadAccountUsage(account, { notify: true });
+  });
+  refresh.disabled = loading;
+
+  if (!usage) {
+    const empty = document.createElement("div");
+    empty.className = "usage-empty";
+    empty.append(small(loading ? "正在读取额度…" : "尚未读取"), refresh);
+    wrapper.appendChild(empty);
+    return wrapper;
+  }
+
+  if (usage.status === "error") {
+    const error = document.createElement("div");
+    error.className = "usage-error";
+    const message = small(usage.error || "额度读取失败");
+    message.title = usage.error || "";
+    error.append(badge("读取失败", "badge-bad"), message, refresh);
+    wrapper.appendChild(error);
+    return wrapper;
+  }
+
+  const windows = Array.isArray(usage.windows) ? usage.windows : [];
+  for (const window of windows.slice(0, 2)) wrapper.appendChild(quotaMeter(window));
+  if (windows.length === 0) {
+    const empty = small("上游未返回额度窗口");
+    empty.className = "usage-empty-note";
+    wrapper.appendChild(empty);
+  } else if (windows.length > 2) {
+    const more = small(`还有 ${windows.length - 2} 个额度窗口`);
+    more.className = "usage-more";
+    wrapper.appendChild(more);
+  }
+
+  const footer = document.createElement("div");
+  footer.className = "usage-footer";
+  const fetched = small(usage.refresh_error ? "刷新失败，显示上次结果" : `更新于 ${formatRelative(usage.fetched_at)}`);
+  if (usage.refresh_error) fetched.title = `最近刷新失败：${usage.refresh_error}`;
+  footer.append(fetched, refresh);
+  wrapper.appendChild(footer);
+  return wrapper;
+}
+
+function quotaMeter(window) {
+  const remaining = Math.max(0, Math.min(100, Number(window.remaining_percent) || 0));
+  const wrapper = document.createElement("div");
+  wrapper.className = "quota-meter";
+  const heading = document.createElement("div");
+  heading.className = "quota-meter-head";
+  const label = document.createElement("span");
+  label.textContent = USAGE_WINDOW_LABELS[window.id] || window.id;
+  const percent = document.createElement("strong");
+  percent.textContent = `${Math.round(remaining)}%`;
+  heading.append(label, percent);
+  const track = document.createElement("div");
+  track.className = "quota-track";
+  const fill = document.createElement("span");
+  fill.className = remaining <= 20 ? "quota-low" : remaining <= 50 ? "quota-mid" : "";
+  fill.style.width = `${remaining}%`;
+  track.appendChild(fill);
+  const reset = small(window.resets_at ? `重置 ${formatUsageReset(window.resets_at)}` : "重置时间未知");
+  reset.className = "quota-reset";
+  wrapper.append(heading, track, reset);
+  return wrapper;
+}
 
 function evidenceSummary(evidence) {
   if (!evidence) return "无证据";
