@@ -16,6 +16,8 @@ const state = {
   pendingOAuth: readJSON(sessionStorage, "claudeRelayPendingOAuth"),
   relayKeyVisible: false,
   filters: { account: "", outcome: "" },
+  accountQuery: "",
+  accountStatus: "all",
 };
 
 let pollTimer = null;
@@ -140,24 +142,36 @@ function renderStats() {
   const summary = overview.requests || {};
 
   const available = totals.available || 0;
-  setStat("statAvailable", available, available === 0 && (totals.total || 0) > 0 ? "is-bad" : "");
+  const total = totals.total || 0;
+  const attention = state.accounts.length
+    ? state.accounts.filter((account) => {
+      const label = accountStatus(account).label;
+      return label === "冷却中" || label === "待刷新" || label === "令牌过期";
+    }).length
+    : (totals.cooling || 0) + (totals.expired || 0);
+
+  setStat("statAvailable", available, available === 0 && total > 0 ? "is-bad" : "");
+  $("statAvailableTotal").textContent = ` / ${total}`;
   $("statAvailableNote").textContent = `共 ${totals.total || 0} 个账号，${totals.enabled || 0} 个已启用`;
 
-  setStat("statCooling", totals.cooling || 0, (totals.cooling || 0) > 0 ? "is-warn" : "");
-  setStat("statExpired", totals.expired || 0, (totals.expired || 0) > 0 ? "is-warn" : "");
+  $("statAttention").textContent = String(attention);
+  $("statAttention").closest(".stat").classList.toggle("is-warn", attention > 0);
+  $("statAttentionIcon").textContent = attention > 0 ? "!" : "✓";
+  $("statAttentionIcon").classList.toggle("stat-icon-warn", attention > 0);
+  $("statAttentionIcon").classList.toggle("stat-icon-ok", attention === 0);
+  $("statAttentionNote").textContent = attention > 0
+    ? `${totals.cooling || 0} 个冷却 · ${totals.expired || 0} 个凭据需处理`
+    : "所有已启用账号均正常";
 
   setStat("statRecent", summary.recent_requests || 0, (summary.recent_failures || 0) > 0 ? "is-warn" : "");
   $("statRecentNote").textContent = (summary.recent_failures || 0) > 0
     ? `${summary.recent_failures} 次失败`
     : "无失败";
 
-  const total = summary.requests || 0;
+  const requestTotal = summary.requests || 0;
   const failures = summary.failures || 0;
-  $("statSuccess").textContent = total === 0 ? "—" : `${Math.round(((total - failures) / total) * 100)}%`;
-  $("statSuccess").parentElement.className = `stat${total > 0 && failures / total > 0.1 ? " is-warn" : ""}`;
-  $("statSuccessNote").textContent = total === 0 ? "本次启动尚无请求" : `${total} 次请求，${failures} 次失败`;
-
-  setStat("statSticky", overview.sticky_sessions || 0, "");
+  $("statSuccess").textContent = requestTotal === 0 ? "—" : `${Math.round(((requestTotal - failures) / requestTotal) * 100)}%`;
+  $("statSuccessNote").textContent = requestTotal === 0 ? "本次启动尚无请求" : `${requestTotal} 次累计请求 · ${failures} 次失败`;
 
   $("versionTag").textContent = overview.version || "dev";
   $("uptimeText").textContent = overview.started_at ? `已运行 ${formatDuration(Date.now() - overview.started_at)}` : "";
@@ -166,7 +180,10 @@ function renderStats() {
 function setStat(id, value, modifier) {
   const element = $(id);
   element.textContent = String(value);
-  element.parentElement.className = `stat${modifier ? " " + modifier : ""}`;
+  const card = element.closest(".stat");
+  if (!card) return;
+  card.classList.toggle("is-warn", modifier === "is-warn");
+  card.classList.toggle("is-bad", modifier === "is-bad");
 }
 
 function accountStatus(account) {
@@ -200,69 +217,89 @@ function isExpired(account) {
 function renderAccounts() {
   const body = $("accountsBody");
   body.replaceChildren();
-  $("accountsEmpty").classList.toggle("hidden", state.accounts.length !== 0);
+  const hasAccounts = state.accounts.length !== 0;
+  $("accountsEmpty").classList.toggle("hidden", hasAccounts);
 
   const enabled = state.accounts.filter((account) => account.enabled).length;
-  $("accountSummary").textContent = state.accounts.length === 0
+  $("accountSummary").textContent = !hasAccounts
     ? "没有账号"
     : `${state.accounts.length} 个账号 · ${enabled} 个已启用 · ${state.accounts.length - enabled} 个已停用`;
+  $("tabAccountCount").textContent = String(state.accounts.length);
+  $("accountStickySummary").textContent = state.overview?.sticky_sessions
+    ? `${state.overview.sticky_sessions} 个活跃会话`
+    : "暂无活跃会话";
 
-  for (const account of state.accounts) {
+  const query = state.accountQuery.trim().toLowerCase();
+  const visible = state.accounts.filter((account) => {
+    if (query && ![account.alias, account.email, account.account_uuid].some((value) =>
+      String(value || "").toLowerCase().includes(query))) return false;
+    if (state.accountStatus === "enabled" && !account.enabled) return false;
+    if (state.accountStatus === "disabled" && account.enabled) return false;
+    if (state.accountStatus === "attention" && !accountNeedsAttention(account)) return false;
+    return true;
+  });
+
+  $("accountsNoMatch").classList.toggle("hidden", !hasAccounts || visible.length !== 0);
+  for (const account of visible) {
     body.appendChild(accountRow(account));
   }
 }
 
 function accountRow(account) {
-  const row = document.createElement("tr");
+  const row = document.createElement("article");
   const status = accountStatus(account);
-
-  row.appendChild(cell(stack(
-    strong(account.alias),
-    small(account.email || shortenUUID(account.account_uuid)),
-  ), "identity-cell"));
-
   const pool = accountPoolView(account.pool);
-  row.appendChild(cell(stack(
-    badge(pool.label, pool.css),
-    small(pool.note),
-  )));
+  row.className = `account-item ${status.css.replace("badge-", "account-")}`;
 
-  row.appendChild(cell(stack(
-    badge(status.label, status.css),
-    small(status.note),
-  )));
+  const identity = document.createElement("div");
+  identity.className = "account-identity";
+  const avatar = document.createElement("span");
+  avatar.className = "account-avatar";
+  avatar.textContent = account.alias.slice(0, 2).toUpperCase();
+  avatar.setAttribute("aria-hidden", "true");
+  const identityCopy = document.createElement("div");
+  identityCopy.className = "identity-copy";
+  identityCopy.append(strong(account.alias), small(account.email || shortenUUID(account.account_uuid)));
+  const poolBadge = badge(pool.label, pool.css);
+  poolBadge.title = pool.note;
+  identityCopy.appendChild(poolBadge);
+  identity.append(avatar, identityCopy);
 
-  row.appendChild(cell(stack(
-    strong(formatExpiry(account.expires_at)),
-    small(account.has_refresh_token
-      ? (account.last_refresh_at ? `上次刷新 ${formatRelative(account.last_refresh_at)}` : "可自动续期，尚未刷新过")
-      : "无刷新令牌"),
-  )));
-
-  row.appendChild(cell(accountUsageSummary(account), "quota-cell"));
+  const stateView = document.createElement("div");
+  stateView.className = "account-state";
+  stateView.append(badge(status.label, status.css), small(status.note));
 
   const stats = account.stats || {};
-  row.appendChild(cell(stack(
-    strong(stats.requests ? `${stats.requests} 次` : "—"),
-    small(stats.requests
-      ? `${stats.failures || 0} 次失败 · 最近 ${formatRelative(stats.last_used_at)}`
-      : "本次启动未被使用"),
-  )));
-
-  row.appendChild(cell(stack(
-    strong(account.sticky_sessions ? `${account.sticky_sessions} 个会话` : "—"),
-    small("粘性绑定"),
-  )));
+  const metrics = document.createElement("div");
+  metrics.className = "account-metrics";
+  metrics.append(
+    accountMetric("请求", stats.requests ? `${stats.requests}` : "—", stats.requests ? `${stats.failures || 0} 次失败` : "本次启动未使用"),
+    accountMetric("会话", account.sticky_sessions ? `${account.sticky_sessions}` : "—", "粘性绑定"),
+  );
 
   const actions = document.createElement("div");
-  actions.className = "row-actions";
-  actions.appendChild(button(account.enabled ? "停用" : "启用", "btn btn-inline", () => toggleAccount(account)));
-  actions.appendChild(button("检测", "btn btn-inline", (element) => checkAccount(account, element)));
-  actions.appendChild(button("⋯", "btn btn-inline", () => openActions(account)));
-  const actionCell = cell(actions);
-  actionCell.className = "col-actions";
-  row.appendChild(actionCell);
+  actions.className = "account-actions";
+  actions.appendChild(button(account.enabled ? "停用" : "启用", "btn btn-inline btn-toggle", () => toggleAccount(account)));
+  actions.appendChild(button("详情", "btn btn-inline", () => openActions(account)));
+
+  const main = document.createElement("div");
+  main.className = "account-item-main";
+  main.append(identity, stateView, metrics, actions);
+  row.appendChild(main);
+
   return row;
+}
+
+function accountMetric(label, value, noteText) {
+  const metric = document.createElement("div");
+  metric.className = "account-metric";
+  metric.append(small(label), strong(value), small(noteText));
+  return metric;
+}
+
+function accountNeedsAttention(account) {
+  const label = accountStatus(account).label;
+  return label === "冷却中" || label === "待刷新" || label === "令牌过期";
 }
 
 function renderRequests() {
@@ -394,77 +431,6 @@ const USAGE_WINDOW_LABELS = {
   seven_day_cowork: "Cowork 7 天",
   seven_day_fable: "Fable 7 天",
 };
-
-function accountUsageSummary(account) {
-  const usage = state.accountUsage[account.alias];
-  const loading = state.usageLoading.has(account.alias);
-  if (!usage) {
-    if (loading) return stack(small("正在读取…"));
-    return button("读取额度", "btn btn-inline", () => {
-      void loadAccountUsage(account, { notify: true });
-    });
-  }
-  if (usage.status === "error") {
-    const retry = button(loading ? "读取中" : "重试", "btn btn-inline", () => {
-      void loadAccountUsage(account, { notify: true });
-    });
-    retry.disabled = loading;
-    const content = stack(badge("读取失败", "badge-bad"), small(usage.error || "未知错误"), retry);
-    content.title = usage.error || "";
-    return content;
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.className = "quota-list";
-  if (usage.plan_type) {
-    const plan = document.createElement("small");
-    plan.className = "quota-plan";
-    plan.textContent = `套餐 ${usage.plan_type.toUpperCase()}`;
-    wrapper.appendChild(plan);
-  }
-  const windows = Array.isArray(usage.windows) ? usage.windows : [];
-  for (const window of windows) wrapper.appendChild(quotaMeter(window));
-  if (windows.length === 0) wrapper.appendChild(small("上游未返回额度窗口"));
-  const fetched = document.createElement("small");
-  fetched.className = "quota-fetched";
-  fetched.textContent = loading ? "正在刷新…" : `更新于 ${formatRelative(usage.fetched_at)}`;
-  if (usage.refresh_error) fetched.title = `最近刷新失败：${usage.refresh_error}`;
-  wrapper.appendChild(fetched);
-  const refresh = button(loading ? "刷新中" : "刷新", "btn btn-inline quota-refresh", () => {
-    void loadAccountUsage(account, { notify: true });
-  });
-  refresh.disabled = loading;
-  wrapper.appendChild(refresh);
-  return wrapper;
-}
-
-function quotaMeter(window) {
-  const remaining = Math.max(0, Math.min(100, Number(window.remaining_percent) || 0));
-  const wrapper = document.createElement("div");
-  wrapper.className = "quota-mini";
-  wrapper.title = formatUsageReset(window.resets_at);
-  const heading = document.createElement("div");
-  heading.className = "quota-mini-head";
-  const label = document.createElement("span");
-  label.textContent = USAGE_WINDOW_LABELS[window.id] || window.id;
-  const percent = document.createElement("strong");
-  percent.textContent = `${Math.round(remaining)}%`;
-  heading.append(label, percent);
-  const track = document.createElement("div");
-  track.className = "quota-track";
-  const fill = document.createElement("span");
-  fill.className = remaining <= 20 ? "quota-low" : remaining <= 50 ? "quota-mid" : "";
-  fill.style.width = `${remaining}%`;
-  track.appendChild(fill);
-  wrapper.append(heading, track);
-  if (window.resets_at) {
-    const reset = document.createElement("small");
-    reset.className = "quota-reset";
-    reset.textContent = formatUsageReset(window.resets_at);
-    wrapper.appendChild(reset);
-  }
-  return wrapper;
-}
 
 function evidenceSummary(evidence) {
   if (!evidence) return "无证据";
@@ -1028,15 +994,6 @@ function shortenUUID(value) {
   return `${value.slice(0, 8)}…${value.slice(-4)}`;
 }
 
-function formatExpiry(value) {
-  if (!value) return "未知有效期";
-  const expiry = Date.parse(value);
-  if (!Number.isFinite(expiry)) return "有效期异常";
-  const diff = expiry - Date.now();
-  if (diff <= 0) return "已过期";
-  return `${formatDuration(diff)}后到期`;
-}
-
 function formatUsageReset(value) {
   if (!value) return "未提供重置时间";
   const reset = Date.parse(value);
@@ -1160,6 +1117,15 @@ $("filterAccount").addEventListener("change", (event) => {
 $("filterOutcome").addEventListener("change", (event) => {
   state.filters.outcome = event.target.value;
   renderRequests();
+});
+
+$("accountSearch").addEventListener("input", (event) => {
+  state.accountQuery = event.target.value;
+  renderAccounts();
+});
+$("accountStatusFilter").addEventListener("change", (event) => {
+  state.accountStatus = event.target.value;
+  renderAccounts();
 });
 
 $("openOAuthButton").addEventListener("click", openOAuthDialog);

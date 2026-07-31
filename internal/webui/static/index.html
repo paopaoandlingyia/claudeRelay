@@ -32,7 +32,10 @@
     <header class="topbar">
       <div class="topbar-brand">
         <span class="logo" aria-hidden="true">CR</span>
-        <span class="topbar-name">Claude Relay</span>
+        <div class="topbar-product">
+          <span class="topbar-name">Claude Relay</span>
+          <span class="topbar-context">控制台</span>
+        </div>
         <span id="versionTag" class="tag" title="构建版本"></span>
       </div>
       <div class="topbar-status">
@@ -40,59 +43,87 @@
         <span id="uptimeText" class="muted mono"></span>
       </div>
       <div class="topbar-actions">
-        <button id="autoRefreshButton" class="btn btn-quiet" type="button" aria-pressed="true">自动刷新</button>
+        <button id="autoRefreshButton" class="btn btn-quiet" type="button" aria-pressed="true"><i class="action-dot" aria-hidden="true"></i>自动刷新</button>
         <button id="refreshButton" class="btn btn-quiet" type="button">刷新</button>
         <button id="themeButton" class="btn btn-quiet" type="button" title="切换主题">主题：跟随系统</button>
         <button id="logoutButton" class="btn btn-quiet" type="button">退出</button>
       </div>
     </header>
 
-    <section class="stats" aria-label="服务概况">
-      <article class="stat"><span>可参与调度</span><strong id="statAvailable">–</strong><small id="statAvailableNote">账号</small></article>
-      <article class="stat"><span>冷却中</span><strong id="statCooling">–</strong><small>被上游限流或刷新失败</small></article>
-      <article class="stat"><span>令牌过期</span><strong id="statExpired">–</strong><small>需要刷新或重新授权</small></article>
-      <article class="stat"><span>近 5 分钟请求</span><strong id="statRecent">–</strong><small id="statRecentNote">—</small></article>
-      <article class="stat"><span>累计成功率</span><strong id="statSuccess">–</strong><small id="statSuccessNote">—</small></article>
-      <article class="stat"><span>粘性会话</span><strong id="statSticky">–</strong><small>一小时缓存亲和绑定</small></article>
-    </section>
-
-    <nav class="tabs" role="tablist" aria-label="控制台分区">
-      <button class="tab is-active" type="button" role="tab" aria-selected="true" data-panel="accounts">账号</button>
-      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="requests">请求</button>
-      <button class="tab" type="button" role="tab" aria-selected="false" data-panel="connect">接入</button>
-    </nav>
-
-    <section id="panel-accounts" class="panel" role="tabpanel">
-      <div class="panel-bar">
-        <span id="accountSummary" class="muted">正在读取…</span>
-        <div class="bar-actions">
-          <button id="importButton" class="btn" type="button">导入凭据</button>
-          <button id="openOAuthButton" class="btn btn-primary" type="button">添加账号</button>
+    <main class="workspace">
+      <section class="page-intro">
+        <div>
+          <p class="eyebrow">WORKSPACE / ACCOUNTS</p>
+          <h1>账号</h1>
+          <p class="page-subtitle">管理可参与调度的 Claude 订阅账号，保持服务随时可用。</p>
         </div>
-      </div>
-      <div class="table-wrap">
-        <table class="grid">
-          <thead>
-            <tr>
-              <th>账号</th>
-              <th>账号池</th>
-              <th>状态</th>
-              <th>访问令牌</th>
-              <th>订阅额度</th>
-              <th>流量</th>
-              <th>路由</th>
-              <th class="col-actions">操作</th>
-            </tr>
-          </thead>
-          <tbody id="accountsBody"></tbody>
-        </table>
-      </div>
-      <div id="accountsEmpty" class="empty hidden">
-        <h3>还没有账号</h3>
-        <p>通过 OAuth 登录添加订阅账号，或粘贴一份 CLIProxyAPI 凭据导入。新账号一律以关闭状态入库。</p>
-        <button class="btn btn-primary oauth-trigger" type="button">开始 OAuth 授权</button>
-      </div>
-    </section>
+        <div class="page-actions">
+          <button id="importButton" class="btn" type="button">导入凭据</button>
+          <button id="openOAuthButton" class="btn btn-primary" type="button"><span class="plus" aria-hidden="true">+</span>添加账号</button>
+        </div>
+      </section>
+
+      <section class="stats" aria-label="服务概况">
+        <article class="stat stat-primary">
+          <div class="stat-heading"><span>可用账号</span><span class="stat-icon stat-icon-ok" aria-hidden="true">✓</span></div>
+          <div class="stat-value-row"><strong id="statAvailable">–</strong><span id="statAvailableTotal" class="stat-suffix"> / —</span></div>
+          <small id="statAvailableNote">正在读取账号状态</small>
+        </article>
+        <article class="stat">
+          <div class="stat-heading"><span>需要关注</span><span id="statAttentionIcon" class="stat-icon stat-icon-warn" aria-hidden="true">!</span></div>
+          <strong id="statAttention">–</strong>
+          <small id="statAttentionNote">冷却或凭据状态异常</small>
+        </article>
+        <article class="stat stat-requests">
+          <div class="stat-heading"><span>近 5 分钟请求</span><span class="stat-success"><b id="statSuccess">–</b> 成功率</span></div>
+          <strong id="statRecent">–</strong>
+          <small id="statRecentNote">正在读取请求状态</small>
+          <small id="statSuccessNote" class="stat-detail">—</small>
+        </article>
+      </section>
+
+      <nav class="tabs" role="tablist" aria-label="控制台分区">
+        <button class="tab is-active" type="button" role="tab" aria-selected="true" data-panel="accounts"><span>账号</span><em id="tabAccountCount">—</em></button>
+        <button class="tab" type="button" role="tab" aria-selected="false" data-panel="requests"><span>请求</span></button>
+        <button class="tab" type="button" role="tab" aria-selected="false" data-panel="connect"><span>接入</span></button>
+      </nav>
+
+      <section id="panel-accounts" class="panel panel-accounts" role="tabpanel">
+        <div class="panel-heading">
+          <div class="section-title">
+            <p class="eyebrow">ACCOUNT POOL</p>
+            <h2>账号池</h2>
+            <span id="accountSummary" class="muted">正在读取…</span>
+          </div>
+          <div class="account-tools">
+            <label class="search-field" for="accountSearch">
+              <span class="search-icon" aria-hidden="true">⌕</span>
+              <input id="accountSearch" type="search" aria-label="搜索账号或邮箱" placeholder="搜索账号或邮箱" autocomplete="off">
+            </label>
+            <label class="select-field" for="accountStatusFilter">
+              <span class="sr-only">筛选状态</span>
+              <select id="accountStatusFilter">
+                <option value="all">全部状态</option>
+                <option value="enabled">已启用</option>
+                <option value="attention">需要关注</option>
+                <option value="disabled">已停用</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="panel-subbar"><span id="accountStickySummary" class="muted"></span><span class="list-hint">点击“详情”查看额度、令牌与路由信息</span></div>
+        <div id="accountsBody" class="account-list"></div>
+        <div id="accountsEmpty" class="empty hidden">
+          <div class="empty-icon" aria-hidden="true">+</div>
+          <h3>还没有账号</h3>
+          <p>通过 OAuth 登录添加订阅账号，或粘贴一份 CLIProxyAPI 凭据导入。新账号一律以关闭状态入库。</p>
+          <button class="btn btn-primary oauth-trigger" type="button">开始 OAuth 授权</button>
+        </div>
+        <div id="accountsNoMatch" class="empty empty-compact hidden">
+          <h3>没有匹配的账号</h3>
+          <p>试试其他关键词，或清除当前筛选条件。</p>
+        </div>
+      </section>
 
     <section id="panel-requests" class="panel hidden" role="tabpanel">
       <div class="panel-bar">
