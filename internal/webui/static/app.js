@@ -284,6 +284,14 @@ function requestRow(record) {
 
   row.appendChild(cell(document.createTextNode(record.model || "—")));
 
+  const client = clientClassView(record.client_class);
+  const clientCell = cell(stack(
+    badge(client.label, client.css),
+    small(`${evidenceSummary(record.client_evidence)} · ${relayActionLabel(record.relay_action)}`),
+  ));
+  clientCell.title = `分类器 v${record.classification_version || "?"}`;
+  row.appendChild(clientCell);
+
   row.appendChild(cell(stack(
     strong(record.account || "—"),
     record.failover ? small(`已从 ${record.failover.account} 转移（${record.failover.status || record.failover.error || "无响应"}）`) : null,
@@ -314,6 +322,33 @@ const SELECTION_LABELS = {
 function selectionLabel(selection) {
   if (!selection) return "未选中";
   return SELECTION_LABELS[selection] || selection;
+}
+
+function clientClassView(value) {
+  if (value === "cc_candidate") return { label: "CC 候选", css: "badge-ok" };
+  if (value === "compatible") return { label: "普通兼容", css: "badge-off" };
+  if (value === "ambiguous") return { label: "特征不完整", css: "badge-warn" };
+  return { label: "未分类", css: "badge-off" };
+}
+
+function evidenceSummary(evidence) {
+  if (!evidence) return "无证据";
+  const checks = [
+    ["billing", evidence.billing_block],
+    ["version", evidence.cc_version],
+    ["entrypoint", evidence.known_entrypoint],
+    ["cch", evidence.cch],
+    ["metadata", evidence.structured_metadata],
+    ["ua", evidence.claude_user_agent],
+  ];
+  return checks.map(([label, present]) => `${label} ${present ? "✓" : "·"}`).join(" ");
+}
+
+function relayActionLabel(action) {
+  if (action === "passthrough") return "原样透传";
+  if (action === "minimal_attribution") return "最小归因";
+  if (action === "unchanged") return "无需修改";
+  return "未转发";
 }
 
 function renderConnect() {

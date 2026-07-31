@@ -206,9 +206,12 @@ GET /admin/v1/requests?limit=100
 
 The relay keeps the last `request_log_size` requests in a fixed-size in-memory ring, 500 by default.
 Each record holds only metadata: request ID, timestamp, path, model, selected account, why that
-account was selected, status, duration, and the account a request failed over from. Prompts,
-response bodies, headers, and credentials are never recorded, nothing is written to disk, and
-restarting the process clears the history. Set `request_log_size` to `0` to disable it entirely.
+account was selected, status, duration, the account a request failed over from, and a versioned
+client-shape observation. That observation stores booleans for billing-block, CCH, structured
+metadata, known entrypoint, version, and Claude User-Agent presence plus whether the relay passed
+the body through or added minimal attribution. Prompts, response bodies, raw headers, CCH values,
+metadata identities, and credentials are never recorded, nothing is written to disk, and restarting
+the process clears the history. Set `request_log_size` to `0` to disable it entirely.
 
 A failed attempt counts against the account that failed even when the retry succeeded elsewhere,
 so a rate-limited account is visible in its own totals rather than hidden behind the failover.

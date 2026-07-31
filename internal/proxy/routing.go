@@ -25,6 +25,7 @@ type requestRoute struct {
 	AccountUUID     string
 	Model           string
 	SignedBilling   bool
+	Client          clientObservation
 }
 
 type metadataIdentity struct {
@@ -45,6 +46,7 @@ func deriveRequestRoute(body []byte, headers http.Header, apiKey string) (reques
 	route := requestRoute{}
 	route.Model, _ = root["model"].(string)
 	_, _, route.SignedBilling, _ = inspectSystem(root["system"])
+	route.Client = classifyClient(root, headers)
 
 	identity := parseMetadataIdentity(root["metadata"])
 	route.AccountUUID = identity.AccountUUID

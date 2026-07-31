@@ -285,10 +285,14 @@ func TestOverviewAndRequestsExposeRelayActivity(t *testing.T) {
 	recorder = adminRequest(t, server, http.MethodGet, "/admin/v1/requests?limit=10", "")
 	var listing struct {
 		Requests []struct {
-			Account   string `json:"account"`
-			Model     string `json:"model"`
-			Status    int    `json:"status"`
-			Selection string `json:"selection"`
+			Account               string                  `json:"account"`
+			Model                 string                  `json:"model"`
+			Status                int                     `json:"status"`
+			Selection             string                  `json:"selection"`
+			ClientClass           string                  `json:"client_class"`
+			ClassificationVersion int                     `json:"classification_version"`
+			RelayAction           string                  `json:"relay_action"`
+			ClientEvidence        *metrics.ClientEvidence `json:"client_evidence"`
 		} `json:"requests"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &listing); err != nil {
@@ -300,6 +304,10 @@ func TestOverviewAndRequestsExposeRelayActivity(t *testing.T) {
 	record := listing.Requests[0]
 	if record.Account != "default" || record.Model != "claude-opus-5" || record.Status != http.StatusOK || record.Selection == "" {
 		t.Errorf("request record = %#v", record)
+	}
+	if record.ClientClass != clientClassCompatible || record.ClassificationVersion != clientClassificationVersion ||
+		record.RelayAction != "minimal_attribution" || record.ClientEvidence == nil {
+		t.Errorf("request observation = %#v", record)
 	}
 }
 

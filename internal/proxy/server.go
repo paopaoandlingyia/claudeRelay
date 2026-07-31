@@ -206,6 +206,16 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		return
 	}
 	event.Model = route.Model
+	event.ClientClass = route.Client.Class
+	event.ClassificationVersion = route.Client.Version
+	event.Client = &metrics.ClientEvidence{
+		BillingBlock:       route.Client.Evidence.BillingBlock,
+		CCVersion:          route.Client.Evidence.CCVersion,
+		KnownEntrypoint:    route.Client.Evidence.KnownEntrypoint,
+		CCH:                route.Client.Evidence.CCH,
+		StructuredMetadata: route.Client.Evidence.StructuredMetadata,
+		ClaudeUserAgent:    route.Client.Evidence.ClaudeUserAgent,
+	}
 	forcedAlias := incoming.Header.Get(accountHeader)
 	excluded := make(map[int64]bool)
 	var response *http.Response
@@ -241,6 +251,14 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		if transformErr != nil {
 			fail(http.StatusBadRequest, "invalid_request_error", transformErr.Error())
 			return
+		}
+		switch {
+		case route.SignedBilling:
+			event.RelayAction = "passthrough"
+		case changed:
+			event.RelayAction = "minimal_attribution"
+		default:
+			event.RelayAction = "unchanged"
 		}
 		if changed {
 			slog.Info("added subscription attribution", "request_id", requestID, "path", incoming.URL.Path, "account", selected.Account.Alias)

@@ -12,16 +12,31 @@ import (
 
 // Event describes one completed relay attempt.
 type Event struct {
-	RequestID string
-	Time      time.Time
-	Path      string
-	Model     string
-	Account   string
-	Selection string
-	Status    int
-	Duration  time.Duration
-	Error     string
-	Failover  *Failover
+	RequestID             string
+	Time                  time.Time
+	Path                  string
+	Model                 string
+	Account               string
+	Selection             string
+	Status                int
+	Duration              time.Duration
+	Error                 string
+	Failover              *Failover
+	Client                *ClientEvidence
+	ClientClass           string
+	ClassificationVersion int
+	RelayAction           string
+}
+
+// ClientEvidence contains presence checks only. It never includes raw request
+// headers, billing values, CCH content, or metadata identities.
+type ClientEvidence struct {
+	BillingBlock       bool `json:"billing_block"`
+	CCVersion          bool `json:"cc_version"`
+	KnownEntrypoint    bool `json:"known_entrypoint"`
+	CCH                bool `json:"cch"`
+	StructuredMetadata bool `json:"structured_metadata"`
+	ClaudeUserAgent    bool `json:"claude_user_agent"`
 }
 
 // Failover names the account a request was moved away from. The relay permits at
@@ -35,16 +50,20 @@ type Failover struct {
 
 // Record is the JSON view of an Event.
 type Record struct {
-	RequestID  string    `json:"request_id"`
-	At         int64     `json:"at"`
-	Path       string    `json:"path"`
-	Model      string    `json:"model,omitempty"`
-	Account    string    `json:"account,omitempty"`
-	Selection  string    `json:"selection,omitempty"`
-	Status     int       `json:"status"`
-	DurationMS int64     `json:"duration_ms"`
-	Error      string    `json:"error,omitempty"`
-	Failover   *Failover `json:"failover,omitempty"`
+	RequestID             string          `json:"request_id"`
+	At                    int64           `json:"at"`
+	Path                  string          `json:"path"`
+	Model                 string          `json:"model,omitempty"`
+	Account               string          `json:"account,omitempty"`
+	Selection             string          `json:"selection,omitempty"`
+	Status                int             `json:"status"`
+	DurationMS            int64           `json:"duration_ms"`
+	Error                 string          `json:"error,omitempty"`
+	Failover              *Failover       `json:"failover,omitempty"`
+	ClientClass           string          `json:"client_class,omitempty"`
+	ClassificationVersion int             `json:"classification_version,omitempty"`
+	ClientEvidence        *ClientEvidence `json:"client_evidence,omitempty"`
+	RelayAction           string          `json:"relay_action,omitempty"`
 }
 
 // AccountStat aggregates activity for one account alias.
@@ -108,16 +127,20 @@ func (r *Recorder) Record(event Event) {
 		event.Time = time.Now()
 	}
 	record := Record{
-		RequestID:  event.RequestID,
-		At:         event.Time.UnixMilli(),
-		Path:       event.Path,
-		Model:      event.Model,
-		Account:    event.Account,
-		Selection:  event.Selection,
-		Status:     event.Status,
-		DurationMS: event.Duration.Milliseconds(),
-		Error:      event.Error,
-		Failover:   event.Failover,
+		RequestID:             event.RequestID,
+		At:                    event.Time.UnixMilli(),
+		Path:                  event.Path,
+		Model:                 event.Model,
+		Account:               event.Account,
+		Selection:             event.Selection,
+		Status:                event.Status,
+		DurationMS:            event.Duration.Milliseconds(),
+		Error:                 event.Error,
+		Failover:              event.Failover,
+		ClientClass:           event.ClientClass,
+		ClassificationVersion: event.ClassificationVersion,
+		ClientEvidence:        event.Client,
+		RelayAction:           event.RelayAction,
 	}
 	failed := Failed(record.Status, record.Error)
 

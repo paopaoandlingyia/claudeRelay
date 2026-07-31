@@ -66,6 +66,16 @@ func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	if got := recorder.Body.String(); got != "event: message_start\ndata: {}\n\n" {
 		t.Fatalf("response body = %q", got)
 	}
+	records := server.metrics.Recent(1)
+	if len(records) != 1 {
+		t.Fatalf("request records = %d, want 1", len(records))
+	}
+	if records[0].ClientClass != clientClassAmbiguous || records[0].RelayAction != "passthrough" {
+		t.Errorf("client observation = class %q action %q", records[0].ClientClass, records[0].RelayAction)
+	}
+	if records[0].ClientEvidence == nil || !records[0].ClientEvidence.CCH || records[0].ClientEvidence.StructuredMetadata {
+		t.Errorf("client evidence = %#v", records[0].ClientEvidence)
+	}
 }
 
 func TestFailedAlternateSelectionDoesNotDoubleCountAccount(t *testing.T) {
