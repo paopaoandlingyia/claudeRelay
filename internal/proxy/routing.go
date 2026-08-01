@@ -24,7 +24,6 @@ type requestRoute struct {
 	SelectionKey    string
 	AccountUUID     string
 	Model           string
-	SignedBilling   bool
 	AccountPool     string
 	Client          clientObservation
 }
@@ -46,7 +45,6 @@ func deriveRequestRoute(body []byte, headers http.Header, accountPool string) (r
 	}
 	route := requestRoute{AccountPool: accountPool}
 	route.Model, _ = root["model"].(string)
-	_, _, route.SignedBilling, _ = inspectSystem(root["system"])
 	route.Client = classifyClient(root, headers)
 
 	identity := parseMetadataIdentity(root["metadata"])
@@ -237,9 +235,6 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if cooling {
 			return selection{}, fmt.Errorf("requested account %q is temporarily cooling down", forcedAlias)
 		}
-		if route.SignedBilling && route.AccountUUID != "" && !strings.EqualFold(route.AccountUUID, account.AccountUUID) {
-			return selection{}, fmt.Errorf("requested account %q conflicts with signed request account identity", forcedAlias)
-		}
 		return selection{Account: account, Pinned: true, Source: "header"}, nil
 	}
 
@@ -256,10 +251,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			return selection{Account: account, Pinned: route.SignedBilling, Source: "account_uuid"}, nil
-		}
-		if route.SignedBilling {
-			return selection{}, fmt.Errorf("signed request account identity is not available")
+			return selection{Account: account, Source: "account_uuid"}, nil
 		}
 	}
 

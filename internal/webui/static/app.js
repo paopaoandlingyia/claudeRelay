@@ -526,7 +526,6 @@ function evidenceSummary(evidence) {
     ["billing", evidence.billing_block],
     ["version", evidence.cc_version],
     ["entrypoint", evidence.known_entrypoint],
-    ["cch", evidence.cch],
     ["metadata", evidence.structured_metadata],
     ["ua", evidence.claude_user_agent],
     ["session", evidence.claude_code_session],

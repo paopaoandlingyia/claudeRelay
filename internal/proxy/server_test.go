@@ -70,10 +70,10 @@ func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("request records = %d, want 1", len(records))
 	}
-	if records[0].ClientClass != clientClassAmbiguous || records[0].RelayAction != "passthrough" {
+	if records[0].ClientClass != clientClassAmbiguous || records[0].RelayAction != "unchanged" {
 		t.Errorf("client observation = class %q action %q", records[0].ClientClass, records[0].RelayAction)
 	}
-	if records[0].ClientEvidence == nil || !records[0].ClientEvidence.CCH || records[0].ClientEvidence.StructuredMetadata {
+	if records[0].ClientEvidence == nil || records[0].ClientEvidence.StructuredMetadata {
 		t.Errorf("client evidence = %#v", records[0].ClientEvidence)
 	}
 }
@@ -237,7 +237,7 @@ func TestForwardPreservesClientAnthropicVersion(t *testing.T) {
 	}
 }
 
-func TestForwardPreservesExistingCCHByteForByte(t *testing.T) {
+func TestForwardTreatsUnknownBillingFieldsAsOpaque(t *testing.T) {
 	t.Parallel()
 	body := `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.215.574; cc_entrypoint=claude-desktop; cch=00000;"}],"messages":[]}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -245,8 +245,13 @@ func TestForwardPreservesExistingCCHByteForByte(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(got) != body {
-			t.Fatalf("signed client body changed:\n%s", got)
+		decoded := decodeBody(t, got)
+		system := decoded["system"].([]any)
+		if text := system[0].(map[string]any)["text"]; text != "x-anthropic-billing-header: cc_version=2.1.215.574; cc_entrypoint=claude-desktop; cch=00000;" {
+			t.Fatalf("caller billing block changed: %q", text)
+		}
+		if _, ok := decoded["metadata"]; !ok {
+			t.Fatal("minimum metadata was not added")
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -567,9 +572,16 @@ func TestRetryableResponseSwitchesAccountOnce(t *testing.T) {
 	}
 }
 
-func TestSignedRequestRejectsConflictingForcedAccount(t *testing.T) {
+func TestUnknownBillingFieldsDoNotOverrideForcedAccount(t *testing.T) {
 	t.Parallel()
-	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-secondary" {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
 	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
 	body := `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=x; cc_entrypoint=cli; cch=abcde;"}],"metadata":{"user_id":"{\"account_uuid\":\"11111111-1111-4111-8111-111111111111\",\"session_id\":\"s\"}"},"messages":[]}`
 	recorder := httptest.NewRecorder()
@@ -577,7 +589,7 @@ func TestSignedRequestRejectsConflictingForcedAccount(t *testing.T) {
 	request.Header.Set("x-api-key", "downstream-key")
 	request.Header.Set(accountHeader, "secondary")
 	server.routes().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "conflicts with signed request") {
+	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
 	}
 }

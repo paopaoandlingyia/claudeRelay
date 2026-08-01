@@ -30,12 +30,11 @@ type Event struct {
 }
 
 // ClientEvidence contains presence checks only. It never includes raw request
-// headers, billing values, CCH content, or metadata identities.
+// headers, billing values, or metadata identities.
 type ClientEvidence struct {
 	BillingBlock       bool `json:"billing_block"`
 	CCVersion          bool `json:"cc_version"`
 	KnownEntrypoint    bool `json:"known_entrypoint"`
-	CCH                bool `json:"cch"`
 	StructuredMetadata bool `json:"structured_metadata"`
 	ClaudeUserAgent    bool `json:"claude_user_agent"`
 	ClaudeCodeSession  bool `json:"claude_code_session"`

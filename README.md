@@ -11,7 +11,7 @@ round-robin rotation, or Claude Code prompt injection.
 - `POST /v1/messages` and `POST /v1/messages/count_tokens`
 - Transparent JSON and SSE responses
 - Minimum subscription attribution for ordinary Anthropic requests
-- Byte-for-byte body pass-through when an official client CCH is present
+- Caller-owned billing and metadata fields preserved without interpreting unknown fields
 - Cache-affinity account selection, one-hour sticky sessions, and one bounded transient failover
 - Disabled-by-default account imports and manual activation
 - Embedded management console with PKCE OAuth login, credential paste-import, and account removal
@@ -171,9 +171,9 @@ whenever its endpoints or client behavior change.
 Every account belongs to exactly one pool. New and upgraded accounts start in `compatible`.
 Requests authenticated by `relay_api_key` can select only compatible accounts. Requests
 authenticated by `official_api_key` must have a recognized Claude Code shape and can select only
-official accounts. The current accepted shape is either `User-Agent: claude-cli/...` together with
-`X-Claude-Code-Session-Id` and `X-App: cli`, or the older complete billing/CCH/structured-metadata
-shape. This is a traffic policy, not proof that the caller is an authentic Anthropic binary.
+official accounts. The accepted shape is `User-Agent: claude-cli/...` together with
+`X-Claude-Code-Session-Id` and `X-App: cli`. This is a traffic policy, not proof that the caller is
+an authentic Anthropic binary.
 
 Changing an account's pool immediately clears its sticky bindings. Cooldowns and OAuth ownership
 state remain with the account. `X-Claude-Relay-Account` is resolved only inside the authenticated
@@ -192,22 +192,20 @@ X-Claude-Relay-Account: personal
 ```
 
 The alias is available to callers authenticated with either ingress API key, resolved only inside
-that key's account pool, and stripped before forwarding upstream. A missing, disabled, or cooling account produces
-an error instead of silently selecting another account. A forced alias that conflicts with the
-account identity in an immutable signed CCH request is also rejected. Successful responses include
+that key's account pool, and stripped before forwarding upstream. A missing, disabled, or cooling
+account produces an error instead of silently selecting another account. Successful responses include
 `X-Claude-Relay-Account` so a trusted caller can inspect the selected alias. Anyone holding the
 corresponding ingress API key can use this override, so aliases should not contain email addresses or
 other sensitive data.
 
 Transient `429`, `529`, network, upstream `5xx`, and token-refresh failures may move an unpinned
-request to one other account at most once. Explicitly selected and signed account-bound requests
-never fail over.
+request to one other account at most once. Explicitly selected requests never fail over.
 
 ## Request transformation
 
-- Requests containing a billing block with `cch=` are treated as official signed traffic and
-  forwarded byte-for-byte.
 - An existing billing block or `metadata.user_id` is preserved.
+- Unknown caller-owned billing fields are passed through without validation and have no effect on
+  classification, account selection, pinning, or failover.
 - Otherwise the relay prepends the smallest billing block demonstrated by the current tests and
   adds a JSON-string user identity with stable account/device identifiers.
 - Token-count requests receive the same billing block but no metadata, because that endpoint's
@@ -234,11 +232,11 @@ GET /admin/v1/requests?limit=100
 The relay keeps the last `request_log_size` requests in a fixed-size in-memory ring, 500 by default.
 Each record holds only metadata: request ID, timestamp, ingress pool, path, model, selected account, why that
 account was selected, status, duration, the account a request failed over from, and a versioned
-client-shape observation. That observation stores booleans for billing-block, CCH, structured
+client-shape observation. That observation stores booleans for billing-block, structured
 metadata, known entrypoint, version, Claude User-Agent, Claude Code session header, and `X-App: cli`
 presence plus whether the relay passed the body through or added minimal attribution. The console
 also shows whether the request used `messages` or `count_tokens`. Prompts, response bodies, raw
-headers, CCH values, metadata identities, and credentials are never recorded, nothing is written
+headers, billing values, metadata identities, and credentials are never recorded, nothing is written
 to disk, and restarting the process clears the history. Set `request_log_size` to `0` to disable it
 entirely.
 
@@ -266,14 +264,3 @@ override shown above. Request-body pass-through alone does not preserve them.
 The official New API group should be issued only to Claude Code users. The relay rejects a request
 that reaches the official key without the required shape before selecting an account. Conversely,
 compatible traffic never consumes an official-pool account even when it supplies an account alias.
-
-## Legacy CCH research utility
-
-The offline `sign-cch` command retains the old 2.1.215-era candidate algorithm for reproducibility.
-It is not used by the server and is known not to reproduce official 2.1.219 captures.
-
-```powershell
-.\claude-relay.exe sign-cch `
-  -in data\capture\body.json `
-  -out data\capture\body.legacy-signed.json
-```

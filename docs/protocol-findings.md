@@ -68,10 +68,9 @@ does not by itself prove how Anthropic classified subscription usage.
   requests and used `cc_entrypoint=claude-desktop-3p`; none of the 26 bodies contained `cch=`.
 - **Capture:** a small Haiku helper request contained a JSON-string `metadata.user_id` with
   `device_id` and `session_id`, but an empty `account_uuid`, and no billing block.
-- **Current classification policy:** either the complete three-header combination above or the
-  older complete billing/CCH/structured-metadata shape is a `cc_candidate`. Individual headers or
-  partial body evidence remain `ambiguous`. These are observable, spoofable request-shape signals,
-  not client authentication.
+- **Current classification policy:** only the complete three-header combination above is a
+  `cc_candidate`. Billing and metadata body evidence is `ambiguous` and has no admission or routing
+  authority. These are observable, spoofable request-shape signals, not client authentication.
 - **Capture:** the tested New API deployment returned 404 for
   `/v1/messages/count_tokens?beta=true`. Claude Code continued, but native count-token
   compatibility through that gateway remains unresolved.
@@ -101,8 +100,9 @@ does not by itself prove how Anthropic classified subscription usage.
   xxHash64 algorithm did not reproduce either official CCH. The algorithm changed by 2.1.219.
 - sub2api removed CCH based on an unrelated issue reference and has not introduced a replacement
   algorithm as of its 2026-07-29 main branch.
-- **Current policy:** never generate or rewrite CCH online. Any request already carrying CCH is
-  forwarded byte-for-byte. The old algorithm remains only in the offline research utility.
+- **Current policy:** CCH is an opaque caller-owned billing field. The relay does not generate,
+  calculate, validate, record, classify, bind accounts, or alter failover based on it. Existing
+  billing text is preserved as ordinary request content.
 - **Inference:** CCH may currently be a soft signal for client attribution, telemetry, staged
   validation, or abuse/risk scoring rather than a hard admission check. Accepting a missing or
   incorrect value is consistent with those uses and with backward compatibility, but no available
@@ -120,12 +120,11 @@ does not by itself prove how Anthropic classified subscription usage.
 
 ## Implemented transformation contract
 
-1. If a billing block contains `cch=`, forward the request body unchanged.
-2. Otherwise preserve existing billing and metadata fields.
-3. Add only a missing minimum billing block and missing structured metadata.
-4. Preserve all original system instructions and messages; never inject Claude Code behavioral
+1. Preserve existing billing and metadata fields, including unknown billing fields.
+2. Add only a missing minimum billing block and missing structured metadata.
+3. Preserve all original system instructions and messages; never inject Claude Code behavioral
    instructions.
-5. Keep the transformer idempotent.
+4. Keep the transformer idempotent.
 
 For an ordinary request, `system` is normalized as follows:
 
@@ -135,8 +134,8 @@ For an ordinary request, `system` is normalized as follows:
 | String | `[billing block, original text block]` |
 | Array | `[billing block, ...original blocks]` |
 
-This normalization is not applied when an existing billing block contains CCH; such a request is
-treated as signed official-client traffic and forwarded byte-for-byte.
+This normalization is not applied when a billing block already exists. Unknown fields in that
+block are not interpreted by the relay.
 
 For `/v1/messages/count_tokens`, the same system normalization is applied so its result includes
 the billing block that the corresponding Messages request would send. Metadata is not added because
@@ -160,7 +159,6 @@ the count-tokens schema rejects it, and metadata does not contribute prompt toke
 
 ## Deferred questions
 
-- Derive and independently verify the post-2.1.215 CCH algorithm from multiple exact raw captures.
 - Recheck the model matrix after client/model releases and distinguish validation responses from
   genuine overload/rate-limit responses.
 - Verify subscription-side usage classification in addition to HTTP success.

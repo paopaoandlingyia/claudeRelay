@@ -44,7 +44,8 @@ The client continuing to emit CCH is evidence that the field remains part of the
 format even though the controlled acceptance tests below show that the tested model paths do not
 currently require it. Exact raw Sonnet and Opus bodies matched their captured byte lengths, but the
 older seeded xxHash64 algorithm did not reproduce either value. Online rewriting was therefore
-disabled: preserve a body carrying CCH byte-for-byte until a new algorithm is independently proven.
+disabled. That earlier policy preserved a body carrying CCH byte-for-byte; it was superseded on
+2026-08-01 when CCH was removed from classification, routing, pinning, and failover decisions.
 
 Title generation has moved to a separate Claude Web endpoint under
 `/api/organizations/{organization}/dust/generate_title_and_branch`. The observed request selects
@@ -126,5 +127,6 @@ The current evidence supports an ordinary-client transformer with this idempoten
   device identities are stable; a downstream session header is mapped stably, while a stateless
   request without one receives a fresh session UUID.
 - Preserve every other system block and message in its original order.
-- Preserve a request carrying CCH byte-for-byte. Do not synthesize or rewrite CCH online.
+- Preserve existing billing text as caller-owned content, but do not give CCH any classification,
+  routing, pinning, or failover semantics.
 - Never add Claude Code identity or software-engineering instructions.

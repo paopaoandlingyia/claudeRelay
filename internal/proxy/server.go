@@ -241,7 +241,6 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		BillingBlock:       route.Client.Evidence.BillingBlock,
 		CCVersion:          route.Client.Evidence.CCVersion,
 		KnownEntrypoint:    route.Client.Evidence.KnownEntrypoint,
-		CCH:                route.Client.Evidence.CCH,
 		StructuredMetadata: route.Client.Evidence.StructuredMetadata,
 		ClaudeUserAgent:    route.Client.Evidence.ClaudeUserAgent,
 		ClaudeCodeSession:  route.Client.Evidence.ClaudeCodeSession,
@@ -288,12 +287,9 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			fail(http.StatusBadRequest, "invalid_request_error", transformErr.Error())
 			return
 		}
-		switch {
-		case route.SignedBilling:
-			event.RelayAction = "passthrough"
-		case changed:
+		if changed {
 			event.RelayAction = "minimal_attribution"
-		default:
+		} else {
 			event.RelayAction = "unchanged"
 		}
 		if changed {

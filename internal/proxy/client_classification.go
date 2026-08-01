@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const clientClassificationVersion = 2
+const clientClassificationVersion = 3
 
 const (
 	clientClassCompatible  = "compatible"
@@ -18,7 +18,6 @@ type clientEvidence struct {
 	BillingBlock       bool
 	CCVersion          bool
 	KnownEntrypoint    bool
-	CCH                bool
 	StructuredMetadata bool
 	ClaudeUserAgent    bool
 	ClaudeCodeSession  bool
@@ -32,7 +31,7 @@ type clientObservation struct {
 }
 
 func classifyClient(root map[string]any, headers http.Header) clientObservation {
-	evidence, completeBilling := billingEvidence(root["system"])
+	evidence := billingEvidence(root["system"])
 	evidence.StructuredMetadata = hasStructuredMetadata(root["metadata"])
 	userAgent := strings.ToLower(strings.TrimSpace(headers.Get("User-Agent")))
 	evidence.ClaudeUserAgent = strings.Contains(userAgent, "claude-cli/")
@@ -41,19 +40,18 @@ func classifyClient(root map[string]any, headers http.Header) clientObservation 
 
 	class := clientClassCompatible
 	completeHeaders := evidence.ClaudeUserAgent && evidence.ClaudeCodeSession && evidence.XAppCLI
-	if completeHeaders || (completeBilling && evidence.StructuredMetadata) {
+	if completeHeaders {
 		class = clientClassCCCandidate
 	} else if evidence.BillingBlock || evidence.CCVersion || evidence.KnownEntrypoint ||
-		evidence.CCH || evidence.StructuredMetadata || evidence.ClaudeUserAgent ||
+		evidence.StructuredMetadata || evidence.ClaudeUserAgent ||
 		evidence.ClaudeCodeSession || evidence.XAppCLI {
 		class = clientClassAmbiguous
 	}
 	return clientObservation{Class: class, Version: clientClassificationVersion, Evidence: evidence}
 }
 
-func billingEvidence(value any) (clientEvidence, bool) {
+func billingEvidence(value any) clientEvidence {
 	var evidence clientEvidence
-	complete := false
 	for _, text := range systemTexts(value) {
 		trimmed := strings.TrimSpace(text)
 		if !strings.HasPrefix(trimmed, billingAttributionPrefix) {
@@ -64,13 +62,10 @@ func billingEvidence(value any) (clientEvidence, bool) {
 		hasVersion := strings.TrimSpace(fields["cc_version"]) != ""
 		entrypoint := strings.ToLower(strings.TrimSpace(fields["cc_entrypoint"]))
 		knownEntrypoint := entrypoint == "cli" || entrypoint == "claude-desktop" || entrypoint == "claude-desktop-3p"
-		hasCCH := strings.TrimSpace(fields["cch"]) != ""
 		evidence.CCVersion = evidence.CCVersion || hasVersion
 		evidence.KnownEntrypoint = evidence.KnownEntrypoint || knownEntrypoint
-		evidence.CCH = evidence.CCH || hasCCH
-		complete = complete || (hasVersion && knownEntrypoint && hasCCH)
 	}
-	return evidence, complete
+	return evidence
 }
 
 func systemTexts(value any) []string {

@@ -16,7 +16,6 @@ func TestClassifyClientEvidence(t *testing.T) {
 		session        string
 		xApp           string
 		wantClass      string
-		wantCCH        bool
 		wantMeta       bool
 		wantUA         bool
 		wantEntrypoint bool
@@ -24,10 +23,9 @@ func TestClassifyClientEvidence(t *testing.T) {
 		wantXApp       bool
 	}{
 		{
-			name:           "complete official-shaped request",
+			name:           "legacy body evidence is not official",
 			body:           `{"model":"claude-test","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.219.0a7; cc_entrypoint=claude-desktop; cch=abcde;"}],"metadata":{"user_id":"{\"device_id\":\"device\",\"account_uuid\":\"account\",\"session_id\":\"session\"}"}}`,
-			wantClass:      clientClassCCCandidate,
-			wantCCH:        true,
+			wantClass:      clientClassAmbiguous,
 			wantMeta:       true,
 			wantEntrypoint: true,
 		},
@@ -47,7 +45,6 @@ func TestClassifyClientEvidence(t *testing.T) {
 			name:           "billing without metadata",
 			body:           `{"model":"claude-test","system":"x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=abcde;"}`,
 			wantClass:      clientClassAmbiguous,
-			wantCCH:        true,
 			wantEntrypoint: true,
 		},
 		{
@@ -100,9 +97,6 @@ func TestClassifyClientEvidence(t *testing.T) {
 			}
 			if route.Client.Class != test.wantClass {
 				t.Errorf("class = %q, want %q", route.Client.Class, test.wantClass)
-			}
-			if route.Client.Evidence.CCH != test.wantCCH {
-				t.Errorf("cch evidence = %v, want %v", route.Client.Evidence.CCH, test.wantCCH)
 			}
 			if route.Client.Evidence.StructuredMetadata != test.wantMeta {
 				t.Errorf("metadata evidence = %v, want %v", route.Client.Evidence.StructuredMetadata, test.wantMeta)

@@ -39,8 +39,8 @@ type attributionUserID struct {
 }
 
 // addSubscriptionAttribution adds only the minimum fields demonstrated by the
-// protocol experiments. A request carrying an existing CCH is returned byte-for-byte
-// because changing any body byte could invalidate an official client signature.
+// protocol experiments. Existing caller-owned billing and metadata fields are
+// preserved, including fields the relay does not interpret.
 func addSubscriptionAttribution(body []byte, headers http.Header, cred credential.Credential, includeMetadata bool, sessionSeed string) ([]byte, bool, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -55,12 +55,9 @@ func addSubscriptionAttribution(body []byte, headers http.Header, cred credentia
 		return nil, false, fmt.Errorf("request body must be a JSON object")
 	}
 
-	system, billingFound, signedBilling, err := inspectSystem(root["system"])
+	system, billingFound, err := inspectSystem(root["system"])
 	if err != nil {
 		return nil, false, err
-	}
-	if signedBilling {
-		return body, false, nil
 	}
 
 	changed := false
@@ -114,21 +111,20 @@ func addSubscriptionAttribution(body []byte, headers http.Header, cred credentia
 	return transformed, true, nil
 }
 
-func inspectSystem(value any) (system []any, billingFound, signedBilling bool, err error) {
+func inspectSystem(value any) (system []any, billingFound bool, err error) {
 	switch typed := value.(type) {
 	case nil:
-		return nil, false, false, nil
+		return nil, false, nil
 	case string:
 		if strings.TrimSpace(typed) == "" {
-			return nil, false, false, nil
+			return nil, false, nil
 		}
 		billingFound = strings.HasPrefix(typed, billingAttributionPrefix)
-		signedBilling = billingFound && strings.Contains(typed, "cch=")
-		return []any{map[string]any{"type": "text", "text": typed}}, billingFound, signedBilling, nil
+		return []any{map[string]any{"type": "text", "text": typed}}, billingFound, nil
 	case []any:
 		system = typed
 	default:
-		return nil, false, false, fmt.Errorf("system must be a string or an array")
+		return nil, false, fmt.Errorf("system must be a string or an array")
 	}
 
 	for _, item := range system {
@@ -141,11 +137,8 @@ func inspectSystem(value any) (system []any, billingFound, signedBilling bool, e
 			continue
 		}
 		billingFound = true
-		if strings.Contains(text, "cch=") {
-			signedBilling = true
-		}
 	}
-	return system, billingFound, signedBilling, nil
+	return system, billingFound, nil
 }
 
 func metadataObject(value any) (map[string]any, error) {

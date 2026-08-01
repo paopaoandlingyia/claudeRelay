@@ -22,10 +22,10 @@ keys stored in SQLite are hashes and do not contain raw prompts or client sessio
 
 Each account owns its OAuth tokens, stable account/device attribution identity, enabled state, and
 model-specific cooldowns. Selection therefore occurs before minimum subscription attribution is
-added. Signed CCH bodies remain immutable and are pinned to their matching imported account.
+added. Caller metadata account UUIDs are soft affinity hints and fall through to the remaining
+selection stages when unavailable.
 
-Transient failures permit at most one alternate account. Explicit account overrides and signed
-account-bound requests do not fail over.
+Transient failures permit at most one alternate account. Explicit account overrides do not fail over.
 
 ## 2026-07-30: activation owns OAuth refresh
 
@@ -131,14 +131,13 @@ while a healthy account absorbed its traffic.
 
 ## 2026-07-31: client-shape classification is observable and policy-scoped
 
-The relay classifies the raw incoming request before transforming it. Version 2 reports
-`cc_candidate` for either of two observed shapes: a `claude-cli` User-Agent together with
-`X-Claude-Code-Session-Id` and `X-App: cli`, or the older complete billing/CCH/structured-metadata
-shape. It recognizes `cli`, `claude-desktop`, and `claude-desktop-3p` entrypoints. Partial evidence
-is `ambiguous`; no evidence is `compatible`.
+The relay classifies the raw incoming request before transforming it. Version 3 reports
+`cc_candidate` only for a `claude-cli` User-Agent together with `X-Claude-Code-Session-Id` and
+`X-App: cli`. Billing, structured metadata, or a partial header set is `ambiguous`; no evidence is
+`compatible`.
 
 The in-memory request record stores presence booleans and the relay action only. It never stores the
-raw CCH, billing values, User-Agent, account/device/session identities, prompts, or response content.
+raw billing values, User-Agent, account/device/session identities, prompts, or response content.
 Classification does not authenticate an official client. It is enforced only as the admission
 policy for the official ingress; compatible ingress forwarding remains independent of the result.
 
@@ -182,3 +181,15 @@ Usage reads share the configured outbound proxy. Enabled accounts may use the ex
 OAuth refresh path when their access token is near expiry. Disabled accounts are read only while
 their current access token remains valid, preserving the rule that observation cannot take over a
 refresh-token chain.
+
+## 2026-08-01: CCH has no relay semantics
+
+The supported official path is Claude Code configured with a third-party API URL. Captures of that
+path showed the complete three-header identity shape and no CCH. Model acceptance tests also did
+not require CCH. The relay therefore does not generate, calculate, validate, record, or route on
+CCH, and the obsolete offline signer has been removed.
+
+Caller-owned billing text remains opaque request content: existing fields are preserved, but they
+cannot grant official-ingress admission, bind an account UUID, pin a request, or disable bounded
+failover. This keeps the native Anthropic body transparent without retaining a second, unverified
+client protocol inside the routing layer.

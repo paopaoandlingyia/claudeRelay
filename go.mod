@@ -2,10 +2,7 @@ module github.com/local/claude-relay
 
 go 1.26
 
-require (
-	github.com/pierrec/xxHash v0.1.5
-	modernc.org/sqlite v1.55.0
-)
+require modernc.org/sqlite v1.55.0
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

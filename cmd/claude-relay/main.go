@@ -7,11 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
-	"github.com/local/claude-relay/internal/cch"
 	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/credential"
 	"github.com/local/claude-relay/internal/proxy"
@@ -30,8 +28,6 @@ func main() {
 		err = runImport(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
-	case "sign-cch":
-		err = runSignCCH(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -48,7 +44,6 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  claude-relay import -from <cliproxy-credential.json> -alias <name> [-db data/claude-relay.db]")
-	fmt.Fprintln(os.Stderr, "  claude-relay sign-cch -in <body.json> -out <signed-body.json>")
 	fmt.Fprintln(os.Stderr, "  claude-relay serve [-config config.json]")
 }
 
@@ -127,47 +122,4 @@ func migrateLegacyCredential(database *store.Store, path string) error {
 		slog.Info("migrated legacy credential into account database as disabled", "account", "default")
 	}
 	return err
-}
-
-func runSignCCH(args []string) error {
-	fs := flag.NewFlagSet("sign-cch", flag.ContinueOnError)
-	inputPath := fs.String("in", "", "captured Anthropic request body")
-	outputPath := fs.String("out", "", "destination for the signed body")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *inputPath == "" || *outputPath == "" {
-		return fmt.Errorf("-in and -out are required")
-	}
-	inputAbsolute, err := filepath.Abs(*inputPath)
-	if err != nil {
-		return fmt.Errorf("resolve input path: %w", err)
-	}
-	outputAbsolute, err := filepath.Abs(*outputPath)
-	if err != nil {
-		return fmt.Errorf("resolve output path: %w", err)
-	}
-	if inputAbsolute == outputAbsolute {
-		return fmt.Errorf("input and output paths must differ")
-	}
-
-	body, err := os.ReadFile(inputAbsolute)
-	if err != nil {
-		return fmt.Errorf("read captured body: %w", err)
-	}
-	signed, info, err := cch.SignExisting(body)
-	if err != nil {
-		return err
-	}
-	if !info.Found {
-		return fmt.Errorf("first system block is not a billing attribution block")
-	}
-	if err := os.MkdirAll(filepath.Dir(outputAbsolute), 0o700); err != nil {
-		return fmt.Errorf("create output directory: %w", err)
-	}
-	if err := os.WriteFile(outputAbsolute, signed, 0o600); err != nil {
-		return fmt.Errorf("write signed body: %w", err)
-	}
-	slog.Info("CCH signing complete", "changed", info.Changed, "output", outputAbsolute)
-	return nil
 }
