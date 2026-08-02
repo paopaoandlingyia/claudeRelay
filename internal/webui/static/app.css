@@ -375,7 +375,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
   min-height: 112px;
   padding: 15px 16px;
 }
-.account-identity { display: flex; align-items: center; min-width: 0; gap: 11px; }
+.account-identity { display: flex; align-items: center; min-width: 0; gap: 13px; }
 .account-avatar {
   display: grid;
   place-items: center;
@@ -389,13 +389,53 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
   font-weight: 750;
   letter-spacing: .03em;
 }
-.identity-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 3px; }
-.identity-line { display: flex; align-items: center; min-width: 0; gap: 7px; }
-.identity-copy strong { max-width: 100%; overflow: hidden; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.identity-copy small { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+/* The chips carry their own padding, so the block is pulled back by that inset
+   to keep the alias text optically aligned with the avatar and the pool badge. */
+.identity-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; margin-left: -8px; gap: 2px; }
+.identity-line { display: flex; align-items: center; min-width: 0; max-width: 100%; gap: 5px; }
+.identity-copy small { max-width: 100%; overflow: hidden; margin-left: 8px; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .account-status-badge { padding: 2px 6px; font-size: 10px; }
 .account-status-badge::before { width: 4px; height: 4px; }
-.account-pool-badge { margin-top: 1px; }
+.account-pool-badge { margin-top: 2px; margin-left: 8px; }
+
+.copy-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 7px;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .12s, background .12s, color .12s;
+}
+.copy-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.copy-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.copy-chip-icon { display: flex; flex: 0 0 auto; }
+.copy-chip-icon svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+.alias-chip {
+  border-color: var(--line);
+  background: var(--surface-3);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -.01em;
+}
+.alias-chip .copy-chip-icon { color: var(--faint); }
+.alias-chip:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.alias-chip:hover .copy-chip-icon { color: inherit; }
+
+.contact-chip { color: var(--muted); font-size: 11px; }
+.contact-chip .copy-chip-icon { opacity: 0; transition: opacity .12s; }
+.account-item:hover .contact-chip .copy-chip-icon, .contact-chip:focus-visible .copy-chip-icon { opacity: 1; }
+.contact-chip:hover { background: var(--surface-3); color: var(--text); }
+
+.copy-chip.is-copied, .copy-chip.is-copied:hover { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
 .account-usage { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
 .usage-heading { display: flex; align-items: center; gap: 7px; }
 .usage-title { color: var(--muted); font-size: 10px; font-weight: 650; }

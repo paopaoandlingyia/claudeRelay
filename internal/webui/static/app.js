@@ -257,12 +257,17 @@ function accountRow(account) {
   identityCopy.className = "identity-copy";
   const identityLine = document.createElement("div");
   identityLine.className = "identity-line";
-  identityLine.append(strong(account.alias));
+  identityLine.append(copyChip(account.alias, {
+    label: account.alias,
+    className: "alias-chip",
+    message: `别名 ${account.alias} 已复制`,
+    title: "点击复制别名",
+  }));
   const statusBadge = badge(status.label, status.css);
   statusBadge.classList.add("account-status-badge");
   statusBadge.title = status.note || status.label;
   identityLine.append(statusBadge);
-  identityCopy.append(identityLine, small(account.email || shortenUUID(account.account_uuid)));
+  identityCopy.append(identityLine, accountContactLine(account));
   const poolBadge = badge(pool.label, pool.css);
   poolBadge.classList.add("account-pool-badge");
   poolBadge.title = pool.note;
@@ -288,6 +293,26 @@ function accountRow(account) {
   row.appendChild(main);
 
   return row;
+}
+
+function accountContactLine(account) {
+  if (account.email) {
+    return copyChip(account.email, {
+      label: account.email,
+      className: "contact-chip",
+      message: "邮箱已复制",
+      title: "点击复制邮箱",
+    });
+  }
+  if (account.account_uuid) {
+    return copyChip(account.account_uuid, {
+      label: shortenUUID(account.account_uuid),
+      className: "contact-chip",
+      message: "账号身份已复制",
+      title: `点击复制账号身份 ${account.account_uuid}`,
+    });
+  }
+  return small("未知身份");
 }
 
 function accountMetric(label, value, noteText) {
@@ -982,6 +1007,32 @@ function badge(text, css) {
   return span;
 }
 
+const COPY_GLYPH = '<svg viewBox="0 0 16 16"><rect x="5.75" y="5.75" width="8.5" height="8.5" rx="2"/><path d="M10.75 3.9A1.9 1.9 0 0 0 8.85 2H3.65A1.65 1.65 0 0 0 2 3.65v5.2a1.9 1.9 0 0 0 1.9 1.9"/></svg>';
+
+// A click-to-copy label: the text stays readable and selectable-looking, the
+// glyph marks it as copyable without spending a separate button slot.
+function copyChip(value, { label, className = "", message, title }) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = `copy-chip ${className}`.trim();
+  chip.title = title;
+  const text = document.createElement("span");
+  text.className = "copy-chip-text";
+  text.textContent = label;
+  const icon = document.createElement("span");
+  icon.className = "copy-chip-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML = COPY_GLYPH;
+  chip.append(text, icon);
+  chip.addEventListener("click", async () => {
+    if (!(await copyText(value, message))) return;
+    chip.classList.add("is-copied");
+    clearTimeout(chip.copiedTimer);
+    chip.copiedTimer = setTimeout(() => chip.classList.remove("is-copied"), 1200);
+  });
+  return chip;
+}
+
 function button(label, className, handler) {
   const element = document.createElement("button");
   element.type = "button";
@@ -1062,12 +1113,48 @@ function confirmDialog({ title, lead, items = [], accept = "确认", danger = fa
 }
 
 async function copyText(value, message) {
-  if (!value) return;
-  try {
-    await navigator.clipboard.writeText(value);
+  if (!value) return false;
+  if (await writeClipboard(value)) {
     showToast(message);
+    return true;
+  }
+  showToast("复制失败，请手动选中文本复制", true);
+  return false;
+}
+
+// navigator.clipboard only exists in a secure context (HTTPS or localhost), so a
+// console served over plain HTTP has to fall back to the legacy selection copy.
+async function writeClipboard(value) {
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      // Permission denied or blocked: try the legacy path below.
+    }
+  }
+  // A modal dialog makes the rest of the document inert, so the scratch area has
+  // to live inside the open dialog for the selection to take.
+  const host = document.querySelector("dialog[open]") || document.body;
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "");
+  area.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;";
+  host.appendChild(area);
+  const selection = document.getSelection();
+  const previous = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  try {
+    area.select();
+    area.setSelectionRange(0, value.length);
+    return document.execCommand("copy");
   } catch {
-    showToast("浏览器拒绝了剪贴板访问，请手动复制", true);
+    return false;
+  } finally {
+    area.remove();
+    if (previous) {
+      selection.removeAllRanges();
+      selection.addRange(previous);
+    }
   }
 }
 
