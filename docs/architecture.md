@@ -14,7 +14,8 @@ Account selection uses the following precedence:
 2. `account_uuid` from an official client's structured `metadata.user_id` when it matches an
    imported account.
 3. A successful session binding with a sliding one-hour lifetime.
-4. Rendezvous hashing of a cache-prefix key across enabled, non-cooling accounts.
+4. The least-loaded enabled, non-cooling account for a new request or a locally overloaded
+   sticky binding; rendezvous hashing of the cache-prefix key breaks load ties.
 
 The cache-prefix key reads existing Anthropic `cache_control` breakpoints without rewriting them.
 When no breakpoint exists, tools, system, and the first user message form the stable anchor. Route
@@ -26,6 +27,21 @@ added. Caller metadata account UUIDs are soft affinity hints and fall through to
 selection stages when unavailable.
 
 Transient failures permit at most one alternate account. Explicit account overrides do not fail over.
+
+## 2026-08-02: sticky routing yields to local load temporarily
+
+Sticky bindings remain the default because they preserve cache affinity, but a binding is a
+preference rather than an availability boundary. The relay keeps an in-process active-request
+counter per account and uses `max_inflight_per_account` (8 by default) as a soft threshold. When a
+sticky account reaches that threshold and another healthy account has a lower load, the current
+request temporarily bypasses the binding. The original SQLite binding is retained, so later work
+returns to it after the load falls; a single-account deployment remains available even above the
+threshold.
+
+The counter is reserved before the upstream request and released only after the full response body
+has been copied or the client context is canceled. It is not persisted to SQLite because the
+supported topology is one relay process. Explicit account aliases remain pinned, and local load
+fallback does not clear or migrate a sticky binding.
 
 ## 2026-07-30: activation owns OAuth refresh
 

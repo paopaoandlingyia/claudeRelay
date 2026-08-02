@@ -544,6 +544,120 @@ func TestStickySessionKeepsSelectedAccount(t *testing.T) {
 	}
 }
 
+func TestStickyOverloadTemporarilyBypassesWithoutRebinding(t *testing.T) {
+	t.Parallel()
+	var authorizations []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	server.selector.maxInflightPerAcct = 1
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+	body := `{"model":"claude-test","messages":[{"role":"user","content":"sticky overload"}]}`
+	headers := http.Header{"X-Claude-Session-Id": []string{"sticky-overload"}}
+	route, err := deriveRequestRoute([]byte(body), headers, store.AccountPoolCompatible)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("primary account = %#v found=%v err=%v", primary, found, err)
+	}
+	if err := server.store.Bind(t.Context(), route.ConversationKey, primary.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	holdPrimary := server.load.reserve(primary.ID)
+
+	send := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+		request.Header.Set("x-api-key", "downstream-key")
+		request.Header.Set("X-Claude-Session-Id", "sticky-overload")
+		server.routes().ServeHTTP(recorder, request)
+		return recorder
+	}
+	first := send()
+	if first.Code != http.StatusOK || len(authorizations) != 1 || authorizations[0] != "Bearer token-secondary" {
+		t.Fatalf("overload fallback status=%d authorizations=%#v body=%s", first.Code, authorizations, first.Body.String())
+	}
+	bound, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountPoolCompatible, time.Now())
+	if err != nil || !found || bound.ID != primary.ID {
+		t.Fatalf("temporary fallback changed sticky binding: account=%#v found=%v err=%v", bound, found, err)
+	}
+	holdPrimary()
+
+	second := send()
+	if second.Code != http.StatusOK || len(authorizations) != 2 || authorizations[1] != "Bearer upstream-access-token" {
+		t.Fatalf("sticky recovery status=%d authorizations=%#v body=%s", second.Code, authorizations, second.Body.String())
+	}
+	records := server.metrics.Recent(2)
+	if len(records) != 2 || records[1].Selection != "sticky_overload_fallback" {
+		t.Fatalf("routing records = %#v", records)
+	}
+}
+
+func TestUnboundRequestUsesLeastLoadedAccount(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-secondary" {
+			t.Errorf("least-loaded account authorization = %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+	primary, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("primary account = %#v found=%v err=%v", primary, found, err)
+	}
+	holdPrimary := server.load.reserve(primary.ID)
+	defer holdPrimary()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"unbound load"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	records := server.metrics.Recent(1)
+	if len(records) != 1 || records[0].Selection != "load_balance" || records[0].Account != "secondary" {
+		t.Fatalf("load-balanced record = %#v", records)
+	}
+}
+
+func TestForcedAccountDoesNotBypassWhenOverloaded(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer upstream-access-token" {
+			t.Errorf("forced account authorization = %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	server.selector.maxInflightPerAcct = 1
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+	primary, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("primary account = %#v found=%v err=%v", primary, found, err)
+	}
+	holdPrimary := server.load.reserve(primary.ID)
+	defer holdPrimary()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"forced overload"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set(accountHeader, "default")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestRetryableResponseSwitchesAccountOnce(t *testing.T) {
 	t.Parallel()
 	var firstAuthorization string

@@ -208,12 +208,32 @@ func shortHash(value string) string {
 }
 
 type selection struct {
-	Account store.Account
-	Pinned  bool
-	Source  string
+	Account       store.Account
+	Pinned        bool
+	Source        string
+	PersistSticky bool
+	release       func()
 }
 
-type accountSelector struct{ store *store.Store }
+type accountSelector struct {
+	store              *store.Store
+	load               *accountLoadTracker
+	maxInflightPerAcct int
+}
+
+func (s accountSelector) makeSelection(account store.Account, source string, pinned, persistSticky bool) selection {
+	release := func() {}
+	if s.load != nil {
+		release = s.load.reserve(account.ID)
+	}
+	return selection{
+		Account:       account,
+		Pinned:        pinned,
+		Source:        source,
+		PersistSticky: persistSticky,
+		release:       release,
+	}
+}
 
 func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, forcedAlias string, excluded map[int64]bool) (selection, error) {
 	forcedAlias = strings.TrimSpace(forcedAlias)
@@ -235,7 +255,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if cooling {
 			return selection{}, fmt.Errorf("requested account %q is temporarily cooling down", forcedAlias)
 		}
-		return selection{Account: account, Pinned: true, Source: "header"}, nil
+		return s.makeSelection(account, "header", true, true), nil
 	}
 
 	if route.AccountUUID != "" {
@@ -251,7 +271,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			return selection{Account: account, Source: "account_uuid"}, nil
+			return s.makeSelection(account, "account_uuid", false, true), nil
 		}
 	}
 
@@ -268,7 +288,42 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			return selection{Account: account, Source: "sticky"}, nil
+			if s.load == nil {
+				return s.makeSelection(account, "sticky", false, true), nil
+			}
+
+			if release, current, ok := s.load.reserveBelow(account.ID, s.maxInflightPerAcct); ok {
+				return selection{
+					Account:       account,
+					Source:        "sticky",
+					PersistSticky: true,
+					release:       release,
+				}, nil
+			} else {
+				accounts, accountsErr := s.store.Accounts(ctx, route.AccountPool, route.Model, time.Now())
+				if accountsErr != nil {
+					return selection{}, accountsErr
+				}
+				fallbackExcluded := make(map[int64]bool, len(excluded)+1)
+				for id, excludedAccount := range excluded {
+					fallbackExcluded[id] = excludedAccount
+				}
+				fallbackExcluded[account.ID] = true
+				alternate, alternateRelease, foundAlternate := s.load.reserveLeastLoaded(
+					accounts, route.SelectionKey, fallbackExcluded, current,
+				)
+				if foundAlternate {
+					return selection{
+						Account:       alternate,
+						Source:        "sticky_overload_fallback",
+						PersistSticky: false,
+						release:       alternateRelease,
+					}, nil
+				}
+				// No alternate account is less busy. Preserve availability by
+				// allowing the sticky account to exceed the soft threshold.
+				return s.makeSelection(account, "sticky", false, true), nil
+			}
 		}
 	}
 
@@ -276,6 +331,18 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	if err != nil {
 		return selection{}, err
 	}
+	if s.load != nil {
+		account, release, found := s.load.reserveLeastLoaded(accounts, route.SelectionKey, excluded, 0)
+		if found {
+			return selection{
+				Account:       account,
+				Source:        "load_balance",
+				PersistSticky: true,
+				release:       release,
+			}, nil
+		}
+	}
+
 	var chosen *store.Account
 	var chosenScore [32]byte
 	for i := range accounts {
@@ -283,7 +350,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if excluded[account.ID] {
 			continue
 		}
-		score := sha256.Sum256([]byte(route.SelectionKey + "\x00" + strings.ToLower(account.Alias)))
+		score := accountSelectionScore(route.SelectionKey, account.Alias)
 		if chosen == nil || bytes.Compare(score[:], chosenScore[:]) > 0 {
 			chosen, chosenScore = &account, score
 		}
@@ -291,5 +358,5 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	if chosen == nil {
 		return selection{}, fmt.Errorf("no healthy Claude subscription account is available in the %s pool", route.AccountPool)
 	}
-	return selection{Account: *chosen, Source: "cache_affinity"}, nil
+	return s.makeSelection(*chosen, "cache_affinity", false, true), nil
 }

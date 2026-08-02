@@ -31,6 +31,7 @@ type Server struct {
 	cfg        config.Config
 	store      *store.Store
 	selector   accountSelector
+	load       *accountLoadTracker
 	upstream   *url.URL
 	httpServer *http.Server
 	client     *http.Client
@@ -45,6 +46,12 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	if database == nil {
 		return nil, fmt.Errorf("account store is required")
 	}
+	if cfg.MaxInflightPerAccount == 0 {
+		cfg.MaxInflightPerAccount = config.DefaultMaxInflightPerAccount
+	}
+	if cfg.MaxInflightPerAccount < 1 {
+		return nil, fmt.Errorf("config max_inflight_per_account must be positive")
+	}
 	upstream, err := url.Parse(cfg.UpstreamBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse upstream URL: %w", err)
@@ -58,10 +65,12 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	oauthClient := claudeoauth.New(&http.Client{Transport: transport, Timeout: 60 * time.Second})
+	load := newAccountLoadTracker()
 	server := &Server{
 		cfg:       cfg,
 		store:     database,
-		selector:  accountSelector{store: database},
+		load:      load,
+		selector:  accountSelector{store: database, load: load, maxInflightPerAcct: cfg.MaxInflightPerAccount},
 		upstream:  upstream,
 		client:    &http.Client{Transport: transport},
 		oauth:     oauthClient,
@@ -255,6 +264,12 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	excluded := make(map[int64]bool)
 	var response *http.Response
 	var selected selection
+	var releaseLoad func()
+	defer func() {
+		if releaseLoad != nil {
+			releaseLoad()
+		}
+	}()
 	for attempt := 0; attempt < 2; attempt++ {
 		selected, err = s.selector.selectAccount(incoming.Context(), route, forcedAlias, excluded)
 		if err != nil {
@@ -268,6 +283,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			fail(http.StatusServiceUnavailable, "api_error", err.Error())
 			return
 		}
+		releaseLoad = selected.release
 		event.Account = selected.Account.Alias
 		event.Selection = selected.Source
 		freshAccount, refreshErr := s.tokens.ensureFresh(incoming.Context(), selected.Account)
@@ -277,6 +293,8 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 				fail(http.StatusServiceUnavailable, "authentication_error", refreshErr.Error())
 				return
 			}
+			releaseLoad()
+			releaseLoad = nil
 			excluded[selected.Account.ID] = true
 			event.Failover = &metrics.Failover{Account: selected.Account.Alias, Error: refreshErr.Error()}
 			continue
@@ -306,6 +324,8 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		if selected.Pinned || strings.TrimSpace(forcedAlias) != "" || attempt == 1 {
 			break
 		}
+		releaseLoad()
+		releaseLoad = nil
 		failover := metrics.Failover{Account: selected.Account.Alias}
 		if response != nil {
 			failover.Status = response.StatusCode
@@ -342,7 +362,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		event.Error = "response interrupted"
 		return
 	}
-	if response.StatusCode < 400 {
+	if response.StatusCode < 400 && selected.PersistSticky {
 		if bindErr := s.store.Bind(incoming.Context(), route.ConversationKey, selected.Account.ID, stickySessionTTL); bindErr != nil {
 			slog.Warn("persist session binding", "request_id", requestID, "error", bindErr)
 		}

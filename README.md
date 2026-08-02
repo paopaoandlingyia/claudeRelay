@@ -12,7 +12,8 @@ round-robin rotation, or Claude Code prompt injection.
 - Transparent JSON and SSE responses
 - Minimum subscription attribution for ordinary Anthropic requests
 - Caller-owned billing and metadata fields preserved without interpreting unknown fields
-- Cache-affinity account selection, one-hour sticky sessions, and one bounded transient failover
+- Sticky-first account selection, in-process load-aware routing for new work, temporary bypass of
+  overloaded sticky accounts, and one bounded transient failover
 - Disabled-by-default account imports and manual activation
 - Embedded management console with PKCE OAuth login, credential paste-import, and account removal
 - Bounded in-memory request records exposing routing, failover, and cooldown state
@@ -65,6 +66,12 @@ $env:CLAUDE_RELAY_ADMIN_API_KEY = "replace-with-a-different-long-random-key"
 
 Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a URL such as
 `http://127.0.0.1:7890` when upstream traffic must use a local proxy.
+
+`max_inflight_per_account` is an in-process soft routing threshold, set to `8` by default. It is
+not a request rejection limit: new requests prefer an account with fewer active upstream requests,
+and a sticky request may temporarily use another less-busy account when its bound account reaches
+the threshold. If no alternate account is less busy, the relay preserves availability and uses the
+sticky account anyway. Set `CLAUDE_RELAY_MAX_INFLIGHT_PER_ACCOUNT` in Compose deployments.
 
 ## Console
 
@@ -180,9 +187,16 @@ state remain with the account. `X-Claude-Relay-Account` is resolved only inside 
 ingress pool and cannot cross the boundary.
 
 The relay first honors an explicit private account alias, then an account UUID already present in
-official-client metadata, then a persisted sticky binding, and finally cache-affinity rendezvous
-hashing across healthy accounts. Cache affinity is derived from the caller's existing cache
-breakpoint; requests without one use tools, system, and the first user message as a stable anchor.
+official-client metadata, then a persisted sticky binding while that account is below the local
+in-flight threshold. New requests and temporarily overloaded sticky requests use the healthy
+account with the lowest in-process active-request count; the existing cache-affinity hash breaks
+ties. Cache affinity is derived from the caller's existing cache breakpoint; requests without one
+use tools, system, and the first user message as a stable anchor.
+
+An overloaded sticky request is a temporary bypass, not a binding deletion or migration. The
+original binding remains available for later requests when its account becomes less busy. The
+threshold is process-local because the supported deployment is a single relay instance; active
+request counts are not persisted to SQLite.
 The relay does not add, remove, or relocate caller cache controls.
 
 Private deployments can force an account for one request:
@@ -199,7 +213,8 @@ corresponding ingress API key can use this override, so aliases should not conta
 other sensitive data.
 
 Transient `429`, `529`, network, upstream `5xx`, and token-refresh failures may move an unpinned
-request to one other account at most once. Explicitly selected requests never fail over.
+request to one other account at most once. Local load-aware bypass may also move a sticky request
+temporarily when a less-busy account is available. Explicitly selected requests never fail over.
 
 ## Request transformation
 
