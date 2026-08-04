@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/local/claude-relay/internal/credential"
@@ -51,7 +53,27 @@ type Cooldown struct {
 
 type Store struct {
 	db *sql.DB
+	// lastBindingPrune is the Unix second of the last expired-binding sweep.
+	// Zero on startup so the first Bind cleans up whatever a previous process
+	// left behind.
+	lastBindingPrune atomic.Int64
 }
+
+// sqliteDSNParams configures every connection the pool opens.
+//
+// foreign_keys, busy_timeout, and synchronous are per-connection settings: a
+// PRAGMA executed once at startup only reaches the connection that ran it, so
+// raising the pool size would silently leave later connections without
+// ON DELETE CASCADE enforcement. Keeping them in the DSN makes the
+// configuration a property of the database handle instead of a property of
+// initialization order. journal_mode is persisted in the file, but it is listed
+// here too so a fresh database is never briefly opened in rollback-journal mode.
+//
+// synchronous=NORMAL is the standard WAL pairing: a process crash is still
+// fully safe, and only host power loss can drop the most recent commits. The
+// worst case is losing a few sticky bindings and cooldowns, which costs one
+// account re-selection — not worth an fsync on every write.
+const sqliteDSNParams = "_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=on"
 
 func Open(path string) (*Store, error) {
 	path = strings.TrimSpace(path)
@@ -72,10 +94,14 @@ func Open(path string) (*Store, error) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		return nil, fmt.Errorf("protect database file: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", path+"?"+sqliteDSNParams)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
+	// One connection keeps every statement serialized, which the relay can
+	// afford: the tables are tiny and no request writes to them while a response
+	// is streaming. ensureColumn also depends on it. Raising this is safe only
+	// because the PRAGMAs above travel with each new connection.
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	if err := s.initialize(context.Background()); err != nil {
@@ -96,9 +122,6 @@ func (s *Store) initialize(ctx context.Context) error {
 		return fmt.Errorf("database schema version %d is newer than this build supports", version)
 	}
 	statements := []string{
-		`PRAGMA journal_mode=WAL`,
-		`PRAGMA foreign_keys=ON`,
-		`PRAGMA busy_timeout=5000`,
 		`CREATE TABLE IF NOT EXISTS accounts (
 			id INTEGER PRIMARY KEY,
 			alias TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -556,9 +579,7 @@ func (s *Store) Bind(ctx context.Context, routeKey string, accountID int64, ttl 
 		return nil
 	}
 	now := time.Now()
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM session_bindings WHERE expires_at<=?`, now.Unix()); err != nil {
-		return fmt.Errorf("prune expired session bindings: %w", err)
-	}
+	s.pruneExpiredBindings(ctx, now)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO session_bindings(route_key,account_id,expires_at,updated_at)
 		VALUES(?,?,?,?) ON CONFLICT(route_key) DO UPDATE SET account_id=excluded.account_id,
 		expires_at=excluded.expires_at,updated_at=excluded.updated_at`, routeKey, accountID, now.Add(ttl).Unix(), now.Unix())
@@ -566,6 +587,28 @@ func (s *Store) Bind(ctx context.Context, routeKey string, accountID int64, ttl 
 		return fmt.Errorf("bind session: %w", err)
 	}
 	return nil
+}
+
+// bindingPruneInterval bounds how often expired bindings are swept. Every read
+// already filters on expires_at, so the sweep only reclaims space and can never
+// change routing. Running it inside each Bind added a write transaction to every
+// relayed request for no behavioural gain.
+const bindingPruneInterval = time.Minute
+
+// pruneExpiredBindings deletes expired bindings at most once per interval. A
+// failure is logged rather than returned because housekeeping must not fail the
+// binding the caller actually asked for; the next sweep retries.
+func (s *Store) pruneExpiredBindings(ctx context.Context, now time.Time) {
+	last := s.lastBindingPrune.Load()
+	if now.Unix()-last < int64(bindingPruneInterval.Seconds()) {
+		return
+	}
+	if !s.lastBindingPrune.CompareAndSwap(last, now.Unix()) {
+		return
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM session_bindings WHERE expires_at<=?`, now.Unix()); err != nil {
+		slog.Warn("prune expired session bindings", "error", err)
+	}
 }
 
 func (s *Store) Cooldown(ctx context.Context, accountID int64, model string, until time.Time, reason string) error {

@@ -71,6 +71,73 @@ func TestSchemaV3MigratesExistingAccountsToCompatiblePool(t *testing.T) {
 	}
 }
 
+// TestConnectionPragmas pins the per-connection settings to the DSN. Running
+// them as one-off statements at startup would leave any additional pooled
+// connection without foreign_keys, silently disabling ON DELETE CASCADE.
+func TestConnectionPragmas(t *testing.T) {
+	t.Parallel()
+	database, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, want := range []struct {
+		pragma string
+		value  string
+	}{
+		{"journal_mode", "wal"},
+		{"synchronous", "1"},
+		{"foreign_keys", "1"},
+		{"busy_timeout", "5000"},
+	} {
+		var got string
+		if err := database.db.QueryRow(`PRAGMA ` + want.pragma).Scan(&got); err != nil {
+			t.Fatalf("read pragma %s: %v", want.pragma, err)
+		}
+		if !strings.EqualFold(got, want.value) {
+			t.Fatalf("pragma %s = %q, want %q", want.pragma, got, want.value)
+		}
+	}
+}
+
+// TestExpiredBindingsAreIgnoredBeforePruning covers the rate-limited sweep: an
+// expired row may still be present, so correctness has to come from the
+// expires_at filter rather than from the delete.
+func TestExpiredBindingsAreIgnoredBeforePruning(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := newTestStore(t)
+	account := importTestAccount(t, database, "primary", "11111111-1111-4111-8111-111111111111")
+	if _, err := database.SetAccountEnabled(ctx, account.Alias, true); err != nil {
+		t.Fatal(err)
+	}
+	// The first Bind consumes the prune interval, so the expired row written by
+	// the second one is guaranteed to still be in the table.
+	if err := database.Bind(ctx, "warm", account.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Bind(ctx, "stale", account.ID, -time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_bindings WHERE route_key='stale'`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("stale binding rows = %d, want the unpruned row to remain", rows)
+	}
+	if _, found, err := database.BoundAccount(ctx, "stale", AccountPoolCompatible, time.Now()); err != nil || found {
+		t.Fatalf("expired binding was routable: found=%v err=%v", found, err)
+	}
+	counts, err := database.SessionBindingCounts(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[account.ID] != 1 {
+		t.Fatalf("live binding count = %d, want 1", counts[account.ID])
+	}
+}
+
 func TestImportBindingAndCooldown(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "relay.db")
