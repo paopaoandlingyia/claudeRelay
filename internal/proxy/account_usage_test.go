@@ -118,6 +118,51 @@ func TestAccountUsageSurvivesUnavailableOptionalProfile(t *testing.T) {
 	}
 }
 
+func TestResolveClaudePlan(t *testing.T) {
+	t.Parallel()
+	flag := func(v bool) *bool { return &v }
+	org := func(orgType, status string) rawProfilePayload {
+		var profile rawProfilePayload
+		profile.Account.HasClaudeMax = flag(false)
+		profile.Account.HasClaudePro = flag(false)
+		profile.Organization.OrganizationType = orgType
+		profile.Organization.SubscriptionStatus = status
+		return profile
+	}
+	account := func(max, pro bool) rawProfilePayload {
+		var profile rawProfilePayload
+		profile.Account.HasClaudeMax = flag(max)
+		profile.Account.HasClaudePro = flag(pro)
+		return profile
+	}
+
+	cases := []struct {
+		name    string
+		profile rawProfilePayload
+		want    string
+	}{
+		{"max", account(true, false), "max"},
+		{"pro", account(false, true), "pro"},
+		{"free", account(false, false), "free"},
+		{"team", org("claude_team", "active"), "team"},
+		// Organization accounts leave the Max/Pro flags false, so an org plan
+		// must win over the free check rather than being reported as free.
+		{"enterprise", org("claude_enterprise", "active"), "enterprise"},
+		{"unknown org type passes through", org("claude_something_new", "active"), "something_new"},
+		{"org type without claude prefix", org("Partner", "active"), "partner"},
+		{"inactive org falls back to account flags", org("claude_enterprise", "canceled"), "free"},
+		{"no signal at all", rawProfilePayload{}, ""},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := resolveClaudePlan(testCase.profile); got != testCase.want {
+				t.Fatalf("resolveClaudePlan = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestAccountUsageDoesNotRefreshDisabledExpiredAccount(t *testing.T) {
 	t.Parallel()
 	upstreamCalls := 0

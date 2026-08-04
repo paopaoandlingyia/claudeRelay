@@ -156,6 +156,13 @@ the count-tokens schema rejects it, and metadata does not contribute prompt toke
   invalidate a successful usage response.
 - The relay keeps successful readings in memory for two minutes and never uses them for routing,
   billing, cooldowns, or account activation.
+- **Plan label:** `has_claude_max` and `has_claude_pro` identify personal plans. Organization plans
+  leave both false and are identified by `organization_type` together with an active
+  `subscription_status`, so the organization check must precede the free check. Only `claude_team`
+  has been confirmed against a live account; an unrecognized `organization_type` is reported under
+  its own name rather than discarded, because a plan this build has not seen is still worth showing.
+  An Enterprise account was observed in the desktop client on 2026-08-04 while the relay reported an
+  empty plan, which is what prompted the passthrough.
 
 ## Deferred questions
 
@@ -166,3 +173,5 @@ the count-tokens schema rejects it, and metadata does not contribute prompt toke
 - Decide whether to add native Anthropic count-token routing to the New API deployment.
 - Confirm the private usage/profile response shapes against a live subscription and recheck them
   whenever the management UI or Anthropic client changes.
+- Capture the exact `organization_type` an Enterprise account returns. The current passthrough makes
+  it visible in the console without a guess, so record the observed value here once seen.

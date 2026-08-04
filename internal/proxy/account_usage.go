@@ -242,15 +242,33 @@ func resolveClaudePlan(profile rawProfilePayload) string {
 	if profile.Account.HasClaudePro != nil && *profile.Account.HasClaudePro {
 		return "pro"
 	}
-	if strings.EqualFold(profile.Organization.OrganizationType, "claude_team") &&
+	// Organization plans leave the account-level Max/Pro flags false, so this has
+	// to run before the free check below or every org account reports as free.
+	if plan := organizationPlan(profile.Organization.OrganizationType); plan != "" &&
 		strings.EqualFold(profile.Organization.SubscriptionStatus, "active") {
-		return "team"
+		return plan
 	}
 	if profile.Account.HasClaudeMax != nil && profile.Account.HasClaudePro != nil &&
 		!*profile.Account.HasClaudeMax && !*profile.Account.HasClaudePro {
 		return "free"
 	}
 	return ""
+}
+
+// organizationPlan turns an organization_type such as "claude_team" or
+// "claude_enterprise" into the short label the console displays.
+//
+// An unrecognized type keeps its own name rather than being discarded. Only
+// "claude_team" was confirmed against a live account, and reporting a plan this
+// build has not seen is more useful than reporting none: the operator sees the
+// actual value instead of a blank field, which is also what they need in order
+// to have it added here.
+func organizationPlan(organizationType string) string {
+	normalized := strings.ToLower(strings.TrimSpace(organizationType))
+	if normalized == "" {
+		return ""
+	}
+	return strings.TrimPrefix(normalized, "claude_")
 }
 
 func (s *Server) accountUsage(w http.ResponseWriter, r *http.Request, force bool) {
