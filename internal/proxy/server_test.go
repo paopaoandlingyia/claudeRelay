@@ -99,13 +99,15 @@ func TestOfficialIngressRejectsNonClaudeCodeShape(t *testing.T) {
 		t.Fatalf("official gate allowed %d upstream calls", upstreamCalls)
 	}
 	records := server.metrics.Recent(1)
-	if len(records) != 1 || records[0].AccountPool != store.AccountPoolOfficial ||
+	if len(records) != 1 || records[0].Ingress != store.AccountPoolOfficial ||
 		records[0].ClientClass != clientClassCompatible || records[0].Account != "" {
 		t.Fatalf("rejected request record = %#v", records)
 	}
 }
 
-func TestIngressKeysRouteWithinTheirOwnAccountPools(t *testing.T) {
+// The compatible ingress is fenced: an official-pool account must never serve a
+// request that did not come through the official key.
+func TestCompatibleIngressNeverSelectsOfficialPoolAccounts(t *testing.T) {
 	t.Parallel()
 	var authorizations []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -114,40 +116,70 @@ func TestIngressKeysRouteWithinTheirOwnAccountPools(t *testing.T) {
 	}))
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
-	importTestAccount(t, server.store, "compatible", "token-compatible", "22222222-2222-4222-8222-222222222222", "b")
+	importTestAccount(t, server.store, "shared", "token-shared", "22222222-2222-4222-8222-222222222222", "b")
 	if _, err := server.store.SetAccountPool(t.Context(), "default", store.AccountPoolOfficial); err != nil {
 		t.Fatal(err)
 	}
 
-	send := func(key, session string) *httptest.ResponseRecorder {
+	for _, session := range []string{"one", "two", "three"} {
 		request := httptest.NewRequest(http.MethodPost, "/v1/messages",
 			strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
-		request.Header.Set("x-api-key", key)
-		request.Header.Set("User-Agent", "claude-cli/2.1.219")
+		request.Header.Set("x-api-key", "downstream-key")
 		request.Header.Set(claudeCodeSessionHeader, session)
-		request.Header.Set("X-App", "cli")
 		recorder := httptest.NewRecorder()
 		server.routes().ServeHTTP(recorder, request)
-		return recorder
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("compatible status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
 	}
-	if recorder := send("official-downstream-key", "official-session"); recorder.Code != http.StatusOK {
-		t.Fatalf("official status = %d, body = %s", recorder.Code, recorder.Body.String())
+	if len(authorizations) != 3 {
+		t.Fatalf("upstream calls = %#v", authorizations)
 	}
-	if recorder := send("downstream-key", "compatible-session"); recorder.Code != http.StatusOK {
-		t.Fatalf("compatible status = %d, body = %s", recorder.Code, recorder.Body.String())
+	for _, authorization := range authorizations {
+		if authorization != "Bearer token-shared" {
+			t.Fatalf("compatible ingress reached a fenced account: %#v", authorizations)
+		}
 	}
-	if len(authorizations) != 2 || authorizations[0] != "Bearer upstream-access-token" ||
-		authorizations[1] != "Bearer token-compatible" {
-		t.Fatalf("pool authorizations = %#v", authorizations)
-	}
-	records := server.metrics.Recent(2)
-	if len(records) != 2 || records[0].AccountPool != store.AccountPoolCompatible ||
-		records[1].AccountPool != store.AccountPoolOfficial {
-		t.Fatalf("request pools = %#v", records)
+	records := server.metrics.Recent(1)
+	if len(records) != 1 || records[0].Ingress != store.AccountPoolCompatible {
+		t.Fatalf("request record = %#v", records)
 	}
 }
 
-func TestForcedAccountCannotCrossIngressPool(t *testing.T) {
+// Pool permeability is one way, so the official ingress keeps the whole account
+// set and does not need a dedicated official-pool account to be placed first.
+func TestOfficialIngressDrawsFromTheCompatiblePool(t *testing.T) {
+	t.Parallel()
+	var authorizations []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	// The only account keeps its default compatible placement.
+	server := newTestServer(t, upstream.URL, 4096)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+	request.Header.Set("x-api-key", "official-downstream-key")
+	request.Header.Set("User-Agent", "claude-cli/2.1.219")
+	request.Header.Set(claudeCodeSessionHeader, "official-session")
+	request.Header.Set("X-App", "cli")
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("official status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if len(authorizations) != 1 || authorizations[0] != "Bearer upstream-access-token" {
+		t.Fatalf("official authorizations = %#v", authorizations)
+	}
+	records := server.metrics.Recent(1)
+	if len(records) != 1 || records[0].Ingress != store.AccountPoolOfficial || records[0].Account != "default" {
+		t.Fatalf("request record = %#v", records)
+	}
+}
+
+// The account override is a selection hint, not a way around the fence.
+func TestForcedAccountCannotEnterTheOfficialPoolFromCompatible(t *testing.T) {
 	t.Parallel()
 	upstreamCalls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -165,11 +197,39 @@ func TestForcedAccountCannotCrossIngressPool(t *testing.T) {
 	request.Header.Set(accountHeader, "default")
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "outside the compatible pool") {
+	if recorder.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(recorder.Body.String(), "cannot serve compatible traffic") {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	if upstreamCalls != 0 {
-		t.Fatalf("cross-pool override made %d upstream calls", upstreamCalls)
+		t.Fatalf("fenced override made %d upstream calls", upstreamCalls)
+	}
+}
+
+// The reverse override is allowed, because official traffic may use any pool.
+func TestForcedAccountFromOfficialIngressReachesTheCompatiblePool(t *testing.T) {
+	t.Parallel()
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+	request.Header.Set("x-api-key", "official-downstream-key")
+	request.Header.Set("User-Agent", "claude-cli/2.1.219")
+	request.Header.Set(claudeCodeSessionHeader, "official-session")
+	request.Header.Set("X-App", "cli")
+	request.Header.Set(accountHeader, "default")
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("official override made %d upstream calls", upstreamCalls)
 	}
 }
 

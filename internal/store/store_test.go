@@ -335,7 +335,9 @@ func TestClearCooldownsRestoresRouting(t *testing.T) {
 	}
 }
 
-func TestSetAccountPoolClearsBindingsAndSeparatesRouting(t *testing.T) {
+// A fresh account is shared, so both ingresses see it. Moving it to the official
+// pool fences it off from the compatible ingress and drops its bindings.
+func TestSetAccountPoolClearsBindingsAndFencesCompatibleTraffic(t *testing.T) {
 	t.Parallel()
 	database := newTestStore(t)
 	ctx := context.Background()
@@ -345,6 +347,12 @@ func TestSetAccountPoolClearsBindingsAndSeparatesRouting(t *testing.T) {
 	}
 	if _, err := database.SetAccountEnabled(ctx, account.Alias, true); err != nil {
 		t.Fatal(err)
+	}
+	for _, ingress := range []string{AccountPoolCompatible, AccountPoolOfficial} {
+		shared, err := database.Accounts(ctx, ingress, "claude-test", time.Now())
+		if err != nil || len(shared) != 1 {
+			t.Fatalf("%s ingress accounts = %#v err=%v", ingress, shared, err)
+		}
 	}
 	if err := database.Bind(ctx, "route", account.ID, time.Hour); err != nil {
 		t.Fatal(err)

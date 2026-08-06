@@ -24,8 +24,10 @@ type requestRoute struct {
 	SelectionKey    string
 	AccountUUID     string
 	Model           string
-	AccountPool     string
-	Client          clientObservation
+	// Ingress is the pool name of the API key that authenticated the request. It
+	// scopes routing keys and decides which account pools may be selected.
+	Ingress string
+	Client  clientObservation
 }
 
 type metadataIdentity struct {
@@ -33,7 +35,7 @@ type metadataIdentity struct {
 	SessionID   string `json:"session_id"`
 }
 
-func deriveRequestRoute(body []byte, headers http.Header, accountPool string) (requestRoute, error) {
+func deriveRequestRoute(body []byte, headers http.Header, ingress string) (requestRoute, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -43,7 +45,7 @@ func deriveRequestRoute(body []byte, headers http.Header, accountPool string) (r
 	if root == nil {
 		return requestRoute{}, fmt.Errorf("request body must be a JSON object")
 	}
-	route := requestRoute{AccountPool: accountPool}
+	route := requestRoute{Ingress: ingress}
 	route.Model, _ = root["model"].(string)
 	route.Client = classifyClient(root, headers)
 
@@ -53,7 +55,9 @@ func deriveRequestRoute(body []byte, headers http.Header, accountPool string) (r
 	if session == "" {
 		session = identity.SessionID
 	}
-	scope := shortHash(accountPool)
+	// Routing keys stay scoped per ingress so the two key holders are treated as
+	// different clients and cannot collide on a sticky binding.
+	scope := shortHash(ingress)
 	if session != "" {
 		route.ConversationKey = "session:" + shortHash(scope+"\x00"+session)
 	}
@@ -245,8 +249,9 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if !found || !account.Enabled {
 			return selection{}, fmt.Errorf("requested account %q is unavailable", forcedAlias)
 		}
-		if account.Pool != route.AccountPool {
-			return selection{}, fmt.Errorf("requested account %q is outside the %s pool", forcedAlias, route.AccountPool)
+		if !store.IngressMayUse(route.Ingress, account.Pool) {
+			return selection{}, fmt.Errorf("requested account %q is in the %s pool and cannot serve %s traffic",
+				forcedAlias, account.Pool, route.Ingress)
 		}
 		cooling, err := s.store.IsCooling(ctx, account.ID, route.Model, time.Now())
 		if err != nil {
@@ -259,7 +264,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	}
 
 	if route.AccountUUID != "" {
-		account, found, err := s.store.AccountByUUID(ctx, route.AccountUUID, route.AccountPool)
+		account, found, err := s.store.AccountByUUID(ctx, route.AccountUUID, route.Ingress)
 		if err != nil {
 			return selection{}, err
 		}
@@ -276,7 +281,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	}
 
 	if route.ConversationKey != "" {
-		account, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.AccountPool, time.Now())
+		account, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.Ingress, time.Now())
 		if err != nil {
 			return selection{}, err
 		}
@@ -300,7 +305,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 					release:       release,
 				}, nil
 			} else {
-				accounts, accountsErr := s.store.Accounts(ctx, route.AccountPool, route.Model, time.Now())
+				accounts, accountsErr := s.store.Accounts(ctx, route.Ingress, route.Model, time.Now())
 				if accountsErr != nil {
 					return selection{}, accountsErr
 				}
@@ -327,7 +332,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		}
 	}
 
-	accounts, err := s.store.Accounts(ctx, route.AccountPool, route.Model, time.Now())
+	accounts, err := s.store.Accounts(ctx, route.Ingress, route.Model, time.Now())
 	if err != nil {
 		return selection{}, err
 	}
@@ -356,7 +361,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		}
 	}
 	if chosen == nil {
-		return selection{}, fmt.Errorf("no healthy Claude subscription account is available in the %s pool", route.AccountPool)
+		return selection{}, fmt.Errorf("no healthy Claude subscription account is available for the %s ingress", route.Ingress)
 	}
 	return s.makeSelection(*chosen, "cache_affinity", false, true), nil
 }

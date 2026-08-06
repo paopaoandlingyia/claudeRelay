@@ -169,22 +169,22 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		pool := ""
+		ingress := ""
 		switch {
 		case secureKeyEqual(provided, s.cfg.RelayAPIKey):
-			pool = store.AccountPoolCompatible
+			ingress = store.AccountPoolCompatible
 		case s.cfg.OfficialAPIKey != "" && secureKeyEqual(provided, s.cfg.OfficialAPIKey):
-			pool = store.AccountPoolOfficial
+			ingress = store.AccountPoolOfficial
 		default:
 			writeError(w, http.StatusUnauthorized, "authentication_error", "invalid API key")
 			return
 		}
-		ctx := context.WithValue(r.Context(), ingressPoolContextKey{}, pool)
+		ctx := context.WithValue(r.Context(), ingressContextKey{}, ingress)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-type ingressPoolContextKey struct{}
+type ingressContextKey struct{}
 
 func secureKeyEqual(provided, expected string) bool {
 	providedHash := sha256.Sum256([]byte(provided))
@@ -192,9 +192,10 @@ func secureKeyEqual(provided, expected string) bool {
 	return subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1
 }
 
-func ingressPool(ctx context.Context) string {
-	pool, _ := ctx.Value(ingressPoolContextKey{}).(string)
-	return pool
+// requestIngress reports which ingress key authenticated the request.
+func requestIngress(ctx context.Context) string {
+	ingress, _ := ctx.Value(ingressContextKey{}).(string)
+	return ingress
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -236,9 +237,9 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		return
 	}
 	includeMetadata := incoming.URL.Path == "/v1/messages"
-	pool := ingressPool(incoming.Context())
-	event.AccountPool = pool
-	route, routeErr := deriveRequestRoute(body, incoming.Header, pool)
+	ingress := requestIngress(incoming.Context())
+	event.Ingress = ingress
+	route, routeErr := deriveRequestRoute(body, incoming.Header, ingress)
 	if routeErr != nil {
 		fail(http.StatusBadRequest, "invalid_request_error", routeErr.Error())
 		return
@@ -255,8 +256,8 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		ClaudeCodeSession:  route.Client.Evidence.ClaudeCodeSession,
 		XAppCLI:            route.Client.Evidence.XAppCLI,
 	}
-	if pool == store.AccountPoolOfficial && route.Client.Class != clientClassCCCandidate {
-		slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "account_pool", pool, "client_class", route.Client.Class)
+	if ingress == store.AccountPoolOfficial && route.Client.Class != clientClassCCCandidate {
+		slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "client_class", route.Client.Class)
 		fail(http.StatusForbidden, "permission_error", "official ingress requires a Claude Code-shaped request")
 		return
 	}
@@ -311,7 +312,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			event.RelayAction = "unchanged"
 		}
 		if changed {
-			slog.Info("added subscription attribution", "request_id", requestID, "path", incoming.URL.Path, "account_pool", pool, "account", selected.Account.Alias)
+			slog.Info("added subscription attribution", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "account", selected.Account.Alias)
 		}
 		response, err = s.doUpstream(incoming, transformedBody, selected.Account.AccessToken)
 		if err == nil && !retryableStatus(response.StatusCode) {
@@ -338,7 +339,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		excluded[selected.Account.ID] = true
 	}
 	if err != nil {
-		slog.Error("upstream request failed", "request_id", requestID, "path", incoming.URL.Path, "account_pool", pool, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
+		slog.Error("upstream request failed", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
 		fail(http.StatusBadGateway, "api_error", "upstream request failed")
 		return
 	}
@@ -367,7 +368,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			slog.Warn("persist session binding", "request_id", requestID, "error", bindErr)
 		}
 	}
-	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "account_pool", pool, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
+	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
 }
 
 func (s *Server) doUpstream(incoming *http.Request, body []byte, accessToken string) (*http.Response, error) {

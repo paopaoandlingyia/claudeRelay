@@ -12,10 +12,12 @@ import (
 
 // Event describes one completed relay attempt.
 type Event struct {
-	RequestID             string
-	Time                  time.Time
-	Path                  string
-	AccountPool           string
+	RequestID string
+	Time      time.Time
+	Path      string
+	// Ingress is the API key that admitted the request, not the pool of the
+	// account that served it.
+	Ingress               string
 	Model                 string
 	Account               string
 	Selection             string
@@ -55,7 +57,7 @@ type Record struct {
 	RequestID             string          `json:"request_id"`
 	At                    int64           `json:"at"`
 	Path                  string          `json:"path"`
-	AccountPool           string          `json:"account_pool,omitempty"`
+	Ingress               string          `json:"ingress,omitempty"`
 	Model                 string          `json:"model,omitempty"`
 	Account               string          `json:"account,omitempty"`
 	Selection             string          `json:"selection,omitempty"`
@@ -133,7 +135,7 @@ func (r *Recorder) Record(event Event) {
 		RequestID:             event.RequestID,
 		At:                    event.Time.UnixMilli(),
 		Path:                  event.Path,
-		AccountPool:           event.AccountPool,
+		Ingress:               event.Ingress,
 		Model:                 event.Model,
 		Account:               event.Account,
 		Selection:             event.Selection,

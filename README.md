@@ -6,7 +6,8 @@ round-robin rotation, or Claude Code prompt injection.
 
 ## Current scope
 
-- Multiple imported Claude OAuth credentials split between isolated compatible and official pools
+- Multiple imported Claude OAuth credentials, optionally fenced so chosen accounts serve official
+  traffic only
 - Separate compatible, official, and administration API keys
 - `POST /v1/messages` and `POST /v1/messages/count_tokens`
 - Transparent JSON and SSE responses
@@ -175,16 +176,28 @@ whenever its endpoints or client behavior change.
 
 ## Account selection
 
-Every account belongs to exactly one pool. New and upgraded accounts start in `compatible`.
-Requests authenticated by `relay_api_key` can select only compatible accounts. Requests
-authenticated by `official_api_key` must have a recognized Claude Code shape and can select only
-official accounts. The accepted shape is `User-Agent: claude-cli/...` together with
-`X-Claude-Code-Session-Id` and `X-App: cli`. This is a traffic policy, not proof that the caller is
-an authentic Anthropic binary.
+Two things are marked separately. The **key** decides which request format is admitted: requests
+authenticated by `official_api_key` must have a recognized Claude Code shape or are rejected with
+`403`, while `relay_api_key` places no restriction on shape. The accepted shape is
+`User-Agent: claude-cli/...` together with `X-Claude-Code-Session-Id` and `X-App: cli`. This is a
+traffic policy, not proof that the caller is an authentic Anthropic binary.
+
+The **account** carries a pool that decides which traffic may reach it, and permeability is one way:
+
+| Ingress | May select |
+| --- | --- |
+| `official_api_key` | every enabled account, in either pool |
+| `relay_api_key` | `compatible` accounts only |
+
+New and upgraded accounts start in `compatible`, the shared placement, so the official ingress can
+use them without any placement step. Move an account to `official` only to keep compatible traffic
+off it. Claude Code-shaped traffic is what a subscription is expected to produce, so letting it use
+every account costs nothing while the fence still keeps chosen accounts clean, and the official
+ingress keeps the full account set for load spreading and failover.
 
 Changing an account's pool immediately clears its sticky bindings. Cooldowns and OAuth ownership
-state remain with the account. `X-Claude-Relay-Account` is resolved only inside the authenticated
-ingress pool and cannot cross the boundary.
+state remain with the account. The fence applies to every selection path, so `X-Claude-Relay-Account`
+cannot be used to reach an `official` account from the compatible ingress.
 
 The relay first honors an explicit private account alias, then an account UUID already present in
 official-client metadata, then a persisted sticky binding while that account is below the local
@@ -205,8 +218,8 @@ Private deployments can force an account for one request:
 X-Claude-Relay-Account: personal
 ```
 
-The alias is available to callers authenticated with either ingress API key, resolved only inside
-that key's account pool, and stripped before forwarding upstream. A missing, disabled, or cooling
+The alias is available to callers authenticated with either ingress API key, resolved only among the
+accounts that key may reach, and stripped before forwarding upstream. A missing, disabled, or cooling
 account produces an error instead of silently selecting another account. Successful responses include
 `X-Claude-Relay-Account` so a trusted caller can inspect the selected alias. Anyone holding the
 corresponding ingress API key can use this override, so aliases should not contain email addresses or
@@ -245,7 +258,7 @@ GET /admin/v1/requests?limit=100
 ```
 
 The relay keeps the last `request_log_size` requests in a fixed-size in-memory ring, 500 by default.
-Each record holds only metadata: request ID, timestamp, ingress pool, path, model, selected account, why that
+Each record holds only metadata: request ID, timestamp, ingress key, path, model, selected account, why that
 account was selected, status, duration, the account a request failed over from, and a versioned
 client-shape observation. That observation stores booleans for billing-block, structured
 metadata, known entrypoint, version, Claude User-Agent, Claude Code session header, and `X-App: cli`
@@ -277,5 +290,7 @@ official group. On the official channel, preserve the three client identificatio
 override shown above. Request-body pass-through alone does not preserve them.
 
 The official New API group should be issued only to Claude Code users. The relay rejects a request
-that reaches the official key without the required shape before selecting an account. Conversely,
-compatible traffic never consumes an official-pool account even when it supplies an account alias.
+that reaches the official key without the required shape before selecting an account, and does not
+fall back to the compatible behaviour — assigning callers to the right group is the operator's job.
+Conversely, compatible traffic never consumes an `official` account even when it supplies an account
+alias.

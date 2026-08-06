@@ -85,7 +85,8 @@ because it would add a second platform-specific lifecycle without improving the 
 
 Model callers and account operators have different authority. The compatible and official ingress
 keys authenticate native Anthropic message and token-count requests, including the private
-`X-Claude-Relay-Account` override within their own pools. The administration key authenticates
+`X-Claude-Relay-Account` override within the pools that ingress may reach. The administration key
+authenticates
 WebUI data, OAuth flows, account placement, and activation. No ingress key grants administration
 authority, the administration key cannot call models, and configuration rejects identical values.
 
@@ -161,20 +162,35 @@ Response bodies are still not inspected. Reading per-account token usage would r
 streaming pass-through, which conflicts with the byte-for-byte forwarding guarantee, so usage
 accounting is deferred rather than approximated.
 
-## 2026-07-31: ingress keys and account pools are strict boundaries
+## 2026-08-06: account pool permeability is one way
+
+Supersedes the 2026-07-31 decision that made the two pools mutually isolated.
 
 The deployment serves two traffic policies without turning account selection into a general group
-scheduler. The compatible ingress accepts ordinary native Anthropic requests and selects only the
-compatible account pool. The optional official ingress accepts only requests classified as
-`cc_candidate` and selects only the official account pool. The classification is a policy signal,
-not authentication of the Claude Code executable; possession of either API key remains the actual
-authentication boundary.
+scheduler. Format admission belongs to the key: the compatible ingress accepts ordinary native
+Anthropic requests, and the optional official ingress accepts only requests classified as
+`cc_candidate`. The classification is a policy signal, not authentication of the Claude Code
+executable; possession of either API key remains the actual authentication boundary.
 
-Pool identity is included in routing hashes and every account lookup. Explicit aliases, structured
-account UUIDs, sticky bindings, rendezvous candidates, and bounded failover therefore cannot cross
-pools. Moving an account clears its bindings in the same SQLite transaction, while preserving its
-enabled state, cooldowns, and OAuth tokens. Existing and newly imported accounts default to
-`compatible`; schema version 4 performs no implicit traffic migration.
+Account placement is a separate axis, and the two traffic shapes carry asymmetric risk.
+Claude Code-shaped traffic is the shape a subscription is expected to produce, so the official
+ingress may select from every pool. The compatible ingress is fenced to the compatible pool.
+An official-pool account therefore never serves a non-Claude-Code request, while the official
+ingress keeps the full account set for load spreading and bounded failover instead of stranding
+idle capacity behind a partition.
+
+Two-way isolation was rejected because it bought nothing the fence does not already buy. It halved
+the accounts available to the dominant traffic class, capped the load-aware routing added on
+2026-08-02, and returned an explicit unavailable error whenever the official pool was empty — which
+was the default state after an import.
+
+The fence is enforced in every account lookup, so explicit aliases, structured account UUIDs,
+sticky bindings, rendezvous candidates, and bounded failover all respect it. Routing keys stay
+scoped per ingress so the two key holders are treated as different clients and cannot collide on a
+sticky binding. Moving an account clears its bindings in the same SQLite transaction, while
+preserving its enabled state, cooldowns, and OAuth tokens. Existing and newly imported accounts
+default to `compatible`, which is now the shared placement; the stored column and its two values are
+unchanged, so this decision needs no schema migration.
 
 There is one API key per ingress rather than arbitrary named groups. This directly matches the two
 New API token/channel groups in scope and avoids introducing group administration, per-user ACLs,

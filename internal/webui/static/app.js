@@ -387,8 +387,10 @@ function requestRow(record) {
   path.title = record.path || "";
   row.appendChild(cell(path));
 
-  const requestPool = accountPoolView(record.account_pool);
-  row.appendChild(cell(badge(requestPool.label, requestPool.css)));
+  const ingress = ingressView(record.ingress);
+  const ingressCell = cell(badge(ingress.label, ingress.css));
+  ingressCell.title = ingress.note;
+  row.appendChild(ingressCell);
 
   const client = clientClassView(record.client_class);
   const clientCell = cell(stack(
@@ -445,9 +447,16 @@ function endpointLabel(path) {
   return path || "—";
 }
 
+// 账号池是单向可渗透的：official 入口可以使用任意账号，兼容入口只能使用
+// compatible 池的账号。
 function accountPoolView(pool) {
-  if (pool === "official") return { label: "official", css: "badge-ok", note: "仅 Claude Code 入口" };
-  return { label: "compatible", css: "badge-off badge-plain", note: "普通兼容入口" };
+  if (pool === "official") return { label: "official 专用", css: "badge-ok", note: "只承接 official 入口请求" };
+  return { label: "共享", css: "badge-off badge-plain", note: "兼容入口与 official 入口都可使用" };
+}
+
+function ingressView(ingress) {
+  if (ingress === "official") return { label: "official", css: "badge-ok", note: "official 入口密钥" };
+  return { label: "compatible", css: "badge-off badge-plain", note: "兼容入口密钥" };
 }
 
 const USAGE_WINDOW_LABELS = {
@@ -644,7 +653,7 @@ function openActions(account) {
 
   const detail = $("actionsDetail");
   const detailRows = [
-    detailRow("账号池", account.pool || "compatible"),
+    detailRow("账号池", accountPoolView(account.pool).note),
     detailRow("账号身份", account.account_uuid || "—"),
     detailRow("邮箱", account.email || "未记录"),
     detailRow("导入于", account.created_at ? new Date(account.created_at).toLocaleString() : "—"),
@@ -682,24 +691,26 @@ function openActions(account) {
     await loadAccountUsage(account, { notify: true });
   }));
 
-  const targetPool = account.pool === "official" ? "compatible" : "official";
-  list.appendChild(button(`移至 ${targetPool} 账号池`, "btn", async () => {
+  const toOfficialOnly = account.pool !== "official";
+  const targetPool = toOfficialOnly ? "official" : "compatible";
+  list.appendChild(button(toOfficialOnly ? "设为 official 专用" : "设为共享账号", "btn", async () => {
     $("actionsDialog").close();
     const accepted = await confirmDialog({
-      title: `移动 ${account.alias} 到 ${targetPool}`,
-      lead: "账号会立即退出当前账号池并进入目标账号池。",
+      title: toOfficialOnly ? `将 ${account.alias} 设为 official 专用` : `将 ${account.alias} 设为共享账号`,
+      lead: toOfficialOnly
+        ? "账号之后只承接通过 Claude Code 检测的 official 入口请求，兼容流量不会再落到它上面。"
+        : "账号之后同时承接兼容入口和 official 入口的请求。",
       items: [
         "现有粘性会话绑定会被清除",
         "账号的启用状态和冷却状态保持不变",
-        targetPool === "official" ? "之后只接收通过 Claude Code 检测的 Official 入口请求" : "之后只接收兼容入口请求",
       ],
-      accept: "确认移动",
+      accept: "确认",
     });
     if (!accepted) return;
     await runAction(`/admin/v1/accounts/${encodeURIComponent(account.alias)}/pool`, {
       method: "POST",
       body: JSON.stringify({ pool: targetPool }),
-    }, `${account.alias} 已移至 ${targetPool} 账号池`);
+    }, toOfficialOnly ? `${account.alias} 已设为 official 专用` : `${account.alias} 已设为共享账号`);
   }));
 
   const refresh = button("立即刷新令牌", "btn", () => {

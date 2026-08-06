@@ -66,9 +66,10 @@ relay.example.com {
 ```
 
 The compatible and official relay keys can call Anthropic endpoints and choose explicit aliases
-inside their own account pools, but cannot read or change account administration. The official key
-also rejects requests that do not match the observed Claude Code shape. The separate administration
-key controls the WebUI, OAuth, account pools, and activation, but cannot call model endpoints.
+among the accounts their ingress may reach, but cannot read or change account administration. The
+official key also rejects requests that do not match the observed Claude Code shape. The separate
+administration key controls the WebUI, OAuth, account placement, and activation, but cannot call
+model endpoints.
 Treat the administration key as privileged access. Do not publish port 8567 to the internet without
 TLS and an appropriate network boundary.
 
@@ -105,7 +106,7 @@ docker compose logs -f --tail=100 claude-relay
 ```
 
 Compose uses Docker's `json-file` driver with three 10 MiB files, limiting retained container logs
-to approximately 30 MiB. Logs contain paths, ingress pools, selected account aliases, routing
+to approximately 30 MiB. Logs contain paths, ingress names, selected account aliases, routing
 sources, upstream status, duration, and errors. They do not contain prompts, request bodies, API/OAuth tokens,
 metadata identities, email addresses, or usage token counts.
 
@@ -143,8 +144,10 @@ headers explicitly:
 }
 ```
 
-Move at least one enabled relay account into each pool in the WebUI. A pool with no enabled,
-healthy account returns an explicit unavailable error; the relay never borrows from the other pool.
+Enable at least one relay account in the WebUI. Imported accounts start shared, so the official
+ingress can use them immediately and no placement step is required. Mark an account `official` only
+to keep compatible traffic off it; if every account is marked that way, the compatible ingress has
+nothing to select and returns an explicit unavailable error.
 
 ## Move the existing database
 
