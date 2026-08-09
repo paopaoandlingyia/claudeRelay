@@ -216,11 +216,14 @@ refresh-token chain.
 ## 2026-08-09: response usage is observed and persisted as aggregates
 
 The relay now measures API-price-equivalent value without treating dollars as Anthropic's internal
-subscription unit. It observes only billing metadata from successful Messages responses. SSE bytes
-continue through the existing streaming copy unchanged; the observer parses `message_start`, the
+subscription unit. It observes only billing metadata from successful Messages responses. The relay
+does not forward the caller's `Accept-Encoding` upstream: Go's HTTP transport negotiates and
+decodes gzip so the observer never mistakes compressed SSE for a stream without usage. The decoded
+response continues through the existing streaming copy; the observer parses `message_start`, the
 cumulative `message_delta`, and `message_stop`, skipping content deltas without decoding them.
 Non-streaming JSON is inspected incrementally with a bounded two-megabyte tail. Neither path stores
-prompt or response content.
+prompt or response content. A successful Messages response without recognizable usage emits a
+rate-limited diagnostic warning.
 
 The hot path adds completed usage to an in-memory map keyed by UTC hour, account ID, and serving
 model. Every five seconds a background worker swaps that map and performs one short SQLite

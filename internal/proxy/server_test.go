@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,6 +17,57 @@ import (
 	"github.com/local/claude-relay/internal/credential"
 	"github.com/local/claude-relay/internal/store"
 )
+
+func TestForwardDecodesCompressedSSEBeforeUsageObservation(t *testing.T) {
+	t.Parallel()
+	const stream = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-test\",\"usage\":{\"input_tokens\":11,\"output_tokens\":1}}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept-Encoding"); got != "gzip" {
+			t.Errorf("upstream Accept-Encoding = %q, want transport-managed gzip", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Encoding", "gzip")
+		compressed := gzip.NewWriter(w)
+		_, _ = io.WriteString(compressed, stream)
+		_ = compressed.Close()
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t, upstream.URL, 4096)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set("Accept-Encoding", "br, gzip")
+	server.routes().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("downstream Content-Encoding = %q after transport decoding", got)
+	}
+	if got := recorder.Body.String(); got != stream {
+		t.Fatalf("decoded response body = %q", got)
+	}
+	if err := server.accounting.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	account, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("account found=%v err=%v", found, err)
+	}
+	totals, err := server.store.UsageTotalsByModel(t.Context(), account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := totals["claude-test"]
+	if usage.Requests != 1 || usage.InputTokens != 11 || usage.OutputTokens != 7 {
+		t.Fatalf("observed compressed usage = %#v", usage)
+	}
+}
 
 func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	t.Parallel()

@@ -143,7 +143,7 @@ while viewing a disabled account never rotates its refresh token. A forced refre
 five-hour percentage and the relay's cumulative token counters at that instant, allowing two
 observations in the same reset window to estimate the full-window API value.
 
-Successful Messages responses are observed while their bytes are passed through unchanged. The
+Successful Messages responses are observed after transport-level compression is decoded. The
 relay records only Anthropic's response `usage`, the serving account, model, and hour; it never
 stores prompts or response content. Streaming `message_start` and cumulative `message_delta`
 usage are combined, while incomplete streams remain visible as incomplete samples. Request

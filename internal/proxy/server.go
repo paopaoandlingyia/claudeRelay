@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/local/claude-relay/internal/accounting"
@@ -28,6 +29,8 @@ var allowedPaths = map[string]struct{}{
 	"/v1/messages/count_tokens": {},
 }
 
+const missingUsageWarningInterval = 5 * time.Minute
+
 type Server struct {
 	cfg        config.Config
 	store      *store.Store
@@ -41,7 +44,10 @@ type Server struct {
 	metrics    *metrics.Recorder
 	usage      *accountUsageManager
 	accounting *accounting.Manager
-	startedAt  time.Time
+	// missingUsageWarningAt rate-limits diagnostics for successful Messages
+	// responses whose decoded body did not contain Anthropic usage metadata.
+	missingUsageWarningAt atomic.Int64
+	startedAt             time.Time
 }
 
 func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
@@ -380,6 +386,9 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	_, copyErr := io.Copy(flushWriter{ResponseWriter: w}, observer)
 	observedUsage, servedModel := observer.Result(copyErr, route.Model)
 	if incoming.URL.Path == "/v1/messages" && response.StatusCode >= 200 && response.StatusCode < 300 {
+		if !observedUsage.Seen && copyErr == nil {
+			s.warnMissingUsage(requestID, servedModel, response)
+		}
 		s.accounting.Record(selected.Account.ID, servedModel, started, observedUsage)
 	}
 	if copyErr != nil {
@@ -406,6 +415,10 @@ func (s *Server) doUpstream(incoming *http.Request, body []byte, accessToken str
 		return nil, err
 	}
 	copyRequestHeaders(request.Header, incoming.Header)
+	// Let net/http own content negotiation so it can transparently decode gzip
+	// before the response reaches usage accounting. Forwarding the caller's
+	// Accept-Encoding leaves the body compressed and makes SSE metadata opaque.
+	request.Header.Del("Accept-Encoding")
 	request.Header.Del("x-api-key")
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	if request.Header.Get("anthropic-version") == "" {
@@ -416,6 +429,26 @@ func (s *Server) doUpstream(incoming *http.Request, body []byte, accessToken str
 	}
 	request.Host = s.upstream.Host
 	return s.client.Do(request)
+}
+
+func (s *Server) warnMissingUsage(requestID, model string, response *http.Response) {
+	now := time.Now().Unix()
+	interval := int64(missingUsageWarningInterval / time.Second)
+	for {
+		previous := s.missingUsageWarningAt.Load()
+		if previous != 0 && now-previous < interval {
+			return
+		}
+		if s.missingUsageWarningAt.CompareAndSwap(previous, now) {
+			break
+		}
+	}
+	slog.Warn("successful Messages response contained no observable usage",
+		"request_id", requestID,
+		"model", model,
+		"content_type", response.Header.Get("Content-Type"),
+		"content_encoding", response.Header.Get("Content-Encoding"),
+		"transport_uncompressed", response.Uncompressed)
 }
 
 func retryableStatus(status int) bool {
