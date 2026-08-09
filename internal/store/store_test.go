@@ -66,8 +66,8 @@ func TestSchemaV3MigratesExistingAccountsToCompatiblePool(t *testing.T) {
 	if err := database.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("schema version = %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("schema version = %d, want 5", version)
 	}
 }
 

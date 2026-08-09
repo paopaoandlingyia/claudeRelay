@@ -158,9 +158,8 @@ raw billing values, User-Agent, account/device/session identities, prompts, or r
 Classification does not authenticate an official client. It is enforced only as the admission
 policy for the official ingress; compatible ingress forwarding remains independent of the result.
 
-Response bodies are still not inspected. Reading per-account token usage would require tapping the
-streaming pass-through, which conflicts with the byte-for-byte forwarding guarantee, so usage
-accounting is deferred rather than approximated.
+Response content is not retained. This section's earlier decision to defer usage accounting was
+superseded on 2026-08-09 by a byte-preserving response usage observer described below.
 
 ## 2026-08-06: account pool permeability is one way
 
@@ -206,13 +205,40 @@ but cannot make an otherwise valid usage reading fail.
 Successful results live in a two-minute in-memory cache, but the console never reads or refreshes
 them automatically. Only an explicit per-account action calls the cache-bypassing refresh endpoint,
 so opening the console and its five-second operations poll generate no Anthropic usage requests.
-No quota snapshot is written to SQLite and no history, billing identity, or scheduling decision is
-derived from it.
+Ordinary cached reads are not persisted. An explicit refresh now writes a calibration snapshot as
+described in the 2026-08-09 decision; no scheduling decision is derived from it.
 
 Usage reads share the configured outbound proxy. Enabled accounts may use the existing synchronized
 OAuth refresh path when their access token is near expiry. Disabled accounts are read only while
 their current access token remains valid, preserving the rule that observation cannot take over a
 refresh-token chain.
+
+## 2026-08-09: response usage is observed and persisted as aggregates
+
+The relay now measures API-price-equivalent value without treating dollars as Anthropic's internal
+subscription unit. It observes only billing metadata from successful Messages responses. SSE bytes
+continue through the existing streaming copy unchanged; the observer parses `message_start`, the
+cumulative `message_delta`, and `message_stop`, skipping content deltas without decoding them.
+Non-streaming JSON is inspected incrementally with a bounded two-megabyte tail. Neither path stores
+prompt or response content.
+
+The hot path adds completed usage to an in-memory map keyed by UTC hour, account ID, and serving
+model. Every five seconds a background worker swaps that map and performs one short SQLite
+transaction. Failed writes are merged back for retry, shutdown performs a final flush, and clearing
+statistics is serialized against flushing. This preserves the Store's single-connection invariant
+and avoids a database commit per request. Incomplete streams may retain partial usage but are
+counted explicitly; samples with no upstream usage are not invented.
+
+Hourly rows retain raw token categories rather than only a calculated dollar value. Model prices
+are separate, versioned rules with effective timestamps; exact IDs take precedence over `*` suffix
+prefix rules. Unknown models remain unpriced while their raw usage stays available. Default prices
+seed a fresh schema but UI-added versions are data, so new models and price changes need no build.
+
+An explicit subscription usage refresh first flushes pending relay counters and then stores the
+five-hour percentage, reset identity, and cumulative per-model totals. Two snapshots are comparable
+only when they share the same account and reset timestamp and utilization increased. Their API
+value divided by percentage delta yields a full-window estimate. The console still never polls the
+private OAuth usage surface automatically.
 
 ## 2026-08-01: CCH has no relay semantics
 

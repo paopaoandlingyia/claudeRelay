@@ -287,5 +287,21 @@ func (s *Server) accountUsage(w http.ResponseWriter, r *http.Request, force bool
 		writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
+	if force {
+		if err := s.accounting.Flush(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "api_error", "failed to persist relay usage before subscription snapshot")
+			return
+		}
+		for _, window := range view.Windows {
+			if window.ID != "five_hour" {
+				continue
+			}
+			if err := s.store.CaptureSubscriptionUsageSnapshot(r.Context(), account.ID, view.FetchedAt, window.ResetsAt, window.UsedPercent); err != nil {
+				writeError(w, http.StatusInternalServerError, "api_error", "failed to save subscription usage snapshot")
+				return
+			}
+			break
+		}
+	}
 	writeJSON(w, http.StatusOK, view)
 }

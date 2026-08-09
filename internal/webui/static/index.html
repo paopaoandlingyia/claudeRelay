@@ -85,6 +85,7 @@
       <nav class="tabs" role="tablist" aria-label="控制台分区">
         <button class="tab is-active" type="button" role="tab" aria-selected="true" data-panel="accounts"><span>账号</span><em id="tabAccountCount">—</em></button>
         <button class="tab" type="button" role="tab" aria-selected="false" data-panel="requests"><span>请求</span></button>
+        <button class="tab" type="button" role="tab" aria-selected="false" data-panel="usage"><span>用量</span></button>
         <button class="tab" type="button" role="tab" aria-selected="false" data-panel="connect"><span>接入</span></button>
       </nav>
 
@@ -154,6 +155,47 @@
       <div id="requestsEmpty" class="empty hidden">
         <h3>暂无记录</h3>
         <p id="requestsEmptyNote">请求记录只保存在内存中，重启进程即清空，且不包含任何提示词或响应内容。</p>
+      </div>
+    </section>
+
+    <section id="panel-usage" class="panel hidden" role="tabpanel">
+      <div class="panel-bar">
+        <div class="filters">
+          <label class="field"><span>范围</span><select id="usageRange"><option value="86400">最近 24 小时</option><option value="604800" selected>最近 7 天</option><option value="2592000">最近 30 天</option><option value="0">全部</option></select></label>
+        </div>
+        <div class="bar-actions">
+          <button id="refreshUsageButton" class="btn btn-inline" type="button">刷新统计</button>
+          <button id="addPriceButton" class="btn btn-inline btn-primary" type="button">添加价格</button>
+          <button id="clearUsageButton" class="btn btn-inline btn-danger" type="button">清空用量</button>
+        </div>
+      </div>
+      <div class="usage-dashboard">
+        <div class="usage-summary-grid">
+          <article class="card"><small>API 标价等价值</small><strong id="usageCost">—</strong><span id="usageCostNote">按发生时价格估算</span></article>
+          <article class="card"><small>普通输入</small><strong id="usageInput">—</strong><span>tokens</span></article>
+          <article class="card"><small>缓存读取</small><strong id="usageCacheRead">—</strong><span>tokens</span></article>
+          <article class="card"><small>模型输出</small><strong id="usageOutput">—</strong><span>tokens</span></article>
+        </div>
+        <div id="usageUnpriced" class="usage-warning hidden"></div>
+        <div class="usage-grid">
+          <div class="card usage-card">
+            <div class="usage-card-head"><div><h3>按模型</h3><small>原始 usage 与 API 标价估值</small></div></div>
+            <div class="table-wrap"><table class="grid usage-table"><thead><tr><th>模型</th><th class="col-number">请求</th><th class="col-number">输入</th><th class="col-number">缓存写入</th><th class="col-number">缓存读取</th><th class="col-number">输出</th><th class="col-number">价值</th></tr></thead><tbody id="usageModelsBody"></tbody></table></div>
+          </div>
+          <div class="card usage-card">
+            <div class="usage-card-head"><div><h3>按账号</h3><small>所有流量都经过 relay 时才完整</small></div></div>
+            <div class="table-wrap"><table class="grid usage-table"><thead><tr><th>账号</th><th class="col-number">请求</th><th class="col-number">输入</th><th class="col-number">缓存读取</th><th class="col-number">输出</th><th class="col-number">价值</th></tr></thead><tbody id="usageAccountsBody"></tbody></table></div>
+          </div>
+        </div>
+        <div class="card usage-card">
+          <div class="usage-card-head"><div><h3>五小时窗口估值</h3><small>同一重置窗口内两次手动额度刷新之间的外推结果</small></div></div>
+          <div id="usageEstimatesEmpty" class="usage-empty-note">至少在同一个五小时窗口内刷新两次账号额度后才会产生估值。</div>
+          <div class="table-wrap"><table id="usageEstimatesTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th>区间</th><th class="col-number">额度增量</th><th class="col-number">区间价值</th><th class="col-number">完整窗口外推</th></tr></thead><tbody id="usageEstimatesBody"></tbody></table></div>
+        </div>
+        <div class="card usage-card">
+          <div class="usage-card-head"><div><h3>模型价格</h3><small>精确模型优先于以 * 结尾的前缀；修改通过新增生效版本完成</small></div></div>
+          <div class="table-wrap"><table class="grid usage-table"><thead><tr><th>模型规则</th><th>生效时间</th><th class="col-number">输入</th><th class="col-number">5m 写入</th><th class="col-number">1h 写入</th><th class="col-number">读取</th><th class="col-number">输出</th></tr></thead><tbody id="pricesBody"></tbody></table></div>
+        </div>
       </div>
     </section>
 
@@ -291,7 +333,7 @@
       </div>
       <label for="renameAlias">新别名</label>
       <input id="renameAlias" type="text" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="off">
-      <p class="note">别名会影响已有会话路由，重命名会清空该账号的本地流量统计。</p>
+      <p class="note">别名会影响已有会话路由；重命名会清空本次启动的请求统计，长期用量仍按账号身份保留。</p>
       <button id="submitRenameButton" class="btn btn-primary btn-block" type="button">保存</button>
       <p id="renameError" class="form-error" role="alert"></p>
     </form>
@@ -308,6 +350,27 @@
         <button class="btn btn-quiet confirm-reject" type="button">取消</button>
         <button id="confirmAccept" class="btn btn-primary" type="button">确认</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="priceDialog" class="dialog">
+    <form method="dialog" class="dialog-body">
+      <div class="dialog-head"><h2>添加模型价格版本</h2><button class="btn btn-close" value="cancel" type="submit" aria-label="关闭">×</button></div>
+      <label for="pricePattern">模型 ID 或前缀规则</label>
+      <input id="pricePattern" type="text" maxlength="128" placeholder="claude-sonnet-5*" autocomplete="off">
+      <label for="priceEffective">生效时间</label>
+      <input id="priceEffective" type="datetime-local">
+      <div class="price-fields">
+        <label>输入 / MTok<input id="priceInput" type="number" min="0" step="0.01"></label>
+        <label>输出 / MTok<input id="priceOutput" type="number" min="0" step="0.01"></label>
+        <label>5m 写入 / MTok<input id="priceCache5m" type="number" min="0" step="0.01"></label>
+        <label>1h 写入 / MTok<input id="priceCache1h" type="number" min="0" step="0.01"></label>
+        <label>缓存读取 / MTok<input id="priceCacheRead" type="number" min="0" step="0.01"></label>
+      </div>
+      <label for="priceSource">备注或来源</label>
+      <input id="priceSource" type="text" maxlength="200" placeholder="Anthropic 官方定价">
+      <button id="savePriceButton" class="btn btn-primary btn-block" type="button">保存新版本</button>
+      <p id="priceError" class="form-error" role="alert"></p>
     </form>
   </dialog>
 

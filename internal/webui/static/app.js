@@ -11,6 +11,8 @@ const state = {
   accountUsage: {},
   usageLoading: new Set(),
   requests: [],
+  usage: null,
+  prices: [],
   autoRefreshEnabled: true,
   panel: "accounts",
   pendingOAuth: readJSON(sessionStorage, "claudeRelayPendingOAuth"),
@@ -63,6 +65,19 @@ async function loadAccounts() {
 async function loadRequests() {
   const payload = await api(`/admin/v1/requests?limit=${REQUEST_LIMIT}`);
   state.requests = Array.isArray(payload.requests) ? payload.requests : [];
+}
+
+async function loadUsage({ notify = false } = {}) {
+  const seconds = Number($("usageRange")?.value || 604800);
+  const from = seconds > 0 ? Date.now() - seconds * 1000 : 0;
+  const [usage, prices] = await Promise.all([
+    api(`/admin/v1/usage?from=${from}`),
+    api("/admin/v1/usage/prices"),
+  ]);
+  state.usage = usage;
+  state.prices = Array.isArray(prices.prices) ? prices.prices : [];
+  renderUsage();
+  if (notify) showToast("用量统计已刷新");
 }
 
 async function loadAccountUsage(account, { notify = false } = {}) {
@@ -127,6 +142,7 @@ function render() {
   renderAccounts();
   renderRequests();
   renderConnect();
+  renderUsage();
 }
 
 function renderHealth(healthy) {
@@ -362,6 +378,154 @@ function renderRequests() {
 
 function isFailure(record) {
   return Boolean(record.error) || record.status === 0 || record.status >= 400;
+}
+
+function renderUsage() {
+  const dashboard = state.usage;
+  if (!dashboard) return;
+  const totals = dashboard.totals || {};
+  const usage = totals.usage || {};
+  $("usageCost").textContent = formatUSD(totals.cost_usd || 0);
+  $("usageCostNote").textContent = totals.unpriced ? "不含尚未定价模型" : "按发生时价格估算";
+  $("usageInput").textContent = formatTokens(usage.input_tokens || 0);
+  $("usageCacheRead").textContent = formatTokens(usage.cache_read_tokens || 0);
+  $("usageOutput").textContent = formatTokens(usage.output_tokens || 0);
+
+  const unpriced = Array.isArray(dashboard.unpriced_models) ? dashboard.unpriced_models : [];
+  const warning = $("usageUnpriced");
+  warning.classList.toggle("hidden", unpriced.length === 0);
+  warning.textContent = unpriced.length ? `尚未定价：${unpriced.join("、")}。原始 usage 已保存，添加价格后即可估值。` : "";
+
+  renderUsageRows($("usageModelsBody"), dashboard.by_model || [], "model", true);
+  renderUsageRows($("usageAccountsBody"), dashboard.by_account || [], "account", false);
+
+  const estimates = Array.isArray(dashboard.five_hour_estimates) ? dashboard.five_hour_estimates : [];
+  $("usageEstimatesEmpty").classList.toggle("hidden", estimates.length !== 0);
+  $("usageEstimatesTable").classList.toggle("hidden", estimates.length === 0);
+  const estimateBody = $("usageEstimatesBody");
+  estimateBody.replaceChildren();
+  for (const estimate of estimates.slice().reverse()) {
+    const row = document.createElement("tr");
+    row.append(
+      cell(document.createTextNode(estimate.account || "—")),
+      cell(document.createTextNode(`${new Date(estimate.from).toLocaleString()} → ${new Date(estimate.to).toLocaleString()}`)),
+      numberCell(`${Number(estimate.used_percent_delta || 0).toFixed(1)}%`),
+      numberCell(formatUSD(estimate.observed_cost_usd || 0)),
+      numberCell(formatUSD(estimate.full_window_usd || 0)),
+    );
+    estimateBody.appendChild(row);
+  }
+
+  const pricesBody = $("pricesBody");
+  pricesBody.replaceChildren();
+  for (const price of state.prices) {
+    const row = document.createElement("tr");
+    row.title = price.source || "";
+    row.append(
+      cell(document.createTextNode(price.model_pattern)),
+      cell(document.createTextNode(price.effective_from <= 1000 ? "初始价格" : new Date(price.effective_from).toLocaleString())),
+      numberCell(formatPrice(price.input_usd_per_mtok)),
+      numberCell(formatPrice(price.cache_creation_5m_usd_per_mtok)),
+      numberCell(formatPrice(price.cache_creation_1h_usd_per_mtok)),
+      numberCell(formatPrice(price.cache_read_usd_per_mtok)),
+      numberCell(formatPrice(price.output_usd_per_mtok)),
+    );
+    pricesBody.appendChild(row);
+  }
+}
+
+function renderUsageRows(body, values, key, includeCacheWrite) {
+  body.replaceChildren();
+  for (const value of values) {
+    const usage = value.usage || {};
+    const row = document.createElement("tr");
+    row.append(
+      cell(stack(strong(value[key] || "—"), value.unpriced ? small("未定价") : null)),
+      numberCell(formatTokens(usage.requests || 0)),
+      numberCell(formatTokens(usage.input_tokens || 0)),
+    );
+    if (includeCacheWrite) {
+      const writes = (usage.cache_creation_5m_tokens || 0) + (usage.cache_creation_1h_tokens || 0);
+      row.appendChild(numberCell(formatTokens(writes)));
+    }
+    row.append(
+      numberCell(formatTokens(usage.cache_read_tokens || 0)),
+      numberCell(formatTokens(usage.output_tokens || 0)),
+      numberCell(value.unpriced ? "—" : formatUSD(value.cost_usd || 0)),
+    );
+    body.appendChild(row);
+  }
+}
+
+function numberCell(value) {
+  const td = cell(document.createTextNode(value));
+  td.className = "col-number";
+  return td;
+}
+
+function formatTokens(value) {
+  const number = Number(value || 0);
+  if (number >= 1_000_000_000) return `${(number / 1_000_000_000).toFixed(2)}B`;
+  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(2)}M`;
+  if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
+  return number.toLocaleString();
+}
+
+function formatUSD(value) {
+  return `$${Number(value || 0).toFixed(Number(value || 0) < 1 ? 4 : 2)}`;
+}
+
+function formatPrice(value) {
+  return `$${Number(value || 0).toFixed(2)}`;
+}
+
+function openPriceDialog() {
+  $("pricePattern").value = "";
+  const local = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  $("priceEffective").value = local;
+  for (const id of ["priceInput", "priceOutput", "priceCache5m", "priceCache1h", "priceCacheRead"]) $(id).value = "";
+  $("priceSource").value = "";
+  $("priceError").textContent = "";
+  $("priceDialog").showModal();
+  setTimeout(() => $("pricePattern").focus(), 40);
+}
+
+async function savePrice(element) {
+  const fields = ["priceInput", "priceOutput", "priceCache5m", "priceCache1h", "priceCacheRead"];
+  const values = fields.map((id) => Number($(id).value));
+  const effective = new Date($("priceEffective").value).getTime();
+  if (!$("pricePattern").value.trim() || values.some((value) => !Number.isFinite(value) || value < 0) || !Number.isFinite(effective)) {
+    $("priceError").textContent = "请填写模型规则、生效时间和全部非负价格。";
+    return;
+  }
+  setBusy(element, true);
+  try {
+    await api("/admin/v1/usage/prices", { method: "POST", body: JSON.stringify({
+      model_pattern: $("pricePattern").value.trim(), effective_from: effective,
+      input_usd_per_mtok: values[0], output_usd_per_mtok: values[1],
+      cache_creation_5m_usd_per_mtok: values[2], cache_creation_1h_usd_per_mtok: values[3],
+      cache_read_usd_per_mtok: values[4], source: $("priceSource").value.trim(),
+    }) });
+    $("priceDialog").close();
+    await loadUsage();
+    showToast("模型价格版本已添加");
+  } catch (error) {
+    $("priceError").textContent = error.message;
+  } finally {
+    setBusy(element, false);
+  }
+}
+
+async function clearUsage() {
+  const accepted = await confirmDialog({ title: "清空用量统计", lead: "这会永久删除已采集的 token 聚合和订阅额度快照。模型价格不会删除。", items: ["历史 API 等价值和五小时估值无法恢复"], accept: "永久清空", danger: true });
+  if (!accepted) return;
+  try {
+    await api("/admin/v1/usage", { method: "DELETE" });
+    await loadUsage();
+    showToast("用量统计已清空");
+  } catch (error) {
+    showToast(error.message, true);
+  }
 }
 
 function requestRow(record) {
@@ -736,7 +900,7 @@ function openActions(account) {
     $("actionsDialog").close();
     const accepted = await confirmDialog({
       title: `删除 ${account.alias}`,
-      lead: "该账号的 OAuth 令牌、冷却状态和粘性会话绑定会被一并删除，且无法恢复。",
+      lead: "该账号的 OAuth 令牌、冷却状态、粘性会话绑定和长期用量记录会被一并删除，且无法恢复。",
       items: [
         "删除不会吊销 Anthropic 侧的授权，需要时请到 Anthropic 账号页手动撤销",
         "若只是暂时不用，停用比删除更安全",
@@ -965,10 +1129,11 @@ function selectPanel(name) {
     tab.classList.toggle("is-active", active);
     tab.setAttribute("aria-selected", String(active));
   }
-  for (const panel of ["accounts", "requests", "connect"]) {
+  for (const panel of ["accounts", "requests", "usage", "connect"]) {
     $("panel-" + panel).classList.toggle("hidden", panel !== name);
   }
   if (name === "requests") refreshAll({ includeRequests: true });
+  if (name === "usage") loadUsage().catch((error) => showToast(error.message, true));
 }
 
 /* ---------------- theme ---------------- */
@@ -1342,6 +1507,12 @@ $("importButton").addEventListener("click", () => {
 });
 $("submitImportButton").addEventListener("click", submitImport);
 $("submitRenameButton").addEventListener("click", submitRename);
+
+$("usageRange").addEventListener("change", () => loadUsage().catch((error) => showToast(error.message, true)));
+$("refreshUsageButton").addEventListener("click", () => loadUsage({ notify: true }).catch((error) => showToast(error.message, true)));
+$("addPriceButton").addEventListener("click", openPriceDialog);
+$("savePriceButton").addEventListener("click", (event) => savePrice(event.currentTarget));
+$("clearUsageButton").addEventListener("click", clearUsage);
 
 $("toggleRelayKey").addEventListener("click", () => {
   state.relayKeyVisible = !state.relayKeyVisible;

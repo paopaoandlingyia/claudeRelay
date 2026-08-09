@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/local/claude-relay/internal/accounting"
 	"github.com/local/claude-relay/internal/claudeoauth"
 	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/metrics"
@@ -39,6 +40,7 @@ type Server struct {
 	tokens     *tokenManager
 	metrics    *metrics.Recorder
 	usage      *accountUsageManager
+	accounting *accounting.Manager
 	startedAt  time.Time
 }
 
@@ -79,6 +81,7 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	}
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
 	server.usage = newAccountUsageManager(database, server.tokens, server.client, upstream)
+	server.accounting = accounting.NewManager(database)
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.routes(),
@@ -89,6 +92,9 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	accountingCtx, stopAccounting := context.WithCancel(context.Background())
+	defer stopAccounting()
+	go s.accounting.Run(accountingCtx)
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("relay listening", "address", s.cfg.Listen, "upstream", s.upstream.String())
@@ -97,6 +103,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case err := <-errCh:
+		stopAccounting()
+		flushCtx, cancel := context.WithTimeout(context.Background(), accounting.FlushInterval)
+		defer cancel()
+		_ = s.accounting.Flush(flushCtx)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
@@ -106,6 +116,10 @@ func (s *Server) Run(ctx context.Context) error {
 		defer cancel()
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown: %w", err)
+		}
+		stopAccounting()
+		if err := s.accounting.Flush(shutdownCtx); err != nil {
+			return fmt.Errorf("flush usage accounting: %w", err)
 		}
 		return nil
 	}
@@ -134,6 +148,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/usage/refresh", func(w http.ResponseWriter, r *http.Request) { s.accountUsage(w, r, true) })
 	mux.HandleFunc("POST /admin/v1/oauth/claude/start", s.startClaudeOAuth)
 	mux.HandleFunc("POST /admin/v1/oauth/claude/exchange", s.exchangeClaudeOAuth)
+	mux.HandleFunc("GET /admin/v1/usage", s.usageDashboard)
+	mux.HandleFunc("GET /admin/v1/usage/prices", s.listModelPrices)
+	mux.HandleFunc("POST /admin/v1/usage/prices", s.saveModelPrice)
+	mux.HandleFunc("DELETE /admin/v1/usage", s.clearUsageAccounting)
 	return withRequestID(s.securityHeaders(s.authenticate(mux)))
 }
 
@@ -358,8 +376,14 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	w.Header().Set(requestIDHeader, requestID)
 	w.Header().Set("X-Claude-Relay-Account", selected.Account.Alias)
 	w.WriteHeader(response.StatusCode)
-	if _, err := io.Copy(flushWriter{ResponseWriter: w}, response.Body); err != nil {
-		slog.Warn("relay response interrupted", "request_id", requestID, "path", incoming.URL.Path, "status", response.StatusCode, "error", err)
+	observer := accounting.NewObserver(response.Body, response.Header.Get("Content-Type"))
+	_, copyErr := io.Copy(flushWriter{ResponseWriter: w}, observer)
+	observedUsage, servedModel := observer.Result(copyErr, route.Model)
+	if incoming.URL.Path == "/v1/messages" && response.StatusCode >= 200 && response.StatusCode < 300 {
+		s.accounting.Record(selected.Account.ID, servedModel, started, observedUsage)
+	}
+	if copyErr != nil {
+		slog.Warn("relay response interrupted", "request_id", requestID, "path", incoming.URL.Path, "status", response.StatusCode, "error", copyErr)
 		event.Error = "response interrupted"
 		return
 	}

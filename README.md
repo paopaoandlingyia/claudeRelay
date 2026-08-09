@@ -119,6 +119,10 @@ POST   /admin/v1/accounts/{alias}/cooldown/clear
 POST   /admin/v1/accounts/{alias}/check
 GET    /admin/v1/accounts/{alias}/usage
 POST   /admin/v1/accounts/{alias}/usage/refresh
+GET    /admin/v1/usage?from={epoch_milliseconds}
+DELETE /admin/v1/usage
+GET    /admin/v1/usage/prices
+POST   /admin/v1/usage/prices
 ```
 
 `import` accepts a pasted CLIProxyAPI credential document and leaves the account disabled. It
@@ -135,8 +139,24 @@ present in the upstream response. A missing weekly or model-specific limit is om
 invented as zero or unlimited. Successful readings are cached in memory for two minutes; the
 refresh endpoint bypasses that cache. Profile lookup is optional, so an unavailable plan label does
 not hide valid quota windows. Enabled accounts follow the normal token-refresh ownership rules,
-while viewing a disabled account never rotates its refresh token. This is current-state observation,
-not request billing or historical usage accounting.
+while viewing a disabled account never rotates its refresh token. A forced refresh also saves the
+five-hour percentage and the relay's cumulative token counters at that instant, allowing two
+observations in the same reset window to estimate the full-window API value.
+
+Successful Messages responses are observed while their bytes are passed through unchanged. The
+relay records only Anthropic's response `usage`, the serving account, model, and hour; it never
+stores prompts or response content. Streaming `message_start` and cumulative `message_delta`
+usage are combined, while incomplete streams remain visible as incomplete samples. Request
+goroutines update an in-memory aggregate only. A background worker writes all pending account/model
+hour buckets in one short SQLite transaction every five seconds and retries failed batches, so
+SQLite work does not block model streaming.
+
+The usage console values raw input, output, five-minute/one-hour cache creation, and cache reads
+against versioned per-model prices. Built-in prices are only defaults. Add an exact model ID or a
+prefix ending in `*` through the console or `POST /admin/v1/usage/prices`; exact matches win, and a
+new effective version preserves historical valuation. Unknown models keep their raw usage and are
+reported as unpriced instead of silently contributing zero dollars. API value is an estimate at
+published API prices, not evidence that Anthropic deducts subscription capacity in dollars.
 
 Disabled accounts cannot be selected automatically or through `X-Claude-Relay-Account`, and they
 never trigger token refresh. Enabling an account means this relay becomes the sole owner of its

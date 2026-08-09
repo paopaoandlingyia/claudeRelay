@@ -136,7 +136,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
 	}
-	if version > 4 {
+	if version > 5 {
 		return fmt.Errorf("database schema version %d is newer than this build supports", version)
 	}
 	statements := []string{
@@ -173,6 +173,45 @@ func (s *Store) initialize(ctx context.Context) error {
 			reason TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY(account_id, model)
 		)`,
+		`CREATE TABLE IF NOT EXISTS usage_hourly (
+			bucket_start INTEGER NOT NULL,
+			account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+			model TEXT NOT NULL,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_5m_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+			request_count INTEGER NOT NULL DEFAULT 0,
+			incomplete_count INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(bucket_start, account_id, model)
+		)`,
+		`CREATE INDEX IF NOT EXISTS usage_hourly_account_time_idx ON usage_hourly(account_id,bucket_start)`,
+		`CREATE INDEX IF NOT EXISTS usage_hourly_time_idx ON usage_hourly(bucket_start)`,
+		`CREATE TABLE IF NOT EXISTS model_prices (
+			id INTEGER PRIMARY KEY,
+			model_pattern TEXT NOT NULL,
+			effective_from INTEGER NOT NULL,
+			input_usd_per_mtok REAL NOT NULL,
+			output_usd_per_mtok REAL NOT NULL,
+			cache_creation_5m_usd_per_mtok REAL NOT NULL,
+			cache_creation_1h_usd_per_mtok REAL NOT NULL,
+			cache_read_usd_per_mtok REAL NOT NULL,
+			source TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			UNIQUE(model_pattern,effective_from)
+		)`,
+		`CREATE INDEX IF NOT EXISTS model_prices_effective_idx ON model_prices(effective_from)`,
+		`CREATE TABLE IF NOT EXISTS subscription_usage_snapshots (
+			id INTEGER PRIMARY KEY,
+			account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+			observed_at INTEGER NOT NULL,
+			resets_at TEXT NOT NULL DEFAULT '',
+			used_percent REAL NOT NULL,
+			totals_json TEXT NOT NULL,
+			UNIQUE(account_id,observed_at)
+		)`,
+		`CREATE INDEX IF NOT EXISTS subscription_usage_snapshots_account_time_idx ON subscription_usage_snapshots(account_id,observed_at)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -205,6 +244,14 @@ func (s *Store) initialize(ctx context.Context) error {
 			return err
 		}
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=4`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	if version < 5 {
+		if err := s.insertDefaultModelPrices(ctx); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=5`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}
