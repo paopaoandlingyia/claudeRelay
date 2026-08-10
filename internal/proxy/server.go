@@ -44,6 +44,7 @@ type Server struct {
 	metrics    *metrics.Recorder
 	usage      *accountUsageManager
 	accounting *accounting.Manager
+	sampler    *subscriptionSampler
 	// missingUsageWarningAt rate-limits diagnostics for successful Messages
 	// responses whose decoded body did not contain Anthropic usage metadata.
 	missingUsageWarningAt atomic.Int64
@@ -88,6 +89,7 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
 	server.usage = newAccountUsageManager(database, server.tokens, server.client, upstream)
 	server.accounting = accounting.NewManager(database)
+	server.sampler = newSubscriptionSampler()
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.routes(),
@@ -390,6 +392,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			s.warnMissingUsage(requestID, servedModel, response)
 		}
 		s.accounting.Record(selected.Account.ID, servedModel, started, observedUsage)
+		s.sampleFiveHourWindow(selected.Account.ID, response.Header)
 	}
 	if copyErr != nil {
 		slog.Warn("relay response interrupted", "request_id", requestID, "path", incoming.URL.Path, "status", response.StatusCode, "error", copyErr)

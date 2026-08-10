@@ -75,6 +75,9 @@ type Store struct {
 	// Zero on startup so the first Bind cleans up whatever a previous process
 	// left behind.
 	lastBindingPrune atomic.Int64
+	// lastSnapshotPrune is the same for subscription usage snapshots, which are
+	// written continuously once sampling follows relayed traffic.
+	lastSnapshotPrune atomic.Int64
 }
 
 // sqliteDSNParams configures every connection the pool opens.

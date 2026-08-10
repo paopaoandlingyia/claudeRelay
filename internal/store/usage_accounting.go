@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -233,11 +234,39 @@ type SubscriptionUsageSnapshot struct {
 	Totals      map[string]UsageCounters `json:"totals"`
 }
 
+// subscriptionSnapshotRetention bounds how far back snapshots are kept. A window
+// is measured from readings inside itself, so anything older than a few weeks
+// only serves history, and sampling that follows relayed traffic would otherwise
+// grow this table without limit.
+const (
+	subscriptionSnapshotRetention   = 30 * 24 * time.Hour
+	snapshotPruneInterval           = time.Hour
+	subscriptionSnapshotPruneWindow = int64(subscriptionSnapshotRetention / time.Millisecond)
+)
+
+// pruneSubscriptionUsageSnapshots drops readings past the retention horizon at
+// most once per interval. Housekeeping must not fail the capture the caller
+// asked for, so a failure is logged and left for the next sweep.
+func (s *Store) pruneSubscriptionUsageSnapshots(ctx context.Context, now time.Time) {
+	last := s.lastSnapshotPrune.Load()
+	if now.Unix()-last < int64(snapshotPruneInterval.Seconds()) {
+		return
+	}
+	if !s.lastSnapshotPrune.CompareAndSwap(last, now.Unix()) {
+		return
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM subscription_usage_snapshots WHERE observed_at<?`,
+		now.UnixMilli()-subscriptionSnapshotPruneWindow); err != nil {
+		slog.Warn("prune subscription usage snapshots", "error", err)
+	}
+}
+
 func (s *Store) CaptureSubscriptionUsageSnapshot(ctx context.Context, accountID int64, observedAt int64, resetsAt string, usedPercent float64) error {
 	totals, err := s.UsageTotalsByModel(ctx, accountID)
 	if err != nil {
 		return err
 	}
+	s.pruneSubscriptionUsageSnapshots(ctx, time.Now())
 	raw, err := json.Marshal(totals)
 	if err != nil {
 		return fmt.Errorf("encode usage snapshot totals: %w", err)
@@ -251,12 +280,18 @@ func (s *Store) CaptureSubscriptionUsageSnapshot(ctx context.Context, accountID 
 	return nil
 }
 
-func (s *Store) SubscriptionUsageSnapshots(ctx context.Context, limit int) ([]SubscriptionUsageSnapshot, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
+// SubscriptionUsageSnapshots returns the earliest and the latest reading of each
+// five-hour window, which is all an anchored estimate needs. Returning the most
+// recent N readings instead would move an anchor forward as sampling continues,
+// shrinking the very span the anchor exists to accumulate.
+func (s *Store) SubscriptionUsageSnapshots(ctx context.Context) ([]SubscriptionUsageSnapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.account_id,a.alias,s.observed_at,s.resets_at,s.used_percent,s.totals_json
-		FROM subscription_usage_snapshots s JOIN accounts a ON a.id=s.account_id ORDER BY s.observed_at DESC LIMIT ?`, limit)
+		FROM subscription_usage_snapshots s JOIN accounts a ON a.id=s.account_id
+		WHERE s.id IN (
+			SELECT MIN(id) FROM subscription_usage_snapshots WHERE resets_at<>'' GROUP BY account_id,resets_at
+			UNION
+			SELECT MAX(id) FROM subscription_usage_snapshots WHERE resets_at<>'' GROUP BY account_id,resets_at)
+		ORDER BY s.observed_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query usage snapshots: %w", err)
 	}
