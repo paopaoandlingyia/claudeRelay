@@ -100,16 +100,27 @@ func (a *accountSampler) differs(resetsAt string, usedPercent float64) bool {
 	return previous == nil || previous.window != resetsAt || previous.percent != usedPercent
 }
 
-// storable additionally rejects a reading that has been overtaken. Goroutines
-// racing inside one account can reach this point out of order, and an older
-// reading arriving late would otherwise be written with counters that already
-// include the traffic of the newer one.
+// storable additionally rejects a reading that a later one has already
+// overtaken. Goroutines racing inside one account can reach this point out of
+// order, and an older reading arriving late would otherwise be written with
+// counters that already include the traffic of the newer one.
+//
+// Time is compared before the window, so the mark can only ever move forwards.
+// Asking about the window first would wave through a stale reading of the
+// previous window on the strength of its window alone, and drag the mark back
+// to that window so the current one is sampled again from scratch.
 func (a *accountSampler) storable(resetsAt string, usedPercent float64, observedAt int64) bool {
 	previous := a.mark.Load()
-	if previous == nil || previous.window != resetsAt {
+	if previous == nil {
 		return true
 	}
-	return previous.percent != usedPercent && observedAt > previous.observedAt
+	if observedAt <= previous.observedAt {
+		return false
+	}
+	if previous.window != resetsAt {
+		return true
+	}
+	return previous.percent != usedPercent
 }
 
 // sampleFiveHourWindow records the serving account's five-hour window from the

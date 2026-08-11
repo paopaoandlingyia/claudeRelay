@@ -81,8 +81,15 @@ func TestSubscriptionSamplerRejectsOvertakenReadings(t *testing.T) {
 	if !account.storable("a", 33, 300) {
 		t.Fatal("a reading observed after the stored one was rejected")
 	}
-	// A new window starts over, so its first reading is always storable.
-	if !account.storable("b", 1, 50) {
+	// A new window is storable on its own terms, but only going forwards.
+	if !account.storable("b", 1, 300) {
 		t.Fatal("the anchor of a new window was rejected")
+	}
+	// A stale reading of the previous window must not be waved through on the
+	// strength of its window: its counters already include the newer window's
+	// traffic, and accepting it would drag the mark back to the old window.
+	account.mark.Store(&sampleMark{window: "b", percent: 1, observedAt: 300})
+	if account.storable("a", 33, 250) {
+		t.Fatal("a stale reading of the previous window was accepted")
 	}
 }
