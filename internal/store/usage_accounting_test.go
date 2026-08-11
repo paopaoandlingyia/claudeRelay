@@ -66,6 +66,37 @@ func TestSubscriptionUsageSnapshotsKeepEachWindowsFirstReading(t *testing.T) {
 	}
 }
 
+// Sampling runs off the request goroutines and the relay allows several requests
+// per account in flight, so a later reading can reach the database first. The
+// ends of a window have to come from the observation times, not from the order
+// the rows landed in, or an anchor can end up above the reading it is measured
+// against and the window reports a negative delta.
+func TestSubscriptionUsageSnapshotsOrderWindowsByObservationTime(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	account := importTestAccount(t, database, "usage", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	base := time.Now().Add(-time.Hour).UnixMilli()
+	// The reading observed second is written first.
+	if err := database.CaptureSubscriptionUsageSnapshot(ctx, account.ID, base+1000, "1786386600", 32); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CaptureSubscriptionUsageSnapshot(ctx, account.ID, base, "1786386600", 31); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := database.SubscriptionUsageSnapshots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Newest first: the reading observed later leads, whichever row landed first.
+	if len(snapshots) != 2 || snapshots[0].UsedPercent != 32 || snapshots[1].UsedPercent != 31 {
+		t.Fatalf("want 32 then 31 by observation time, got %+v", snapshots)
+	}
+}
+
 // Sampling follows relayed traffic, so this table gains rows for as long as the
 // relay runs and needs a horizon of its own.
 func TestSubscriptionUsageSnapshotsArePrunedPastTheRetentionHorizon(t *testing.T) {

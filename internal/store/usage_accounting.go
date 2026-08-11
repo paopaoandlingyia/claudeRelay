@@ -284,13 +284,17 @@ func (s *Store) CaptureSubscriptionUsageSnapshot(ctx context.Context, accountID 
 // five-hour window, which is all an anchored estimate needs. Returning the most
 // recent N readings instead would move an anchor forward as sampling continues,
 // shrinking the very span the anchor exists to accumulate.
+//
+// The two ends are chosen by observed_at rather than by insert order, because
+// sampling runs off the request goroutines and one of them can reach the
+// database ahead of a reading taken before it.
 func (s *Store) SubscriptionUsageSnapshots(ctx context.Context) ([]SubscriptionUsageSnapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.account_id,a.alias,s.observed_at,s.resets_at,s.used_percent,s.totals_json
 		FROM subscription_usage_snapshots s JOIN accounts a ON a.id=s.account_id
-		WHERE s.id IN (
-			SELECT MIN(id) FROM subscription_usage_snapshots WHERE resets_at<>'' GROUP BY account_id,resets_at
+		WHERE (s.account_id,s.resets_at,s.observed_at) IN (
+			SELECT account_id,resets_at,MIN(observed_at) FROM subscription_usage_snapshots WHERE resets_at<>'' GROUP BY account_id,resets_at
 			UNION
-			SELECT MAX(id) FROM subscription_usage_snapshots WHERE resets_at<>'' GROUP BY account_id,resets_at)
+			SELECT account_id,resets_at,MAX(observed_at) FROM subscription_usage_snapshots WHERE resets_at<>'' GROUP BY account_id,resets_at)
 		ORDER BY s.observed_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query usage snapshots: %w", err)

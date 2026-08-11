@@ -49,26 +49,40 @@ func TestParseFiveHourWindow(t *testing.T) {
 // the window it belongs to holds nothing that can be measured.
 func TestSubscriptionSamplerDropsRepeatsAndKeepsChanges(t *testing.T) {
 	t.Parallel()
-	sampler := newSubscriptionSampler()
-	cases := []struct {
-		name    string
-		window  string
-		percent float64
-		want    bool
-	}{
-		{"first response of a window", "a", 10, true},
-		{"unchanged reading", "a", 10, false},
-		{"changed reading in the same burst", "a", 11, true},
-		{"changed again in the same burst", "a", 12, true},
-		{"unchanged reading again", "a", 12, false},
-		{"anchor of a new window", "b", 2, true},
+	account := newSubscriptionSampler().forAccount(1)
+	store := func(window string, percent float64, observedAt int64) {
+		account.mark.Store(&sampleMark{window: window, percent: percent, observedAt: observedAt})
 	}
-	for _, testCase := range cases {
-		if got := sampler.due(1, testCase.window, testCase.percent); got != testCase.want {
-			t.Fatalf("%s: due = %v, want %v", testCase.name, got, testCase.want)
-		}
+	if !account.differs("a", 10) {
+		t.Fatal("the first response of a window was not sampled")
 	}
-	if !sampler.due(2, "a", 10) {
+	store("a", 10, 100)
+	if account.differs("a", 10) {
+		t.Fatal("an unchanged reading was sampled again")
+	}
+	if !account.differs("a", 11) || !account.differs("b", 10) {
+		t.Fatal("a changed reading or a new window was suppressed")
+	}
+	if !newSubscriptionSampler().forAccount(2).differs("a", 10) {
 		t.Fatal("one account suppressed another")
+	}
+}
+
+// Sampling goroutines racing inside one account can reach the store out of
+// order. A reading overtaken by a later one must not be written, because the
+// counters it would be paired with already include the later one's traffic.
+func TestSubscriptionSamplerRejectsOvertakenReadings(t *testing.T) {
+	t.Parallel()
+	account := newSubscriptionSampler().forAccount(1)
+	account.mark.Store(&sampleMark{window: "a", percent: 32, observedAt: 200})
+	if account.storable("a", 31, 100) {
+		t.Fatal("a reading observed before the stored one was accepted")
+	}
+	if !account.storable("a", 33, 300) {
+		t.Fatal("a reading observed after the stored one was rejected")
+	}
+	// A new window starts over, so its first reading is always storable.
+	if !account.storable("b", 1, 50) {
+		t.Fatal("the anchor of a new window was rejected")
 	}
 }
