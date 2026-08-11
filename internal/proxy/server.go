@@ -380,6 +380,13 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		}
 	}()
 
+	// Read while the response headers are the newest thing known about the
+	// account. A streaming body runs for anything up to minutes, so a window read
+	// after the copy would carry the moment this response ended rather than the
+	// moment upstream reported it, and two responses could be recorded in the
+	// opposite order to the readings they carry.
+	window, sampled := readFiveHourWindow(response.Header, time.Now())
+
 	copyResponseHeaders(w.Header(), response.Header)
 	w.Header().Set(requestIDHeader, requestID)
 	w.Header().Set("X-Claude-Relay-Account", selected.Account.Alias)
@@ -392,7 +399,9 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			s.warnMissingUsage(requestID, servedModel, response)
 		}
 		s.accounting.Record(selected.Account.ID, servedModel, started, observedUsage)
-		s.sampleFiveHourWindow(selected.Account.ID, response.Header)
+		if sampled {
+			s.sampleFiveHourWindow(selected.Account, window)
+		}
 	}
 	if copyErr != nil {
 		slog.Warn("relay response interrupted", "request_id", requestID, "path", incoming.URL.Path, "status", response.StatusCode, "error", copyErr)

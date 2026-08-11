@@ -303,6 +303,7 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.metrics.Forget(account.Alias)
+	s.sampler.forget(account)
 	writeJSON(w, http.StatusOK, map[string]any{"alias": account.Alias, "deleted": true})
 }
 
