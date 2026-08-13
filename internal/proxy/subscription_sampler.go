@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/store"
 )
 
@@ -83,7 +82,8 @@ func readFiveHourWindow(headers http.Header, now time.Time) (fiveHourReading, bo
 // per account in flight at once, so their readings are funnelled through a
 // single writer rather than reaching the database in whatever order they finish.
 type accountSampler struct {
-	stored atomic.Pointer[fiveHourReading]
+	stored            atomic.Pointer[fiveHourReading]
+	maxQueuedReadings int
 
 	// queue holds what the writer has yet to store. It is guarded by a lock
 	// rather than atomics because storable already filters the repeats without
@@ -93,24 +93,19 @@ type accountSampler struct {
 	writing bool
 }
 
-// maxQueuedReadings bounds the queue by the same thing that bounds how many
-// readings can arrive during one write: the relay's own in-flight ceiling per
-// account. A burst therefore keeps every reading it produced, while a database
-// that has stopped accepting writes cannot grow the queue without limit.
-const maxQueuedReadings = config.DefaultMaxInflightPerAccount
-
 type subscriptionSampler struct {
-	accounts sync.Map
+	accounts          sync.Map
+	maxQueuedReadings int
 }
 
-func newSubscriptionSampler() *subscriptionSampler {
-	return &subscriptionSampler{}
+func newSubscriptionSampler(maxQueuedReadings int) *subscriptionSampler {
+	return &subscriptionSampler{maxQueuedReadings: maxQueuedReadings}
 }
 
 // forAccount keys state by the account's own identity rather than its database
 // row, because SQLite reuses a row id once an account is deleted.
 func (s *subscriptionSampler) forAccount(account store.Account) *accountSampler {
-	value, _ := s.accounts.LoadOrStore(accountUsageCacheKey(account), &accountSampler{})
+	value, _ := s.accounts.LoadOrStore(accountUsageCacheKey(account), &accountSampler{maxQueuedReadings: s.maxQueuedReadings})
 	return value.(*accountSampler)
 }
 
@@ -158,7 +153,7 @@ func (a *accountSampler) enqueue(reading fiveHourReading) bool {
 	last := len(a.queue) - 1
 	switch {
 	case last >= 0 && reading.observedAt <= a.queue[last].observedAt:
-	case len(a.queue) < maxQueuedReadings:
+	case len(a.queue) < a.maxQueuedReadings:
 		a.queue = append(a.queue, reading)
 	default:
 		a.queue[last] = reading

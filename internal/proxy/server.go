@@ -89,7 +89,7 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
 	server.usage = newAccountUsageManager(database, server.tokens, server.client, upstream)
 	server.accounting = accounting.NewManager(database)
-	server.sampler = newSubscriptionSampler()
+	server.sampler = newSubscriptionSampler(cfg.MaxInflightPerAccount)
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.routes(),

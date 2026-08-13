@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/local/claude-relay/internal/config"
 	"github.com/local/claude-relay/internal/credential"
 	"github.com/local/claude-relay/internal/store"
 )
@@ -53,7 +54,7 @@ func TestReadFiveHourWindow(t *testing.T) {
 
 func testAccountSampler(t *testing.T, uuid string) *accountSampler {
 	t.Helper()
-	return newSubscriptionSampler().forAccount(store.Account{ID: 1,
+	return newSubscriptionSampler(config.DefaultMaxInflightPerAccount).forAccount(store.Account{ID: 1,
 		Credential: credential.Credential{AccountUUID: uuid}})
 }
 
@@ -138,20 +139,21 @@ func TestSubscriptionSamplerKeepsQueuedReadingsWhileWriting(t *testing.T) {
 // burst still keeps every reading it could have produced.
 func TestSubscriptionSamplerBoundsItsQueue(t *testing.T) {
 	t.Parallel()
-	sampler := testAccountSampler(t, "11111111-1111-4111-8111-111111111111")
-	for step := range maxQueuedReadings * 4 {
+	sampler := newSubscriptionSampler(3).forAccount(store.Account{ID: 1,
+		Credential: credential.Credential{AccountUUID: "11111111-1111-4111-8111-111111111111"}})
+	for step := range sampler.maxQueuedReadings * 4 {
 		sampler.enqueue(fiveHourReading{resetsAt: "a", usedPercent: float64(step), observedAt: int64(step)})
 	}
 	sampler.mu.Lock()
 	queued := len(sampler.queue)
 	newest := sampler.queue[queued-1].usedPercent
 	sampler.mu.Unlock()
-	if queued != maxQueuedReadings {
-		t.Fatalf("queue held %d readings, want the ceiling of %d", queued, maxQueuedReadings)
+	if queued != sampler.maxQueuedReadings {
+		t.Fatalf("queue held %d readings, want the ceiling of %d", queued, sampler.maxQueuedReadings)
 	}
 	// The overflow collapses into the newest reading rather than the oldest,
 	// because the oldest is the anchor its window is measured from.
-	if newest != float64(maxQueuedReadings*4-1) {
+	if newest != float64(sampler.maxQueuedReadings*4-1) {
 		t.Fatalf("want the newest reading at the tail, got %v", newest)
 	}
 }
@@ -161,7 +163,7 @@ func TestSubscriptionSamplerBoundsItsQueue(t *testing.T) {
 // its first reading is dismissed as a repeat of one no longer in the database.
 func TestSubscriptionSamplerSeparatesAccountIncarnations(t *testing.T) {
 	t.Parallel()
-	sampler := newSubscriptionSampler()
+	sampler := newSubscriptionSampler(config.DefaultMaxInflightPerAccount)
 	account := func(id int64, uuid string) store.Account {
 		return store.Account{ID: id, Credential: credential.Credential{AccountUUID: uuid}}
 	}
