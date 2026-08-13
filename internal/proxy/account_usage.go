@@ -296,7 +296,7 @@ func (s *Server) accountUsage(w http.ResponseWriter, r *http.Request, force bool
 			if window.ID != "five_hour" {
 				continue
 			}
-			if err := s.store.CaptureSubscriptionUsageSnapshot(r.Context(), account.ID, view.FetchedAt, window.ResetsAt, window.UsedPercent); err != nil {
+			if err := s.store.CaptureSubscriptionUsageSnapshot(r.Context(), account.ID, view.FetchedAt, normalizeResetIdentity(window.ResetsAt), window.UsedPercent); err != nil {
 				writeError(w, http.StatusInternalServerError, "api_error", "failed to save subscription usage snapshot")
 				return
 			}

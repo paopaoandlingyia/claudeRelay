@@ -188,8 +188,8 @@
           </div>
         </div>
         <div class="card usage-card">
-          <div class="usage-card-head"><div><h3>五小时窗口估值</h3><small>同一重置窗口内两次手动额度刷新之间的外推结果</small></div></div>
-          <div id="usageEstimatesEmpty" class="usage-empty-note">至少在同一个五小时窗口内刷新两次账号额度后才会产生估值。</div>
+          <div class="usage-card-head"><div><h3>五小时窗口估值</h3><small>同一重置窗口内首次与最新一次额度读数之间的外推结果</small></div></div>
+          <div id="usageEstimatesEmpty" class="usage-empty-note">还没有窗口积累到可测量的额度变化。中转流量经过时会自动取样，无需手动刷新。</div>
           <div class="table-wrap"><table id="usageEstimatesTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th>区间</th><th class="col-number">额度增量</th><th class="col-number">区间价值</th><th class="col-number">完整窗口外推</th></tr></thead><tbody id="usageEstimatesBody"></tbody></table></div>
         </div>
         <div class="card usage-card">

@@ -63,7 +63,7 @@ func (s *Server) usageDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := buildUsageDashboard(buckets, prices, from, now.Unix())
-	snapshots, err := s.store.SubscriptionUsageSnapshots(r.Context(), 100)
+	snapshots, err := s.store.SubscriptionUsageSnapshots(r.Context())
 	if err == nil {
 		response.FiveHourEstimates = buildFiveHourEstimates(snapshots, prices)
 	}
@@ -147,27 +147,56 @@ func usageCost(usage store.UsageCounters, price store.ModelPrice) float64 {
 		float64(usage.CacheReadTokens)*price.CacheReadUSDPerMTok) / 1_000_000
 }
 
+type windowKey struct {
+	accountID int64
+	resetsAt  string
+}
+
+type windowSpan struct{ first, last store.SubscriptionUsageSnapshot }
+
+// buildFiveHourEstimates anchors every window to its own earliest reading rather
+// than pairing neighbouring ones. Utilization is reported in whole percent, so
+// the closer two readings sit the more certain their difference is zero, and
+// denser sampling would defeat itself. Anchoring lets the denominator accumulate
+// across the window, which is also what makes the figure more accurate as the
+// window fills.
+//
+// The anchor need not be the true start of the window. Only the numerator and
+// denominator have to describe the same span, so quota the account spent before
+// the relay first saw it is excluded from both.
 func buildFiveHourEstimates(snapshots []store.SubscriptionUsageSnapshot, prices []store.ModelPrice) []fiveHourEstimate {
-	previous := make(map[int64]store.SubscriptionUsageSnapshot)
-	var estimates []fiveHourEstimate
+	windows := make(map[windowKey]*windowSpan)
+	var order []windowKey
 	for index := len(snapshots) - 1; index >= 0; index-- {
 		current := snapshots[index]
-		prior, ok := previous[current.AccountID]
-		previous[current.AccountID] = current
-		if !ok || current.ResetsAt == "" || current.ResetsAt != prior.ResetsAt {
+		if current.ResetsAt == "" {
 			continue
 		}
-		deltaPercent := current.UsedPercent - prior.UsedPercent
+		key := windowKey{current.AccountID, current.ResetsAt}
+		span := windows[key]
+		if span == nil {
+			span = &windowSpan{first: current}
+			windows[key] = span
+			order = append(order, key)
+		}
+		span.last = current
+	}
+	var estimates []fiveHourEstimate
+	for _, key := range order {
+		span := windows[key]
+		// A window holding one reading compares it against itself and falls out
+		// here along with a window whose utilization never moved.
+		deltaPercent := span.last.UsedPercent - span.first.UsedPercent
 		if deltaPercent <= 0 {
 			continue
 		}
-		cost := snapshotDeltaCost(prior.Totals, current.Totals, prices, current.ObservedAt/1000)
+		cost := snapshotDeltaCost(span.first.Totals, span.last.Totals, prices, span.last.ObservedAt/1000)
 		if cost <= 0 {
 			continue
 		}
-		estimates = append(estimates, fiveHourEstimate{Account: current.Account, From: prior.ObservedAt, To: current.ObservedAt,
-			ResetsAt: current.ResetsAt, UsedPercentDelta: deltaPercent, ObservedCostUSD: cost,
-			FullWindowUSD: cost / deltaPercent * 100})
+		estimates = append(estimates, fiveHourEstimate{Account: span.last.Account, From: span.first.ObservedAt,
+			To: span.last.ObservedAt, ResetsAt: key.resetsAt, UsedPercentDelta: deltaPercent,
+			ObservedCostUSD: cost, FullWindowUSD: cost / deltaPercent * 100})
 	}
 	return estimates
 }
