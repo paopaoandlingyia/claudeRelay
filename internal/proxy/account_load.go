@@ -18,6 +18,21 @@ type accountLoadTracker struct {
 	inFlight map[int64]int
 }
 
+// snapshot returns the current per-account request load for administration
+// views. Callers receive a copy so rendering never holds the hot-path lock.
+func (t *accountLoadTracker) snapshot() map[int64]int {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make(map[int64]int, len(t.inFlight))
+	for accountID, count := range t.inFlight {
+		result[accountID] = count
+	}
+	return result
+}
+
 func newAccountLoadTracker() *accountLoadTracker {
 	return &accountLoadTracker{inFlight: make(map[int64]int)}
 }

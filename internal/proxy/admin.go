@@ -48,6 +48,8 @@ type accountView struct {
 	LastRefreshAt   int64               `json:"last_refresh_at,omitempty"`
 	Cooldown        *cooldownView       `json:"cooldown,omitempty"`
 	StickySessions  int                 `json:"sticky_sessions"`
+	ActiveSessions  int                 `json:"active_sessions"`
+	InFlight        int                 `json:"in_flight"`
 	Stats           metrics.AccountStat `json:"stats"`
 }
 
@@ -88,6 +90,11 @@ func (s *Server) accountViews(r *http.Request, accounts []store.Account) ([]acco
 	if err != nil {
 		return nil, err
 	}
+	active, err := s.store.ActiveSessionCounts(r.Context(), now, now.Add(-5*time.Minute))
+	if err != nil {
+		return nil, err
+	}
+	inFlight := s.load.snapshot()
 	stats := s.metrics.AccountStats()
 
 	views := make([]accountView, 0, len(accounts))
@@ -97,6 +104,8 @@ func (s *Server) accountViews(r *http.Request, accounts []store.Account) ([]acco
 			view.Cooldown = &cooldown
 		}
 		view.StickySessions = bindings[account.ID]
+		view.ActiveSessions = active[account.ID]
+		view.InFlight = inFlight[account.ID]
 		view.Stats = stats[account.Alias]
 		views = append(views, view)
 	}

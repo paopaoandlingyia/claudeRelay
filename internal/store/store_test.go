@@ -136,6 +136,20 @@ func TestExpiredBindingsAreIgnoredBeforePruning(t *testing.T) {
 	if counts[account.ID] != 1 {
 		t.Fatalf("live binding count = %d, want 1", counts[account.ID])
 	}
+	active, err := database.ActiveSessionCounts(ctx, time.Now(), time.Now().Add(-5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active[account.ID] != 1 {
+		t.Fatalf("active session count = %d, want 1", active[account.ID])
+	}
+	active, err = database.ActiveSessionCounts(ctx, time.Now(), time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active[account.ID] != 0 {
+		t.Fatalf("future-cutoff active session count = %d, want 0", active[account.ID])
+	}
 }
 
 func TestImportBindingAndCooldown(t *testing.T) {

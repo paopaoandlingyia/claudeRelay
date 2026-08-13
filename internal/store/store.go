@@ -606,6 +606,29 @@ func (s *Store) SessionBindingCounts(ctx context.Context, now time.Time) (map[in
 	return counts, rows.Err()
 }
 
+// ActiveSessionCounts reports live bindings that have carried a successful
+// request since cutoff. This is intentionally distinct from the one-hour
+// sticky-binding count: it approximates recently active client sessions rather
+// than retained routing affinity.
+func (s *Store) ActiveSessionCounts(ctx context.Context, now, cutoff time.Time) (map[int64]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT account_id,COUNT(*) FROM session_bindings
+		WHERE expires_at>? AND updated_at>? GROUP BY account_id`, now.Unix(), cutoff.Unix())
+	if err != nil {
+		return nil, fmt.Errorf("count active sessions: %w", err)
+	}
+	defer rows.Close()
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var accountID int64
+		var count int
+		if err := rows.Scan(&accountID, &count); err != nil {
+			return nil, fmt.Errorf("scan active session count: %w", err)
+		}
+		counts[accountID] = count
+	}
+	return counts, rows.Err()
+}
+
 func (s *Store) UpdateTokens(ctx context.Context, id int64, accessToken, refreshToken, expiresAt string) (Account, error) {
 	now := time.Now().Unix()
 	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET access_token=?,refresh_token=?,expires_at=?,updated_at=?,last_refresh_at=? WHERE id=?`,

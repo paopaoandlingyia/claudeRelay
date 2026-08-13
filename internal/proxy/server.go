@@ -456,13 +456,85 @@ func retryableStatus(status int) bool {
 }
 
 func retryAfter(headers http.Header, status int) time.Duration {
-	if seconds, err := strconv.Atoi(strings.TrimSpace(headers.Get("Retry-After"))); err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
+	now := time.Now()
+	if delay, ok := retryAfterHeader(headers.Get("Retry-After"), now); ok {
+		return delay
+	}
+	if status == http.StatusTooManyRequests {
+		if delay, ok := anthropicRateLimitDelay(headers, now); ok {
+			return delay
+		}
 	}
 	if status == http.StatusTooManyRequests {
 		return 30 * time.Second
 	}
 	return 10 * time.Second
+}
+
+func retryAfterHeader(raw string, now time.Time) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseFloat(raw, 64); err == nil && seconds > 0 {
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+	resetAt, err := http.ParseTime(raw)
+	if err != nil || !resetAt.After(now) {
+		return 0, false
+	}
+	return resetAt.Sub(now), true
+}
+
+// anthropicRateLimitDelay prefers the reset for a window explicitly reported
+// as exhausted. When utilization signals are absent, the earliest future reset
+// is safer than arbitrarily cooling through a longer, unrelated window.
+func anthropicRateLimitDelay(headers http.Header, now time.Time) (time.Duration, bool) {
+	type resetWindow struct {
+		name      string
+		resetAt   time.Time
+		exhausted bool
+	}
+	windows := make([]resetWindow, 0, 3)
+	for _, name := range []string{"5h", "7d", "7d_oi"} {
+		prefix := "anthropic-ratelimit-unified-" + name + "-"
+		resetUnix, err := strconv.ParseInt(strings.TrimSpace(headers.Get(prefix+"reset")), 10, 64)
+		if err != nil {
+			continue
+		}
+		resetAt := time.Unix(resetUnix, 0)
+		if !resetAt.After(now) {
+			continue
+		}
+		exhausted := strings.EqualFold(strings.TrimSpace(headers.Get(prefix+"surpassed-threshold")), "true")
+		if utilization, err := strconv.ParseFloat(strings.TrimSpace(headers.Get(prefix+"utilization")), 64); err == nil && utilization >= 1 {
+			exhausted = true
+		}
+		windows = append(windows, resetWindow{name: name, resetAt: resetAt, exhausted: exhausted})
+	}
+	if resetUnix, err := strconv.ParseInt(strings.TrimSpace(headers.Get("anthropic-ratelimit-unified-reset")), 10, 64); err == nil {
+		resetAt := time.Unix(resetUnix, 0)
+		if resetAt.After(now) {
+			windows = append(windows, resetWindow{name: "unified", resetAt: resetAt})
+		}
+	}
+	if len(windows) == 0 {
+		return 0, false
+	}
+	chosen := -1
+	for i := range windows {
+		if windows[i].exhausted && (chosen < 0 || !windows[chosen].exhausted || windows[i].resetAt.After(windows[chosen].resetAt)) {
+			chosen = i
+		}
+	}
+	if chosen < 0 {
+		for i := range windows {
+			if chosen < 0 || windows[i].resetAt.Before(windows[chosen].resetAt) {
+				chosen = i
+			}
+		}
+	}
+	return windows[chosen].resetAt.Sub(now), true
 }
 
 type flushWriter struct {

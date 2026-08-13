@@ -455,7 +455,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .usage-more { color: var(--faint); font-size: 9px; }
 .usage-footer { justify-content: space-between; gap: 10px; }
 .usage-footer > small { color: var(--faint); }
-.account-metrics { display: flex; gap: 21px; padding-left: 18px; border-left: 1px solid var(--line); }
+.account-metrics { display: flex; gap: 16px; padding-left: 18px; border-left: 1px solid var(--line); }
 .account-metric { display: flex; min-width: 45px; flex-direction: column; gap: 1px; }
 .account-metric small:first-child { color: var(--muted); font-size: 10px; }
 .account-metric strong { font-size: 17px; font-weight: 680; font-variant-numeric: tabular-nums; line-height: 1.15; }

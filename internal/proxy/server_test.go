@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -767,6 +768,31 @@ func TestForcedAccountDoesNotBypassWhenOverloaded(t *testing.T) {
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRetryAfterParsesDelayDateAndAnthropicWindow(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+
+	if got, ok := retryAfterHeader("1.5", now); !ok || got != 1500*time.Millisecond {
+		t.Errorf("fractional Retry-After = %v, %v", got, ok)
+	}
+	date := now.Add(45 * time.Second).Format(http.TimeFormat)
+	if got, ok := retryAfterHeader(date, now); !ok || got != 45*time.Second {
+		t.Errorf("date Retry-After = %v, %v", got, ok)
+	}
+
+	headers := make(http.Header)
+	headers.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(now.Add(5*time.Minute).Unix(), 10))
+	headers.Set("anthropic-ratelimit-unified-7d-reset", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
+	headers.Set("anthropic-ratelimit-unified-7d-surpassed-threshold", "true")
+	if got, ok := anthropicRateLimitDelay(headers, now); !ok || got != time.Hour {
+		t.Errorf("exhausted Anthropic window delay = %v, %v", got, ok)
+	}
+	headers.Del("anthropic-ratelimit-unified-7d-surpassed-threshold")
+	if got, ok := anthropicRateLimitDelay(headers, now); !ok || got != 5*time.Minute {
+		t.Errorf("ambiguous Anthropic window delay = %v, %v", got, ok)
 	}
 }
 

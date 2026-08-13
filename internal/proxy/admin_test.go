@@ -35,7 +35,7 @@ func decodeAccounts(t *testing.T, recorder *httptest.ResponseRecorder) []account
 	return payload.Accounts
 }
 
-func TestListAccountsReportsCooldownAndStickySessions(t *testing.T) {
+func TestListAccountsReportsCooldownAndRoutingActivity(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t, "https://upstream.invalid", 1024)
 	account, found, err := server.store.AccountByAlias(t.Context(), "default")
@@ -70,6 +70,15 @@ func TestListAccountsReportsCooldownAndStickySessions(t *testing.T) {
 	}
 	if view.StickySessions != 1 {
 		t.Errorf("sticky_sessions = %d, want 1", view.StickySessions)
+	}
+	if view.ActiveSessions != 1 {
+		t.Errorf("active_sessions = %d, want 1", view.ActiveSessions)
+	}
+	release := server.load.reserve(account.ID)
+	recorder = adminRequest(t, server, http.MethodGet, "/admin/v1/accounts", "")
+	release()
+	if got := decodeAccounts(t, recorder)[0].InFlight; got != 1 {
+		t.Errorf("in_flight = %d, want 1", got)
 	}
 	if view.CreatedAt == 0 {
 		t.Error("created_at was not reported")

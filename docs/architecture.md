@@ -43,6 +43,24 @@ has been copied or the client context is canceled. It is not persisted to SQLite
 supported topology is one relay process. Explicit account aliases remain pinned, and local load
 fallback does not clear or migrate a sticky binding.
 
+## 2026-08-13: routing affinity is not session activity
+
+The console distinguishes three account signals that answer different operational questions:
+
+- Sticky bindings are successful routing affinities retained for their sliding one-hour lifetime.
+- Active sessions are those same bindings whose last successful request was within five minutes.
+- In-flight requests are the process-local reservations currently held through the end of the
+  upstream response stream.
+
+The five-minute view reuses `session_bindings.updated_at`; it adds no session table, write, or
+background worker. These values are observational and do not impose a session or hard concurrency
+limit. Limits remain deferred until normal small-pool usage provides a useful baseline.
+
+Rate-limit cooling follows an upstream `Retry-After` value in either delay-seconds or HTTP-date
+form. On a `429` without that header, valid Anthropic unified window reset headers take precedence
+over the short fallback: an explicitly exhausted window determines the cooldown, otherwise the
+earliest future reset avoids conflating unrelated windows.
+
 ## 2026-07-30: activation owns OAuth refresh
 
 The intended end state is full migration away from CLIProxyAPI rather than permanent shared
