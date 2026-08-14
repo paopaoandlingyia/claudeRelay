@@ -138,6 +138,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /{$}", webui.Index)
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", webui.Assets()))
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /availability", s.availability)
 	mux.HandleFunc("POST /v1/messages", s.forward)
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.forward)
 	mux.HandleFunc("GET /admin/v1/overview", s.overview)
