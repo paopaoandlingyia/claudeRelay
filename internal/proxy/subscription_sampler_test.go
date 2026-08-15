@@ -52,6 +52,25 @@ func TestReadFiveHourWindow(t *testing.T) {
 	}
 }
 
+func TestReadFiveHourWindowRoundsUtilization(t *testing.T) {
+	t.Parallel()
+	headers := http.Header{}
+	headers.Set(fiveHourResetHeader, "1786676400")
+	for _, test := range []struct {
+		raw  string
+		want float64
+	}{
+		{raw: "0.060000000000000036", want: 6},
+		{raw: "0.07000000000000001", want: 7},
+	} {
+		headers.Set(fiveHourUtilizationHeader, test.raw)
+		reading, ok := readFiveHourWindow(headers, time.Unix(1786676000, 0))
+		if !ok || reading.usedPercent != test.want {
+			t.Errorf("utilization %q produced %v, want %v", test.raw, reading.usedPercent, test.want)
+		}
+	}
+}
+
 func testAccountSampler(t *testing.T, uuid string) *accountSampler {
 	t.Helper()
 	return newSubscriptionSampler(config.DefaultMaxInflightPerAccount).forAccount(store.Account{ID: 1,

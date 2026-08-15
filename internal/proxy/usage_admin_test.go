@@ -116,6 +116,71 @@ func TestFiveHourEstimateAnchorsEachWindowToItsEarliestReading(t *testing.T) {
 	}
 }
 
+// These reset pairs came from live readings of eight windows. In every pair the
+// lower value split a real window into a short overlapping phantom window.
+func TestFiveHourEstimateMergesObservedResetDrift(t *testing.T) {
+	prices := []store.ModelPrice{{ModelPattern: "m", EffectiveFrom: 1, InputUSDPerMTok: 1}}
+	for _, test := range []struct {
+		account string
+		reset   string
+		stray   string
+	}{
+		{account: "gaen.v", reset: "1786676400", stray: "1786676399"},
+		{account: "devin.k", reset: "1786681200", stray: "1786681199"},
+		{account: "QIuLin", reset: "1786686600", stray: "1786686599"},
+		{account: "ambe", reset: "1786688400", stray: "1786688399"},
+		{account: "gaen.v", reset: "1786694400", stray: "1786694399"},
+		{account: "devin.k", reset: "1786699200", stray: "1786699199"},
+		{account: "QIuLin", reset: "1786704600", stray: "1786704599"},
+		{account: "ambe", reset: "1786706400", stray: "1786706399"},
+	} {
+		t.Run(test.account+"/"+test.reset, func(t *testing.T) {
+			reading := func(at int64, reset string, usedPercent float64, tokens int64) store.SubscriptionUsageSnapshot {
+				return store.SubscriptionUsageSnapshot{AccountID: 1, Account: test.account,
+					ObservedAt: time.Unix(at, 0).UnixMilli(), ResetsAt: reset, UsedPercent: usedPercent,
+					Totals: map[string]store.UsageCounters{"m": {InputTokens: tokens}}}
+			}
+			estimates := buildFiveHourEstimates([]store.SubscriptionUsageSnapshot{
+				reading(40, test.reset, 78, 4_000_000),
+				reading(30, test.stray, 78, 3_000_000),
+				reading(20, test.stray, 64, 2_000_000),
+				reading(10, test.reset, 10, 1_000_000),
+			}, prices)
+			if len(estimates) != 1 {
+				t.Fatalf("want one row for the real window, got %d: %+v", len(estimates), estimates)
+			}
+			got := estimates[0]
+			if got.From != time.Unix(10, 0).UnixMilli() || got.To != time.Unix(40, 0).UnixMilli() ||
+				got.ResetsAt != test.reset || got.UsedPercentDelta != 68 || got.ObservedCostUSD != 3 {
+				t.Fatalf("merged window = %+v", got)
+			}
+		})
+	}
+}
+
+// Two readings of the same whole percent differ by about 1e-15 once the 0..1
+// fraction has been multiplied out. That difference is greater than zero, so a
+// window that never moved would otherwise divide a real cost by it and put a
+// figure of the order of 1e16 on the dashboard. Readings already stored and
+// every reading the manual refresh path writes still carry their fraction, so
+// rounding at the sampler does not reach them.
+func TestFiveHourEstimateRejectsAnEpsilonDenominator(t *testing.T) {
+	prices := []store.ModelPrice{{ModelPattern: "m", EffectiveFrom: 1, InputUSDPerMTok: 1}}
+	lower, upper := 0.29*100, 0.29000000000000004*100
+	if upper-lower <= 0 {
+		t.Fatalf("the two readings no longer differ: %v and %v", lower, upper)
+	}
+	snapshots := []store.SubscriptionUsageSnapshot{
+		{AccountID: 1, Account: "a", ObservedAt: time.Unix(20, 0).UnixMilli(), ResetsAt: "1786676400",
+			UsedPercent: upper, Totals: map[string]store.UsageCounters{"m": {InputTokens: 2_000_000}}},
+		{AccountID: 1, Account: "a", ObservedAt: time.Unix(10, 0).UnixMilli(), ResetsAt: "1786676400",
+			UsedPercent: lower, Totals: map[string]store.UsageCounters{"m": {InputTokens: 1_000_000}}},
+	}
+	if estimates := buildFiveHourEstimates(snapshots, prices); len(estimates) != 0 {
+		t.Fatalf("estimates=%+v", estimates)
+	}
+}
+
 func TestFiveHourEstimateIgnoresWindowsThatCannotShowMovement(t *testing.T) {
 	prices := []store.ModelPrice{{ModelPattern: "m", EffectiveFrom: 1, InputUSDPerMTok: 1}}
 	totals := map[string]store.UsageCounters{"m": {InputTokens: 1_000_000}}

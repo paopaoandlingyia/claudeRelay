@@ -140,8 +140,15 @@ invented as zero or unlimited. Successful readings are cached in memory for two 
 refresh endpoint bypasses that cache. Profile lookup is optional, so an unavailable plan label does
 not hide valid quota windows. Enabled accounts follow the normal token-refresh ownership rules,
 while viewing a disabled account never rotates its refresh token. A forced refresh also saves the
-five-hour percentage and the relay's cumulative token counters at that instant, allowing two
-observations in the same reset window to estimate the full-window API value.
+five-hour percentage and the relay's cumulative token counters at that instant.
+
+The five-hour window estimate does not depend on that refresh. Anthropic reports the serving
+account's window in the rate limit headers of every Messages response, so the relay samples it from
+traffic it was already carrying and never asks for it. A window is measured from the earliest
+reading the relay holds for it to the latest: the relay value accrued over that span, divided by the
+percentage the window gained, extrapolated to a whole window. The figure sharpens as the window
+fills, because utilization is reported in whole percent and a wider span carries proportionally less
+rounding error. It covers relayed traffic only, so an account also used elsewhere reports low.
 
 Successful Messages responses are observed after transport-level compression is decoded. The
 relay records only Anthropic's response `usage`, the serving account, model, and hour; it never
