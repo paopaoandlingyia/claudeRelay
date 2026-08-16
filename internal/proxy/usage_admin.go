@@ -154,6 +154,7 @@ type windowKey struct {
 
 type windowSpan struct {
 	first, last store.SubscriptionUsageSnapshot
+	resetsAt    string
 }
 
 // Five seconds leaves room beyond the observed one-second upstream drift while
@@ -191,6 +192,26 @@ func sameFiveHourReset(left, right string) bool {
 	return leftSeconds-rightSeconds <= fiveHourResetMergeToleranceSeconds
 }
 
+// laterFiveHourReset chooses the identity a merged window reports. Upstream
+// states the instant early rather than late, and a genuine one falls on a ten
+// minute boundary, so the latest value the merged readings carried is the one
+// that was never rounded down. Which reading a window happens to be anchored on
+// is a property of the data, and the row is not free to name the drifted
+// identity when the anchor is the reading that drifted.
+func laterFiveHourReset(left, right string) string {
+	if left == right {
+		return left
+	}
+	leftSeconds, leftErr := strconv.ParseInt(left, 10, 64)
+	rightSeconds, rightErr := strconv.ParseInt(right, 10, 64)
+	// Only exactly equal identities merge when either fails to parse, so this
+	// guard is reached by nothing sameFiveHourReset would group.
+	if leftErr != nil || rightErr != nil || leftSeconds >= rightSeconds {
+		return left
+	}
+	return right
+}
+
 // buildFiveHourEstimates anchors every window to its own earliest reading rather
 // than pairing neighbouring ones. Utilization is reported in whole percent, so
 // the closer two readings sit the more certain their difference is zero, and
@@ -222,11 +243,12 @@ func buildFiveHourEstimates(snapshots []store.SubscriptionUsageSnapshot, prices 
 			}
 		}
 		if span == nil {
-			span = &windowSpan{first: current, last: current}
+			span = &windowSpan{first: current, last: current, resetsAt: current.ResetsAt}
 			windows[key] = span
 			order = append(order, key)
 			continue
 		}
+		span.resetsAt = laterFiveHourReset(span.resetsAt, current.ResetsAt)
 		if current.ObservedAt < span.first.ObservedAt {
 			span.first = current
 		}
@@ -248,7 +270,7 @@ func buildFiveHourEstimates(snapshots []store.SubscriptionUsageSnapshot, prices 
 			continue
 		}
 		estimates = append(estimates, fiveHourEstimate{Account: span.last.Account, From: span.first.ObservedAt,
-			To: span.last.ObservedAt, ResetsAt: key.resetsAt, UsedPercentDelta: deltaPercent,
+			To: span.last.ObservedAt, ResetsAt: span.resetsAt, UsedPercentDelta: deltaPercent,
 			ObservedCostUSD: cost, FullWindowUSD: cost / deltaPercent * 100})
 	}
 	return estimates

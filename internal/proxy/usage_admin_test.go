@@ -140,19 +140,29 @@ func TestFiveHourEstimateMergesObservedResetDrift(t *testing.T) {
 					ObservedAt: time.Unix(at, 0).UnixMilli(), ResetsAt: reset, UsedPercent: usedPercent,
 					Totals: map[string]store.UsageCounters{"m": {InputTokens: tokens}}}
 			}
-			estimates := buildFiveHourEstimates([]store.SubscriptionUsageSnapshot{
-				reading(40, test.reset, 78, 4_000_000),
-				reading(30, test.stray, 78, 3_000_000),
-				reading(20, test.stray, 64, 2_000_000),
-				reading(10, test.reset, 10, 1_000_000),
-			}, prices)
-			if len(estimates) != 1 {
-				t.Fatalf("want one row for the real window, got %d: %+v", len(estimates), estimates)
-			}
-			got := estimates[0]
-			if got.From != time.Unix(10, 0).UnixMilli() || got.To != time.Unix(40, 0).UnixMilli() ||
-				got.ResetsAt != test.reset || got.UsedPercentDelta != 68 || got.ObservedCostUSD != 3 {
-				t.Fatalf("merged window = %+v", got)
+			// Which identity the window's earliest reading happens to carry is a
+			// property of the data, and the merged row reports the genuine one
+			// either way.
+			for _, anchor := range []struct{ name, resetsAt string }{
+				{name: "anchored on the genuine reading", resetsAt: test.reset},
+				{name: "anchored on the drifted reading", resetsAt: test.stray},
+			} {
+				t.Run(anchor.name, func(t *testing.T) {
+					estimates := buildFiveHourEstimates([]store.SubscriptionUsageSnapshot{
+						reading(40, test.reset, 78, 4_000_000),
+						reading(30, test.stray, 78, 3_000_000),
+						reading(20, test.stray, 64, 2_000_000),
+						reading(10, anchor.resetsAt, 10, 1_000_000),
+					}, prices)
+					if len(estimates) != 1 {
+						t.Fatalf("want one row for the real window, got %d: %+v", len(estimates), estimates)
+					}
+					got := estimates[0]
+					if got.From != time.Unix(10, 0).UnixMilli() || got.To != time.Unix(40, 0).UnixMilli() ||
+						got.ResetsAt != test.reset || got.UsedPercentDelta != 68 || got.ObservedCostUSD != 3 {
+						t.Fatalf("merged window = %+v", got)
+					}
+				})
 			}
 		})
 	}
