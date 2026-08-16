@@ -70,10 +70,12 @@ func readFiveHourWindow(headers http.Header, now time.Time) (fiveHourReading, bo
 		return fiveHourReading{}, false
 	}
 	// The header reports a 0..1 fraction while the OAuth surface and stored
-	// snapshots both use 0..100.
+	// snapshots both use 0..100. The header's own value moves in whole percent,
+	// so rounding after the conversion keeps the residue of the multiplication
+	// from reaching an estimate as its denominator.
 	return fiveHourReading{
 		resetsAt:    reset,
-		usedPercent: math.Max(0, math.Min(100, fraction*100)),
+		usedPercent: math.Round(math.Max(0, math.Min(100, fraction*100))),
 		observedAt:  now.UnixMilli(),
 	}, true
 }

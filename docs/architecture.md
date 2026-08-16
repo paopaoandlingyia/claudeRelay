@@ -255,11 +255,25 @@ are separate, versioned rules with effective timestamps; exact IDs take preceden
 prefix rules. Unknown models remain unpriced while their raw usage stays available. Default prices
 seed a fresh schema but UI-added versions are data, so new models and price changes need no build.
 
-An explicit subscription usage refresh first flushes pending relay counters and then stores the
-five-hour percentage, reset identity, and cumulative per-model totals. Two snapshots are comparable
-only when they share the same account and reset timestamp and utilization increased. Their API
-value divided by percentage delta yields a full-window estimate. The console still never polls the
-private OAuth usage surface automatically.
+Every Messages response carries the serving account's five-hour window in its unified rate limit
+headers, so sampling follows relayed traffic and issues no upstream request of its own. The console
+still never polls the private OAuth usage surface, and nothing on this path rotates a token. The
+headers are read before the body is streamed, because a streaming body runs for minutes and a
+reading timestamped once it finished could be recorded as later than one taken after it. A reading
+is stored only when it differs from the last one written for that account, which is rate limit
+enough because utilization arrives rounded to whole percent. Each stored reading carries the
+five-hour percentage, the reset identity, and the cumulative per-model totals as of a flush. An
+explicit refresh still writes a comparable reading through the same table.
+
+The reset instant identifies a window. The OAuth surface recomputes that timestamp to the
+microsecond on every read and the headers report it a second early on some responses, so both are
+reduced to the epoch second and readings within a few seconds of each other are one window. A window
+is measured from its own earliest reading rather than from the reading before it: utilization moves
+in whole percent, so adjacent readings are the ones most likely to differ by nothing, while
+anchoring lets the denominator accumulate until the extrapolation is worth reading. The anchor need
+not be the true start of the window, because only the numerator and the denominator have to describe
+the same span. Relay cost across that span divided by the percentage it gained yields the
+full-window estimate. Readings are kept for thirty days.
 
 ## 2026-08-01: CCH has no relay semantics
 

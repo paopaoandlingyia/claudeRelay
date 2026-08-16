@@ -152,7 +152,65 @@ type windowKey struct {
 	resetsAt  string
 }
 
-type windowSpan struct{ first, last store.SubscriptionUsageSnapshot }
+type windowSpan struct {
+	first, last store.SubscriptionUsageSnapshot
+	resetsAt    string
+}
+
+// Five seconds leaves room beyond the observed one-second upstream drift while
+// staying negligible beside the five hours between genuine reset instants.
+const fiveHourResetMergeToleranceSeconds int64 = 5
+
+// minMeasurablePercentDelta discards a window whose utilization barely moved.
+// A reading carries up to half a point of rounding error, so anything below half
+// a point extrapolates to more error than answer.
+//
+// It also keeps a denominator too small to divide by out of the arithmetic.
+// Readings the sampler stored before it began rounding differ by around 1e-15
+// when they report the same whole percent, because multiplying the 0..1 fraction
+// out leaves a residue. The manual refresh path reaches the same floor from the
+// other direction: the OAuth surface reports its own 0..100 value in fractions
+// of a point, so two of those readings can differ by a quarter of a point and
+// mean nothing by it.
+const minMeasurablePercentDelta = 0.5
+
+func sameFiveHourReset(left, right string) bool {
+	if left == right {
+		return true
+	}
+	leftSeconds, err := strconv.ParseInt(left, 10, 64)
+	if err != nil {
+		return false
+	}
+	rightSeconds, err := strconv.ParseInt(right, 10, 64)
+	if err != nil {
+		return false
+	}
+	if leftSeconds < rightSeconds {
+		leftSeconds, rightSeconds = rightSeconds, leftSeconds
+	}
+	return leftSeconds-rightSeconds <= fiveHourResetMergeToleranceSeconds
+}
+
+// laterFiveHourReset chooses the identity a merged window reports. Upstream
+// states the instant early rather than late, and a genuine one falls on a ten
+// minute boundary, so the latest value the merged readings carried is the one
+// that was never rounded down. Which reading a window happens to be anchored on
+// is a property of the data, and the row is not free to name the drifted
+// identity when the anchor is the reading that drifted.
+func laterFiveHourReset(left, right string) string {
+	if left == right {
+		return left
+	}
+	leftSeconds, leftErr := strconv.ParseInt(left, 10, 64)
+	rightSeconds, rightErr := strconv.ParseInt(right, 10, 64)
+	// Only exactly equal identities merge when either fails to parse, so this
+	// guard is reached by nothing sameFiveHourReset would group.
+	if leftErr != nil || rightErr != nil || leftSeconds >= rightSeconds {
+		return left
+	}
+	return right
+}
 
 // buildFiveHourEstimates anchors every window to its own earliest reading rather
 // than pairing neighbouring ones. Utilization is reported in whole percent, so
@@ -175,11 +233,28 @@ func buildFiveHourEstimates(snapshots []store.SubscriptionUsageSnapshot, prices 
 		key := windowKey{current.AccountID, current.ResetsAt}
 		span := windows[key]
 		if span == nil {
-			span = &windowSpan{first: current}
+			for _, candidate := range order {
+				if candidate.accountID == current.AccountID && sameFiveHourReset(candidate.resetsAt, current.ResetsAt) {
+					key = candidate
+					span = windows[key]
+					windows[windowKey{current.AccountID, current.ResetsAt}] = span
+					break
+				}
+			}
+		}
+		if span == nil {
+			span = &windowSpan{first: current, last: current, resetsAt: current.ResetsAt}
 			windows[key] = span
 			order = append(order, key)
+			continue
 		}
-		span.last = current
+		span.resetsAt = laterFiveHourReset(span.resetsAt, current.ResetsAt)
+		if current.ObservedAt < span.first.ObservedAt {
+			span.first = current
+		}
+		if current.ObservedAt > span.last.ObservedAt {
+			span.last = current
+		}
 	}
 	var estimates []fiveHourEstimate
 	for _, key := range order {
@@ -187,7 +262,7 @@ func buildFiveHourEstimates(snapshots []store.SubscriptionUsageSnapshot, prices 
 		// A window holding one reading compares it against itself and falls out
 		// here along with a window whose utilization never moved.
 		deltaPercent := span.last.UsedPercent - span.first.UsedPercent
-		if deltaPercent <= 0 {
+		if deltaPercent < minMeasurablePercentDelta {
 			continue
 		}
 		cost := snapshotDeltaCost(span.first.Totals, span.last.Totals, prices, span.last.ObservedAt/1000)
@@ -195,7 +270,7 @@ func buildFiveHourEstimates(snapshots []store.SubscriptionUsageSnapshot, prices 
 			continue
 		}
 		estimates = append(estimates, fiveHourEstimate{Account: span.last.Account, From: span.first.ObservedAt,
-			To: span.last.ObservedAt, ResetsAt: key.resetsAt, UsedPercentDelta: deltaPercent,
+			To: span.last.ObservedAt, ResetsAt: span.resetsAt, UsedPercentDelta: deltaPercent,
 			ObservedCostUSD: cost, FullWindowUSD: cost / deltaPercent * 100})
 	}
 	return estimates
