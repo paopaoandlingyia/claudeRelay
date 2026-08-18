@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,7 +66,7 @@ func (s *Server) usageDashboard(w http.ResponseWriter, r *http.Request) {
 	response := buildUsageDashboard(buckets, prices, from, now.Unix())
 	snapshots, err := s.store.SubscriptionUsageSnapshots(r.Context())
 	if err == nil {
-		response.FiveHourEstimates = buildFiveHourEstimates(snapshots, prices)
+		response.FiveHourEstimates = latestFiveHourEstimatePerAccount(buildFiveHourEstimates(snapshots, prices))
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -274,6 +275,30 @@ func buildFiveHourEstimates(snapshots []store.SubscriptionUsageSnapshot, prices 
 			ObservedCostUSD: cost, FullWindowUSD: cost / deltaPercent * 100})
 	}
 	return estimates
+}
+
+// latestFiveHourEstimatePerAccount keeps the dashboard to one useful row per
+// account while the store continues retaining historical windows for accurate
+// anchoring and future analysis.
+func latestFiveHourEstimatePerAccount(estimates []fiveHourEstimate) []fiveHourEstimate {
+	latest := make(map[string]fiveHourEstimate)
+	for _, estimate := range estimates {
+		current, exists := latest[estimate.Account]
+		if !exists || estimate.To > current.To {
+			latest[estimate.Account] = estimate
+		}
+	}
+	result := make([]fiveHourEstimate, 0, len(latest))
+	for _, estimate := range latest {
+		result = append(result, estimate)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].To == result[j].To {
+			return result[i].Account < result[j].Account
+		}
+		return result[i].To < result[j].To
+	})
+	return result
 }
 
 func snapshotDeltaCost(before, after map[string]store.UsageCounters, prices []store.ModelPrice, at int64) float64 {
