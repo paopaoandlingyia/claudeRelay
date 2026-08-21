@@ -51,6 +51,7 @@ type accountView struct {
 	ActiveSessions  int                 `json:"active_sessions"`
 	InFlight        int                 `json:"in_flight"`
 	Stats           metrics.AccountStat `json:"stats"`
+	FiveHourWindow  *accountUsageWindow `json:"five_hour_window,omitempty"`
 }
 
 func accountResponse(account store.Account) accountView {
@@ -107,6 +108,19 @@ func (s *Server) accountViews(r *http.Request, accounts []store.Account) ([]acco
 		view.ActiveSessions = active[account.ID]
 		view.InFlight = inFlight[account.ID]
 		view.Stats = stats[account.Alias]
+		if s.sampler != nil {
+			if reading, ok := s.sampler.current(account, now); ok {
+				reset, _ := strconv.ParseInt(reading.resetsAt, 10, 64)
+				window := accountUsageWindow{
+					ID:               "five_hour",
+					UsedPercent:      reading.usedPercent,
+					RemainingPercent: 100 - reading.usedPercent,
+					ResetsAt:         time.Unix(reset, 0).UTC().Format(time.RFC3339),
+					ObservedAt:       reading.observedAt,
+				}
+				view.FiveHourWindow = &window
+			}
+		}
 		views = append(views, view)
 	}
 	return views, nil

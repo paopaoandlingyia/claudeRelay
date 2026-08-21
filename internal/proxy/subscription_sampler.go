@@ -85,6 +85,7 @@ func readFiveHourWindow(headers http.Header, now time.Time) (fiveHourReading, bo
 // single writer rather than reaching the database in whatever order they finish.
 type accountSampler struct {
 	stored            atomic.Pointer[fiveHourReading]
+	observed          atomic.Pointer[fiveHourReading]
 	maxQueuedReadings int
 
 	// queue holds what the writer has yet to store. It is guarded by a lock
@@ -119,7 +120,7 @@ func (s *subscriptionSampler) allows(account store.Account, now time.Time) (bool
 	if !ok {
 		return true, ""
 	}
-	reading := value.(*accountSampler).stored.Load()
+	reading := value.(*accountSampler).latest()
 	if reading == nil || reading.resetsAt == "" {
 		return true, ""
 	}
@@ -139,6 +140,55 @@ func (s *subscriptionSampler) allows(account store.Account, now time.Time) (bool
 		return false, "five_hour_usage_rate_limit"
 	}
 	return true, ""
+}
+
+// latest returns the newest response observation. The persisted pointer is a
+// fallback for callers that stored a reading before response observations were
+// tracked separately.
+func (a *accountSampler) latest() *fiveHourReading {
+	if reading := a.observed.Load(); reading != nil {
+		return reading
+	}
+	return a.stored.Load()
+}
+
+// observe moves the live view forward as soon as response headers arrive.
+// Persistence still waits for the response body so its usage counters include
+// the request that produced this reading.
+func (a *accountSampler) observe(reading fiveHourReading) {
+	for {
+		previous := a.observed.Load()
+		if previous != nil && reading.observedAt <= previous.observedAt {
+			return
+		}
+		current := reading
+		if a.observed.CompareAndSwap(previous, &current) {
+			return
+		}
+	}
+}
+
+func (s *subscriptionSampler) observe(account store.Account, reading fiveHourReading) {
+	s.forAccount(account).observe(reading)
+}
+
+// current returns only a reading whose five-hour window is still active. A
+// response from the previous window must disappear from the console at reset
+// rather than looking like the current account balance.
+func (s *subscriptionSampler) current(account store.Account, now time.Time) (fiveHourReading, bool) {
+	value, ok := s.accounts.Load(accountUsageCacheKey(account))
+	if !ok {
+		return fiveHourReading{}, false
+	}
+	reading := value.(*accountSampler).latest()
+	if reading == nil {
+		return fiveHourReading{}, false
+	}
+	reset, err := strconv.ParseInt(reading.resetsAt, 10, 64)
+	if err != nil || !now.Before(time.Unix(reset, 0)) {
+		return fiveHourReading{}, false
+	}
+	return *reading, true
 }
 
 // pacingLimit linearly interpolates the configured utilization envelope at
@@ -249,6 +299,7 @@ func (a *accountSampler) release() {
 // database work runs off the request goroutine.
 func (s *Server) sampleFiveHourWindow(account store.Account, reading fiveHourReading) {
 	sampler := s.sampler.forAccount(account)
+	sampler.observe(reading)
 	if !sampler.storable(reading) || !sampler.enqueue(reading) {
 		return
 	}

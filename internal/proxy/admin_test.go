@@ -2,9 +2,12 @@ package proxy
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -85,6 +88,88 @@ func TestListAccountsReportsCooldownAndRoutingActivity(t *testing.T) {
 	}
 	if view.Pool != store.AccountPoolCompatible {
 		t.Errorf("pool = %q, want compatible", view.Pool)
+	}
+}
+
+func TestListAccountsUpdatesFiveHourWindowFromResponseHeaders(t *testing.T) {
+	t.Parallel()
+	reset := time.Now().Add(4 * time.Hour).Truncate(time.Second)
+	headersSent := make(chan struct{})
+	releaseBody := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseBody) }) }
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected upstream path %q", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set(fiveHourResetHeader, strconv.FormatInt(reset.Unix(), 10))
+		w.Header().Set(fiveHourUtilizationHeader, "0.31")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(headersSent)
+		<-releaseBody
+		_, _ = io.WriteString(w,
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-test\",\"usage\":{\"input_tokens\":1}}}\n\n"+
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer upstream.Close()
+	defer release()
+	server := newTestServer(t, upstream.URL, 4096)
+	account, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("account lookup failed: found=%v err=%v", found, err)
+	}
+
+	before := decodeAccounts(t, adminRequest(t, server, http.MethodGet, "/admin/v1/accounts", ""))
+	if len(before) != 1 || before[0].FiveHourWindow != nil {
+		t.Fatalf("account invented a five-hour window before a response: %+v", before)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	done := make(chan struct{})
+	go func() {
+		server.routes().ServeHTTP(recorder, request)
+		close(done)
+	}()
+	<-headersSent
+
+	var window *accountUsageWindow
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		accounts := decodeAccounts(t, adminRequest(t, server, http.MethodGet, "/admin/v1/accounts", ""))
+		if len(accounts) == 1 && accounts[0].FiveHourWindow != nil {
+			window = accounts[0].FiveHourWindow
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if window == nil {
+		t.Fatal("response headers did not update the account window while the response body was still streaming")
+	}
+	if window.ID != "five_hour" || window.UsedPercent != 31 || window.RemainingPercent != 69 ||
+		window.ResetsAt != reset.UTC().Format(time.RFC3339) || window.ObservedAt == 0 {
+		t.Fatalf("response-derived window = %+v", window)
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("relay response did not finish after the upstream body was released")
+	}
+	deadline = time.Now().Add(time.Second)
+	for server.sampler.forAccount(account).stored.Load() == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if server.sampler.forAccount(account).stored.Load() == nil {
+		t.Fatal("response-derived window was not persisted after the stream completed")
 	}
 }
 

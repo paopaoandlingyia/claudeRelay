@@ -405,6 +405,12 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	// moment upstream reported it, and two responses could be recorded in the
 	// opposite order to the readings they carry.
 	window, sampled := readFiveHourWindow(response.Header, time.Now())
+	if incoming.URL.Path == "/v1/messages" && response.StatusCode >= 200 && response.StatusCode < 300 && sampled {
+		// Publish the response-derived balance before streaming the body. The
+		// persisted accounting snapshot still waits until usage observation has
+		// finished below.
+		s.sampler.observe(selected.Account, window)
+	}
 
 	copyResponseHeaders(w.Header(), response.Header)
 	w.Header().Set(requestIDHeader, requestID)

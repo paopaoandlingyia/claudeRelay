@@ -82,10 +82,10 @@ The console is a single dense screen with three sections:
 
 - **账号** — every account with its pool and real routing state: enabled, cooling down (with the reason and
   remaining time), token expiry, last successful refresh, traffic totals, and live sticky bindings.
-  The table can manually read the subscription's available five-hour and optional
-  weekly/model-specific OAuth usage windows; it never queries them automatically. Per-account
-  actions cover usage refresh, enable/disable, connectivity check,
-  forced token refresh, cooldown release, rename, and deletion.
+  Successful Messages response headers update the available five-hour window automatically without
+  another upstream request. A manual refresh remains available for optional weekly/model-specific
+  OAuth usage windows and the plan label. Per-account actions cover usage refresh, enable/disable,
+  connectivity check, forced token refresh, cooldown release, rename, and deletion.
 - **请求** — the recent request records described below, filterable by account and by failures only.
 - **接入** — the relay endpoint, both ingress API keys, copy-ready Claude Code / PowerShell / curl
   snippets, and the effective runtime parameters.
@@ -145,9 +145,10 @@ five-hour percentage and the relay's cumulative token counters at that instant.
 
 The five-hour window estimate does not depend on that refresh. Anthropic reports the serving
 account's window in the rate limit headers of every Messages response, so the relay samples it from
-traffic it was already carrying and never asks for it. A window is measured from the earliest
-reading the relay holds for it to the latest: the relay value accrued over that span, divided by the
-percentage the window gained, extrapolated to a whole window. The figure sharpens as the window
+traffic it was already carrying and never asks for it. The latest active reading also updates the
+account table while the console performs its normal five-second local poll. A window is measured
+from the earliest reading the relay holds for it to the latest: the relay value accrued over that
+span, divided by the percentage the window gained, extrapolated to a whole window. The figure sharpens as the window
 fills, because utilization is reported in whole percent and a wider span carries proportionally less
 rounding error. It covers relayed traffic only, so an account also used elsewhere reports low.
 

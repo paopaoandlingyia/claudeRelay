@@ -635,8 +635,38 @@ const USAGE_WINDOW_LABELS = {
   seven_day_fable: "Fable 7 天",
 };
 
+function accountUsageDisplay(account, usage) {
+  const windows = usage?.status === "success" && Array.isArray(usage.windows)
+    ? usage.windows.filter((window) => {
+      if (window.id !== "five_hour" || !window.resets_at) return true;
+      const reset = Date.parse(window.resets_at);
+      return !Number.isFinite(reset) || reset > Date.now();
+    })
+    : [];
+  const sampled = account.five_hour_window;
+  const sampledAt = Number(sampled?.observed_at) || 0;
+  const fetchedAt = usage?.status === "success" ? Number(usage.fetched_at) || 0 : 0;
+  let responseDerived = false;
+  if (sampled) {
+    const index = windows.findIndex((window) => window.id === "five_hour");
+    if (index < 0) {
+      windows.unshift(sampled);
+      responseDerived = true;
+    } else if (sampledAt >= fetchedAt) {
+      windows[index] = sampled;
+      responseDerived = true;
+    }
+  }
+  return {
+    windows,
+    updatedAt: responseDerived ? sampledAt : fetchedAt,
+    responseDerived,
+  };
+}
+
 function accountUsageSummary(account) {
   const usage = state.accountUsage[account.alias];
+  const display = accountUsageDisplay(account, usage);
   const loading = state.usageLoading.has(account.alias);
   const wrapper = document.createElement("div");
   wrapper.className = "account-usage";
@@ -660,7 +690,7 @@ function accountUsageSummary(account) {
   });
   refresh.disabled = loading;
 
-  if (!usage) {
+  if (!usage && display.windows.length === 0) {
     const empty = document.createElement("div");
     empty.className = "usage-empty";
     empty.append(small(loading ? "正在读取额度…" : "尚未读取"), refresh);
@@ -668,7 +698,7 @@ function accountUsageSummary(account) {
     return wrapper;
   }
 
-  if (usage.status === "error") {
+  if (usage?.status === "error" && display.windows.length === 0) {
     const error = document.createElement("div");
     error.className = "usage-error";
     const message = small(usage.error || "额度读取失败");
@@ -678,7 +708,7 @@ function accountUsageSummary(account) {
     return wrapper;
   }
 
-  const windows = Array.isArray(usage.windows) ? usage.windows : [];
+  const windows = display.windows;
   for (const window of windows.slice(0, 2)) wrapper.appendChild(quotaMeter(window));
   if (windows.length === 0) {
     const empty = small("上游未返回额度窗口");
@@ -692,8 +722,14 @@ function accountUsageSummary(account) {
 
   const footer = document.createElement("div");
   footer.className = "usage-footer";
-  const fetched = small(usage.refresh_error ? "刷新失败，显示上次结果" : `更新于 ${formatRelative(usage.fetched_at)}`);
-  if (usage.refresh_error) fetched.title = `最近刷新失败：${usage.refresh_error}`;
+  let footerText = display.responseDerived
+    ? `请求响应更新于 ${formatRelative(display.updatedAt)}`
+    : `更新于 ${formatRelative(display.updatedAt)}`;
+  if (usage?.status === "error") footerText = "手动刷新失败，显示请求响应结果";
+  if (usage?.refresh_error) footerText = "手动刷新失败，显示最近结果";
+  const fetched = small(footerText);
+  if (usage?.status === "error") fetched.title = usage.error || "额度读取失败";
+  if (usage?.refresh_error) fetched.title = `最近刷新失败：${usage.refresh_error}`;
   footer.append(fetched, refresh);
   wrapper.appendChild(footer);
   return wrapper;
@@ -827,21 +863,25 @@ function openActions(account) {
     detailRow("上次刷新", account.last_refresh_at ? new Date(account.last_refresh_at).toLocaleString() : "尚未刷新"),
   ];
   const usage = state.accountUsage[account.alias];
-  if (usage?.status === "success") {
-    if (usage.plan_type) detailRows.push(detailRow("订阅套餐", usage.plan_type.toUpperCase()));
-    for (const window of usage.windows || []) {
+  const display = accountUsageDisplay(account, usage);
+  if (usage?.status === "success" || display.windows.length > 0) {
+    if (usage?.plan_type) detailRows.push(detailRow("订阅套餐", usage.plan_type.toUpperCase()));
+    for (const window of display.windows) {
       detailRows.push(detailRow(
         `额度 · ${USAGE_WINDOW_LABELS[window.id] || window.id}`,
         `${Math.round(window.remaining_percent)}% 剩余 · ${formatUsageReset(window.resets_at)}`,
       ));
     }
-    if (usage.extra_usage?.enabled) {
+    if (usage?.extra_usage?.enabled) {
       detailRows.push(detailRow(
         "额外用量",
         `$${(usage.extra_usage.used_credits_cents / 100).toFixed(2)} / $${(usage.extra_usage.monthly_limit_cents / 100).toFixed(2)}`,
       ));
     }
-    detailRows.push(detailRow("额度获取时间", new Date(usage.fetched_at).toLocaleString()));
+    if (display.updatedAt) {
+      detailRows.push(detailRow(display.responseDerived ? "响应采样时间" : "额度获取时间", new Date(display.updatedAt).toLocaleString()));
+    }
+    if (usage?.status === "error") detailRows.push(detailRow("完整额度刷新", `失败：${usage.error}`));
   } else if (usage?.status === "error") {
     detailRows.push(detailRow("订阅额度", `读取失败：${usage.error}`));
   }

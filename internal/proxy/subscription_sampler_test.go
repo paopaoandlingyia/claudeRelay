@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -68,6 +69,43 @@ func TestReadFiveHourWindowRoundsUtilization(t *testing.T) {
 		if !ok || reading.usedPercent != test.want {
 			t.Errorf("utilization %q produced %v, want %v", test.raw, reading.usedPercent, test.want)
 		}
+	}
+}
+
+func TestCurrentFiveHourWindowExpiresAtReset(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1786676000, 0)
+	account := store.Account{ID: 1, Credential: credential.Credential{AccountUUID: "11111111-1111-4111-8111-111111111111"}}
+	sampler := newSubscriptionSampler(config.DefaultMaxInflightPerAccount)
+	sampler.observe(account, fiveHourReading{
+		resetsAt:    strconv.FormatInt(now.Add(time.Minute).Unix(), 10),
+		usedPercent: 31,
+		observedAt:  now.UnixMilli(),
+	})
+	if reading, ok := sampler.current(account, now); !ok || reading.usedPercent != 31 {
+		t.Fatalf("active window = %+v ok=%v", reading, ok)
+	}
+	if reading, ok := sampler.current(account, now.Add(time.Minute)); ok {
+		t.Fatalf("expired window remained current: %+v", reading)
+	}
+}
+
+func TestObservedFiveHourWindowUpdatesPacingBeforePersistence(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1786676000, 0)
+	account := store.Account{ID: 1, Credential: credential.Credential{AccountUUID: "11111111-1111-4111-8111-111111111111"}}
+	sampler := newSubscriptionSampler(config.DefaultMaxInflightPerAccount)
+	sampler.observe(account, fiveHourReading{
+		// Thirty minutes have elapsed, so the default pacing envelope allows 25%.
+		resetsAt:    strconv.FormatInt(now.Add(4*time.Hour+30*time.Minute).Unix(), 10),
+		usedPercent: 31,
+		observedAt:  now.UnixMilli(),
+	})
+	if sampler.forAccount(account).stored.Load() != nil {
+		t.Fatal("live observation was unexpectedly treated as a persisted sample")
+	}
+	if allowed, reason := sampler.allows(account, now); allowed || reason != "five_hour_usage_rate_limit" {
+		t.Fatalf("pacing after response observation = allowed %v reason %q", allowed, reason)
 	}
 }
 

@@ -26,6 +26,7 @@ type accountUsageWindow struct {
 	UsedPercent      float64 `json:"used_percent"`
 	RemainingPercent float64 `json:"remaining_percent"`
 	ResetsAt         string  `json:"resets_at,omitempty"`
+	ObservedAt       int64   `json:"observed_at,omitempty"`
 }
 
 type accountExtraUsage struct {
