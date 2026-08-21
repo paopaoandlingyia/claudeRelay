@@ -116,6 +116,108 @@ func TestFiveHourEstimateAnchorsEachWindowToItsEarliestReading(t *testing.T) {
 	}
 }
 
+func TestLatestFiveHourEstimatePerAccountDropsHistoricalRows(t *testing.T) {
+	estimates := []fiveHourEstimate{
+		{Account: "a", To: 10, FullWindowUSD: 10},
+		{Account: "b", To: 40, FullWindowUSD: 40},
+		{Account: "a", To: 30, FullWindowUSD: 30},
+		// Selection must use the observation time, not whichever row happened
+		// to appear last in the input.
+		{Account: "b", To: 20, FullWindowUSD: 20},
+	}
+
+	got := latestFiveHourEstimatePerAccount(estimates)
+	if len(got) != 2 {
+		t.Fatalf("want one row per account, got %d: %+v", len(got), got)
+	}
+	if got[0].Account != "a" || got[0].To != 30 || got[0].FullWindowUSD != 30 {
+		t.Fatalf("first latest estimate = %+v", got[0])
+	}
+	if got[1].Account != "b" || got[1].To != 40 || got[1].FullWindowUSD != 40 {
+		t.Fatalf("second latest estimate = %+v", got[1])
+	}
+}
+
+// Captured from the live dashboard on 2026-08-19. The page rendered 48 rows
+// because it included every measurable historical reset window for each of the
+// six accounts.
+func TestLatestFiveHourEstimatePerAccountOnLiveDashboardSample(t *testing.T) {
+	observed := func(day, hour, minute, second int) int64 {
+		return time.Date(2026, time.August, day, hour, minute, second, 0, time.UTC).UnixMilli()
+	}
+	row := func(account string, day, hour, minute, second int, fullWindowUSD float64) fiveHourEstimate {
+		return fiveHourEstimate{Account: account, To: observed(day, hour, minute, second), FullWindowUSD: fullWindowUSD}
+	}
+	estimates := []fiveHourEstimate{
+		row("QIuLin", 18, 23, 58, 30, 0.0952),
+		row("gaen.v", 18, 23, 58, 33, 46.99),
+		row("devin.k", 18, 23, 22, 39, 14.45),
+		row("X.F", 18, 23, 58, 33, 57.01),
+		row("ambe", 18, 23, 58, 27, 55.74),
+		row("QIuLin", 18, 20, 7, 55, 59.63),
+		row("entha", 18, 21, 38, 24, 86.08),
+		row("devin.k", 18, 19, 48, 2, 77.80),
+		row("gaen.v", 18, 18, 40, 36, 78.46),
+		row("X.F", 18, 16, 39, 18, 74.86),
+		row("ambe", 18, 15, 37, 39, 53.55),
+		row("QIuLin", 18, 15, 1, 8, 52.25),
+		row("entha", 18, 14, 7, 2, 74.56),
+		row("devin.k", 18, 14, 47, 28, 51.66),
+		row("gaen.v", 18, 15, 13, 42, 64.64),
+		row("X.F", 18, 13, 54, 55, 55.09),
+		row("ambe", 18, 13, 42, 12, 69.68),
+		row("QIuLin", 18, 12, 52, 3, 75.84),
+		row("entha", 18, 11, 40, 31, 85.08),
+		row("devin.k", 18, 11, 57, 1, 64.82),
+		row("gaen.v", 18, 11, 43, 56, 77.87),
+		row("X.F", 18, 10, 27, 33, 87.54),
+		row("ambe", 18, 7, 11, 50, 0.0075),
+		row("devin.k", 18, 5, 22, 1, 21.65),
+		row("QIuLin", 18, 6, 0, 9, 20.72),
+		row("entha", 18, 5, 30, 17, 15.75),
+		row("X.F", 18, 1, 7, 50, 69.79),
+		row("gaen.v", 17, 23, 46, 57, 74.51),
+		row("devin.k", 17, 23, 21, 14, 57.86),
+		row("entha", 18, 0, 15, 0, 94.19),
+		row("QIuLin", 17, 23, 51, 54, 17.15),
+		row("ambe", 17, 23, 21, 13, 54.77),
+		row("X.F", 17, 17, 30, 43, 87.33),
+		row("gaen.v", 17, 17, 30, 41, 92.47),
+		row("devin.k", 17, 19, 8, 51, 54.68),
+		row("QIuLin", 17, 17, 30, 40, 96.23),
+		row("entha", 17, 19, 8, 52, 77.17),
+		row("ambe", 17, 17, 30, 36, 78.80),
+		row("X.F", 17, 15, 50, 2, 94.25),
+		row("gaen.v", 17, 12, 33, 9, 66.06),
+		row("devin.k", 17, 12, 41, 47, 49.94),
+		row("QIuLin", 17, 12, 38, 50, 31.84),
+		row("entha", 17, 12, 11, 51, 38.96),
+		row("ambe", 17, 12, 41, 45, 44.81),
+		row("X.F", 17, 10, 17, 42, 47.44),
+		row("gaen.v", 17, 7, 55, 1, 2.71),
+		row("devin.k", 17, 9, 28, 40, 100.59),
+		row("QIuLin", 17, 4, 32, 15, 52.73),
+	}
+
+	got := latestFiveHourEstimatePerAccount(estimates)
+	want := []fiveHourEstimate{
+		row("entha", 18, 21, 38, 24, 86.08),
+		row("devin.k", 18, 23, 22, 39, 14.45),
+		row("ambe", 18, 23, 58, 27, 55.74),
+		row("QIuLin", 18, 23, 58, 30, 0.0952),
+		row("X.F", 18, 23, 58, 33, 57.01),
+		row("gaen.v", 18, 23, 58, 33, 46.99),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("live rows: want %d accounts after filtering 48 rows, got %d: %+v", len(want), len(got), got)
+	}
+	for index := range want {
+		if got[index].Account != want[index].Account || got[index].To != want[index].To || got[index].FullWindowUSD != want[index].FullWindowUSD {
+			t.Fatalf("live row %d = %+v, want %+v", index, got[index], want[index])
+		}
+	}
+}
+
 // These reset pairs came from live readings of eight windows. In every pair the
 // lower value split a real window into a short overlapping phantom window.
 func TestFiveHourEstimateMergesObservedResetDrift(t *testing.T) {
