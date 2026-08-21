@@ -56,6 +56,21 @@ The five-minute view reuses `session_bindings.updated_at`; it adds no session ta
 background worker. These values are observational and do not impose a session or hard concurrency
 limit. Limits remain deferred until normal small-pool usage provides a useful baseline.
 
+## 2026-08-21: account admission and five-hour pacing guards
+
+The relay now applies three simple per-account guards. New routing bindings are filtered when the
+account already has five active sessions (recent successful bindings); existing sticky sessions
+remain usable until they become inactive. In-process upstream requests have a hard configurable
+limit (`max_inflight_per_account`, eight by default), and no alternate account means the request
+fails rather than exceeding the limit.
+
+Each account's latest Anthropic unified five-hour utilization header is also compared with the
+elapsed fraction of its reset window plus a configurable ten-percentage-point safety margin. An
+account ahead of that pacing line, or at the configured 90% throttle threshold, is removed from
+ordinary selection; at 95% it is paused until a fresh window is observed. Missing or unparsable
+samples remain fail-open because the upstream header is the only authoritative signal and the relay
+does not invent quota values.
+
 Rate-limit cooling follows an upstream `Retry-After` value in either delay-seconds or HTTP-date
 form. On a `429` without that header, valid Anthropic unified window reset headers take precedence
 over the short fallback: an explicitly exhausted window determines the cooldown, otherwise the

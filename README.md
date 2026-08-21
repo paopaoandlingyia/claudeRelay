@@ -68,11 +68,12 @@ $env:CLAUDE_RELAY_ADMIN_API_KEY = "replace-with-a-different-long-random-key"
 Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a URL such as
 `http://127.0.0.1:7890` when upstream traffic must use a local proxy.
 
-`max_inflight_per_account` is an in-process soft routing threshold, set to `8` by default. It is
-not a request rejection limit: new requests prefer an account with fewer active upstream requests,
-and a sticky request may temporarily use another less-busy account when its bound account reaches
-the threshold. If no alternate account is less busy, the relay preserves availability and uses the
-sticky account anyway. Set `CLAUDE_RELAY_MAX_INFLIGHT_PER_ACCOUNT` in Compose deployments.
+`max_inflight_per_account` is a per-account hard in-process request limit, set to `8` by default.
+When an account is full, new requests prefer another eligible account and return `503` when none is
+available. `max_active_sessions_per_account` limits recently active sticky sessions to `5` by
+default. The five-hour guard uses upstream utilization headers: it throttles an account when its
+utilization is ahead of the elapsed-window progress by `10` percentage points, and pauses it at
+`95%`. These settings can be overridden with the matching `CLAUDE_RELAY_*` environment variables.
 
 ## Console
 

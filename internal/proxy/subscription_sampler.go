@@ -98,10 +98,55 @@ type accountSampler struct {
 type subscriptionSampler struct {
 	accounts          sync.Map
 	maxQueuedReadings int
+	safetyMargin      float64
+	throttleAt        float64
+	pauseAt           float64
 }
 
-func newSubscriptionSampler(maxQueuedReadings int) *subscriptionSampler {
-	return &subscriptionSampler{maxQueuedReadings: maxQueuedReadings}
+func newSubscriptionSampler(maxQueuedReadings int, policy ...[3]float64) *subscriptionSampler {
+	s := &subscriptionSampler{maxQueuedReadings: maxQueuedReadings, safetyMargin: 10, throttleAt: 90, pauseAt: 95}
+	if len(policy) > 0 {
+		s.safetyMargin, s.throttleAt, s.pauseAt = policy[0][0], policy[0][1], policy[0][2]
+	}
+	return s
+}
+
+// allows reports whether an account is within the simple five-hour pacing
+// guard. Missing or stale samples are allowed because the upstream response
+// headers are the only authoritative signal available to the relay.
+func (s *subscriptionSampler) allows(account store.Account, now time.Time) (bool, string) {
+	value, ok := s.accounts.Load(accountUsageCacheKey(account))
+	if !ok {
+		return true, ""
+	}
+	reading := value.(*accountSampler).stored.Load()
+	if reading == nil || reading.resetsAt == "" {
+		return true, ""
+	}
+	reset, err := strconv.ParseInt(reading.resetsAt, 10, 64)
+	if err != nil {
+		return true, ""
+	}
+	// A reading from the previous window must not pause an account after its
+	// reset; the next successful response will establish the new window.
+	if !now.Before(time.Unix(reset, 0)) {
+		return true, ""
+	}
+	start := time.Unix(reset, 0).Add(-5 * time.Hour)
+	progress := now.Sub(start).Hours() / 5 * 100
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	if reading.usedPercent >= s.pauseAt {
+		return false, "five_hour_usage_pause"
+	}
+	if reading.usedPercent >= s.throttleAt || reading.usedPercent > progress+s.safetyMargin {
+		return false, "five_hour_usage_rate_limit"
+	}
+	return true, ""
 }
 
 // forAccount keys state by the account's own identity rather than its database

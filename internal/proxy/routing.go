@@ -223,6 +223,8 @@ type accountSelector struct {
 	store              *store.Store
 	load               *accountLoadTracker
 	maxInflightPerAcct int
+	maxActiveSessions  int
+	sampler            *subscriptionSampler
 }
 
 func (s accountSelector) makeSelection(account store.Account, source string, pinned, persistSticky bool) selection {
@@ -237,6 +239,17 @@ func (s accountSelector) makeSelection(account store.Account, source string, pin
 		PersistSticky: persistSticky,
 		release:       release,
 	}
+}
+
+func (s accountSelector) makeLimitedSelection(account store.Account, source string, pinned, persistSticky bool) (selection, bool) {
+	if s.load == nil {
+		return s.makeSelection(account, source, pinned, persistSticky), true
+	}
+	release, _, ok := s.load.reserveBelow(account.ID, s.maxInflightPerAcct)
+	if !ok {
+		return selection{}, false
+	}
+	return selection{Account: account, Pinned: pinned, Source: source, PersistSticky: persistSticky, release: release}, true
 }
 
 func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, forcedAlias string, excluded map[int64]bool) (selection, error) {
@@ -260,7 +273,16 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if cooling {
 			return selection{}, fmt.Errorf("requested account %q is temporarily cooling down", forcedAlias)
 		}
-		return s.makeSelection(account, "header", true, true), nil
+		if s.sampler != nil {
+			if ok, reason := s.sampler.allows(account, time.Now()); !ok {
+				return selection{}, fmt.Errorf("requested account %q is unavailable: %s", forcedAlias, reason)
+			}
+		}
+		selected, ok := s.makeLimitedSelection(account, "header", true, true)
+		if !ok {
+			return selection{}, fmt.Errorf("requested account %q reached its in-flight limit", forcedAlias)
+		}
+		return selected, nil
 	}
 
 	if route.AccountUUID != "" {
@@ -276,7 +298,19 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			return s.makeSelection(account, "account_uuid", false, true), nil
+			if s.sampler != nil {
+				if ok, _ := s.sampler.allows(account, time.Now()); !ok {
+					found = false
+				}
+			}
+		}
+		if found && !cooling && !excluded[account.ID] {
+			selected, ok := s.makeLimitedSelection(account, "account_uuid", false, true)
+			if !ok {
+				found = false
+			} else {
+				return selected, nil
+			}
 		}
 	}
 
@@ -290,6 +324,13 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			cooling, err = s.store.IsCooling(ctx, account.ID, route.Model, time.Now())
 			if err != nil {
 				return selection{}, err
+			}
+		}
+		if found && !cooling && !excluded[account.ID] {
+			if s.sampler != nil {
+				if ok, _ := s.sampler.allows(account, time.Now()); !ok {
+					found = false
+				}
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
@@ -309,6 +350,24 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 				if accountsErr != nil {
 					return selection{}, accountsErr
 				}
+				fallbackNow := time.Now()
+				active, activeErr := s.store.ActiveSessionCounts(ctx, fallbackNow, fallbackNow.Add(-5*time.Minute))
+				if activeErr != nil {
+					return selection{}, activeErr
+				}
+				eligible := accounts[:0]
+				for _, candidate := range accounts {
+					if s.maxActiveSessions > 0 && active[candidate.ID] >= s.maxActiveSessions {
+						continue
+					}
+					if s.sampler != nil {
+						if allowed, _ := s.sampler.allows(candidate, fallbackNow); !allowed {
+							continue
+						}
+					}
+					eligible = append(eligible, candidate)
+				}
+				accounts = eligible
 				fallbackExcluded := make(map[int64]bool, len(excluded)+1)
 				for id, excludedAccount := range excluded {
 					fallbackExcluded[id] = excludedAccount
@@ -325,19 +384,35 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 						release:       alternateRelease,
 					}, nil
 				}
-				// No alternate account is less busy. Preserve availability by
-				// allowing the sticky account to exceed the soft threshold.
-				return s.makeSelection(account, "sticky", false, true), nil
+				return selection{}, fmt.Errorf("account %q reached its in-flight limit and no alternate account is available", account.Alias)
 			}
 		}
 	}
 
-	accounts, err := s.store.Accounts(ctx, route.Ingress, route.Model, time.Now())
+	now := time.Now()
+	accounts, err := s.store.Accounts(ctx, route.Ingress, route.Model, now)
 	if err != nil {
 		return selection{}, err
 	}
+	active, err := s.store.ActiveSessionCounts(ctx, now, now.Add(-5*time.Minute))
+	if err != nil {
+		return selection{}, err
+	}
+	filtered := accounts[:0]
+	for _, account := range accounts {
+		if s.maxActiveSessions > 0 && active[account.ID] >= s.maxActiveSessions {
+			continue
+		}
+		if s.sampler != nil {
+			if ok, _ := s.sampler.allows(account, now); !ok {
+				continue
+			}
+		}
+		filtered = append(filtered, account)
+	}
+	accounts = filtered
 	if s.load != nil {
-		account, release, found := s.load.reserveLeastLoaded(accounts, route.SelectionKey, excluded, 0)
+		account, release, found := s.load.reserveLeastLoaded(accounts, route.SelectionKey, excluded, s.maxInflightPerAcct)
 		if found {
 			return selection{
 				Account:       account,

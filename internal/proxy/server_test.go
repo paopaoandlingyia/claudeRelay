@@ -766,7 +766,7 @@ func TestForcedAccountDoesNotBypassWhenOverloaded(t *testing.T) {
 	request.Header.Set("x-api-key", "downstream-key")
 	request.Header.Set(accountHeader, "default")
 	server.routes().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
+	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }

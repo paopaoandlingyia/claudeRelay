@@ -632,6 +632,18 @@ func (s *Store) ActiveSessionCounts(ctx context.Context, now, cutoff time.Time) 
 	return counts, rows.Err()
 }
 
+// ActiveSessionCount returns the number of recently successful, live bindings
+// for one account. It is used as an admission signal for new conversations.
+func (s *Store) ActiveSessionCount(ctx context.Context, accountID int64, now, cutoff time.Time) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_bindings
+		WHERE account_id=? AND expires_at>? AND updated_at>?`, accountID, now.Unix(), cutoff.Unix()).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count account active sessions: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Store) UpdateTokens(ctx context.Context, id int64, accessToken, refreshToken, expiresAt string) (Account, error) {
 	now := time.Now().Unix()
 	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET access_token=?,refresh_token=?,expires_at=?,updated_at=?,last_refresh_at=? WHERE id=?`,

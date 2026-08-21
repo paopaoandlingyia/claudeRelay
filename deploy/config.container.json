@@ -8,6 +8,10 @@
   "upstream_proxy": "",
   "max_request_bytes": 33554432,
   "max_inflight_per_account": 8,
+  "max_active_sessions_per_account": 5,
+  "five_hour_usage_safety_margin": 10,
+  "five_hour_usage_throttle_at": 90,
+  "five_hour_usage_pause_at": 95,
   "auto_refresh_enabled": true,
   "request_log_size": 500
 }
