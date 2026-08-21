@@ -64,12 +64,11 @@ remain usable until they become inactive. In-process upstream requests have a ha
 limit (`max_inflight_per_account`, eight by default), and no alternate account means the request
 fails rather than exceeding the limit.
 
-Each account's latest Anthropic unified five-hour utilization header is also compared with the
-elapsed fraction of its reset window plus a configurable ten-percentage-point safety margin. An
-account ahead of that pacing line, or at the configured 90% throttle threshold, is removed from
-ordinary selection; at 95% it is paused until a fresh window is observed. Missing or unparsable
-samples remain fail-open because the upstream header is the only authoritative signal and the relay
-does not invent quota values.
+Each account's latest Anthropic unified five-hour utilization header is also compared with a
+piecewise-linear utilization envelope: 25% at 30 minutes, 65% at 150 minutes, and 100% at 270
+minutes. An account above that envelope is removed from ordinary selection; after 270 minutes no
+artificial reserve is imposed. Missing or unparsable samples remain fail-open because the upstream
+header is the only authoritative signal and the relay does not invent quota values.
 
 Rate-limit cooling follows an upstream `Retry-After` value in either delay-seconds or HTTP-date
 form. On a `429` without that header, valid Anthropic unified window reset headers take precedence

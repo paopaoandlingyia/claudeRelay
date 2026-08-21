@@ -67,16 +67,16 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	if cfg.MaxActiveSessionsPerAccount < 1 {
 		return nil, fmt.Errorf("config max_active_sessions_per_account must be positive")
 	}
-	if cfg.FiveHourUsageSafetyMargin == 0 {
-		cfg.FiveHourUsageSafetyMargin = config.DefaultFiveHourUsageSafetyMargin
+	if cfg.FiveHourPacing30mPercent == 0 {
+		cfg.FiveHourPacing30mPercent = config.DefaultFiveHourPacing30mPercent
 	}
-	if cfg.FiveHourUsageThrottleAt == 0 {
-		cfg.FiveHourUsageThrottleAt = config.DefaultFiveHourUsageThrottleAt
+	if cfg.FiveHourPacing150mPercent == 0 {
+		cfg.FiveHourPacing150mPercent = config.DefaultFiveHourPacing150mPercent
 	}
-	if cfg.FiveHourUsagePauseAt == 0 {
-		cfg.FiveHourUsagePauseAt = config.DefaultFiveHourUsagePauseAt
+	if cfg.FiveHourPacing270mPercent == 0 {
+		cfg.FiveHourPacing270mPercent = config.DefaultFiveHourPacing270mPercent
 	}
-	if cfg.FiveHourUsageSafetyMargin < 0 || cfg.FiveHourUsageSafetyMargin > 100 || cfg.FiveHourUsageThrottleAt < 0 || cfg.FiveHourUsageThrottleAt > 100 || cfg.FiveHourUsagePauseAt < cfg.FiveHourUsageThrottleAt || cfg.FiveHourUsagePauseAt > 100 {
+	if cfg.FiveHourPacing30mPercent < 0 || cfg.FiveHourPacing30mPercent > 100 || cfg.FiveHourPacing150mPercent < cfg.FiveHourPacing30mPercent || cfg.FiveHourPacing150mPercent > 100 || cfg.FiveHourPacing270mPercent < cfg.FiveHourPacing150mPercent || cfg.FiveHourPacing270mPercent > 100 {
 		return nil, fmt.Errorf("invalid five-hour usage guard configuration")
 	}
 	upstream, err := url.Parse(cfg.UpstreamBaseURL)
@@ -107,7 +107,7 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
 	server.usage = newAccountUsageManager(database, server.tokens, server.client, upstream)
 	server.accounting = accounting.NewManager(database)
-	server.sampler = newSubscriptionSampler(cfg.MaxInflightPerAccount, [3]float64{cfg.FiveHourUsageSafetyMargin, cfg.FiveHourUsageThrottleAt, cfg.FiveHourUsagePauseAt})
+	server.sampler = newSubscriptionSampler(cfg.MaxInflightPerAccount, [3]float64{cfg.FiveHourPacing30mPercent, cfg.FiveHourPacing150mPercent, cfg.FiveHourPacing270mPercent})
 	server.selector.sampler = server.sampler
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,

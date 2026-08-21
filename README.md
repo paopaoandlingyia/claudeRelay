@@ -71,9 +71,9 @@ Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a 
 `max_inflight_per_account` is a per-account hard in-process request limit, set to `8` by default.
 When an account is full, new requests prefer another eligible account and return `503` when none is
 available. `max_active_sessions_per_account` limits recently active sticky sessions to `5` by
-default. The five-hour guard uses upstream utilization headers: it throttles an account when its
-utilization is ahead of the elapsed-window progress by `10` percentage points, and pauses it at
-`95%`. These settings can be overridden with the matching `CLAUDE_RELAY_*` environment variables.
+default. The five-hour guard uses a configurable piecewise-linear utilization envelope: `25%` at
+30 minutes, `65%` at 150 minutes, and `100%` at 270 minutes. These settings can be overridden with
+the matching `CLAUDE_RELAY_*` environment variables.
 
 ## Console
 

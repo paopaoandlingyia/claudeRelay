@@ -201,3 +201,15 @@ func TestSubscriptionSamplerSeparatesAccountIncarnations(t *testing.T) {
 		t.Fatal("a reimported account inherited the deleted incarnation's readings")
 	}
 }
+
+func TestPacingLimitInterpolatesConfiguredEnvelope(t *testing.T) {
+	t.Parallel()
+	checks := []struct{ minutes, want float64 }{
+		{0, 0}, {15, 12.5}, {30, 25}, {90, 45}, {150, 65}, {210, 82.5}, {270, 100}, {300, 100},
+	}
+	for _, check := range checks {
+		if got := pacingLimit(check.minutes, 25, 65, 100); got != check.want {
+			t.Errorf("pacingLimit(%v) = %v, want %v", check.minutes, got, check.want)
+		}
+	}
+}

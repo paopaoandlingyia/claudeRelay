@@ -98,15 +98,15 @@ type accountSampler struct {
 type subscriptionSampler struct {
 	accounts          sync.Map
 	maxQueuedReadings int
-	safetyMargin      float64
-	throttleAt        float64
-	pauseAt           float64
+	pacing30m         float64
+	pacing150m        float64
+	pacing270m        float64
 }
 
 func newSubscriptionSampler(maxQueuedReadings int, policy ...[3]float64) *subscriptionSampler {
-	s := &subscriptionSampler{maxQueuedReadings: maxQueuedReadings, safetyMargin: 10, throttleAt: 90, pauseAt: 95}
+	s := &subscriptionSampler{maxQueuedReadings: maxQueuedReadings, pacing30m: 25, pacing150m: 65, pacing270m: 100}
 	if len(policy) > 0 {
-		s.safetyMargin, s.throttleAt, s.pauseAt = policy[0][0], policy[0][1], policy[0][2]
+		s.pacing30m, s.pacing150m, s.pacing270m = policy[0][0], policy[0][1], policy[0][2]
 	}
 	return s
 }
@@ -133,20 +133,31 @@ func (s *subscriptionSampler) allows(account store.Account, now time.Time) (bool
 		return true, ""
 	}
 	start := time.Unix(reset, 0).Add(-5 * time.Hour)
-	progress := now.Sub(start).Hours() / 5 * 100
-	if progress < 0 {
-		progress = 0
-	}
-	if progress > 100 {
-		progress = 100
-	}
-	if reading.usedPercent >= s.pauseAt {
-		return false, "five_hour_usage_pause"
-	}
-	if reading.usedPercent >= s.throttleAt || reading.usedPercent > progress+s.safetyMargin {
+	minutes := now.Sub(start).Minutes()
+	allowed := pacingLimit(minutes, s.pacing30m, s.pacing150m, s.pacing270m)
+	if reading.usedPercent > allowed {
 		return false, "five_hour_usage_rate_limit"
 	}
 	return true, ""
+}
+
+// pacingLimit linearly interpolates the configured utilization envelope at
+// 30, 150, and 270 minutes into a five-hour window. After 270 minutes the
+// account may consume the remainder without an artificial reserve.
+func pacingLimit(minutes, at30, at150, at270 float64) float64 {
+	if minutes <= 0 {
+		return 0
+	}
+	if minutes < 30 {
+		return at30 * minutes / 30
+	}
+	if minutes < 150 {
+		return at30 + (at150-at30)*(minutes-30)/120
+	}
+	if minutes < 270 {
+		return at150 + (at270-at150)*(minutes-150)/120
+	}
+	return 100
 }
 
 // forAccount keys state by the account's own identity rather than its database

@@ -13,9 +13,9 @@ const (
 	defaultMaxRequestBytes             int64 = 32 << 20
 	DefaultMaxInflightPerAccount             = 8
 	DefaultMaxActiveSessionsPerAccount       = 5
-	DefaultFiveHourUsageSafetyMargin         = 10.0
-	DefaultFiveHourUsageThrottleAt           = 90.0
-	DefaultFiveHourUsagePauseAt              = 95.0
+	DefaultFiveHourPacing30mPercent          = 25.0
+	DefaultFiveHourPacing150mPercent         = 65.0
+	DefaultFiveHourPacing270mPercent         = 100.0
 	defaultRequestLogSize                    = 500
 	maxRequestLogSize                        = 10000
 )
@@ -32,9 +32,9 @@ type Config struct {
 	MaxRequestBytes             int64   `json:"max_request_bytes"`
 	MaxInflightPerAccount       int     `json:"max_inflight_per_account"`
 	MaxActiveSessionsPerAccount int     `json:"max_active_sessions_per_account"`
-	FiveHourUsageSafetyMargin   float64 `json:"five_hour_usage_safety_margin"`
-	FiveHourUsageThrottleAt     float64 `json:"five_hour_usage_throttle_at"`
-	FiveHourUsagePauseAt        float64 `json:"five_hour_usage_pause_at"`
+	FiveHourPacing30mPercent    float64 `json:"five_hour_pacing_30m_percent"`
+	FiveHourPacing150mPercent   float64 `json:"five_hour_pacing_150m_percent"`
+	FiveHourPacing270mPercent   float64 `json:"five_hour_pacing_270m_percent"`
 	AutoRefresh                 bool    `json:"auto_refresh_enabled"`
 	RequestLogSize              int     `json:"request_log_size"`
 }
@@ -49,9 +49,9 @@ func Load(path string) (Config, error) {
 		AutoRefresh:                 true,
 		MaxInflightPerAccount:       DefaultMaxInflightPerAccount,
 		MaxActiveSessionsPerAccount: DefaultMaxActiveSessionsPerAccount,
-		FiveHourUsageSafetyMargin:   DefaultFiveHourUsageSafetyMargin,
-		FiveHourUsageThrottleAt:     DefaultFiveHourUsageThrottleAt,
-		FiveHourUsagePauseAt:        DefaultFiveHourUsagePauseAt,
+		FiveHourPacing30mPercent:    DefaultFiveHourPacing30mPercent,
+		FiveHourPacing150mPercent:   DefaultFiveHourPacing150mPercent,
+		FiveHourPacing270mPercent:   DefaultFiveHourPacing270mPercent,
 		RequestLogSize:              defaultRequestLogSize,
 	}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
@@ -112,26 +112,26 @@ func applyEnvironment(cfg *Config) error {
 		}
 		cfg.MaxActiveSessionsPerAccount = parsed
 	}
-	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_FIVE_HOUR_USAGE_SAFETY_MARGIN")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_FIVE_HOUR_PACING_30M_PERCENT")); value != "" {
 		parsed, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			return fmt.Errorf("parse CLAUDE_RELAY_FIVE_HOUR_USAGE_SAFETY_MARGIN: %w", err)
+			return fmt.Errorf("parse CLAUDE_RELAY_FIVE_HOUR_PACING_30M_PERCENT: %w", err)
 		}
-		cfg.FiveHourUsageSafetyMargin = parsed
+		cfg.FiveHourPacing30mPercent = parsed
 	}
-	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_FIVE_HOUR_USAGE_THROTTLE_AT")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_FIVE_HOUR_PACING_150M_PERCENT")); value != "" {
 		parsed, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			return fmt.Errorf("parse CLAUDE_RELAY_FIVE_HOUR_USAGE_THROTTLE_AT: %w", err)
+			return fmt.Errorf("parse CLAUDE_RELAY_FIVE_HOUR_PACING_150M_PERCENT: %w", err)
 		}
-		cfg.FiveHourUsageThrottleAt = parsed
+		cfg.FiveHourPacing150mPercent = parsed
 	}
-	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_FIVE_HOUR_USAGE_PAUSE_AT")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_FIVE_HOUR_PACING_270M_PERCENT")); value != "" {
 		parsed, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			return fmt.Errorf("parse CLAUDE_RELAY_FIVE_HOUR_USAGE_PAUSE_AT: %w", err)
+			return fmt.Errorf("parse CLAUDE_RELAY_FIVE_HOUR_PACING_270M_PERCENT: %w", err)
 		}
-		cfg.FiveHourUsagePauseAt = parsed
+		cfg.FiveHourPacing270mPercent = parsed
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_REQUEST_LOG_SIZE")); value != "" {
 		parsed, err := strconv.Atoi(value)
@@ -189,14 +189,8 @@ func (cfg *Config) validate() error {
 	if cfg.MaxActiveSessionsPerAccount < 1 {
 		return fmt.Errorf("config max_active_sessions_per_account must be positive")
 	}
-	if cfg.FiveHourUsageSafetyMargin < 0 || cfg.FiveHourUsageSafetyMargin > 100 {
-		return fmt.Errorf("config five_hour_usage_safety_margin must be between 0 and 100")
-	}
-	if cfg.FiveHourUsageThrottleAt < 0 || cfg.FiveHourUsageThrottleAt > 100 {
-		return fmt.Errorf("config five_hour_usage_throttle_at must be between 0 and 100")
-	}
-	if cfg.FiveHourUsagePauseAt < cfg.FiveHourUsageThrottleAt || cfg.FiveHourUsagePauseAt > 100 {
-		return fmt.Errorf("config five_hour_usage_pause_at must be >= throttle_at and <= 100")
+	if cfg.FiveHourPacing30mPercent < 0 || cfg.FiveHourPacing30mPercent > 100 || cfg.FiveHourPacing150mPercent < cfg.FiveHourPacing30mPercent || cfg.FiveHourPacing150mPercent > 100 || cfg.FiveHourPacing270mPercent < cfg.FiveHourPacing150mPercent || cfg.FiveHourPacing270mPercent > 100 {
+		return fmt.Errorf("config five-hour pacing percentages must be monotonic and between 0 and 100")
 	}
 	if cfg.RequestLogSize < 0 || cfg.RequestLogSize > maxRequestLogSize {
 		return fmt.Errorf("config request_log_size must be between 0 and %d", maxRequestLogSize)
