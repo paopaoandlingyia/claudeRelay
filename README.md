@@ -69,10 +69,11 @@ Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a 
 `http://127.0.0.1:7890` when upstream traffic must use a local proxy.
 
 `max_inflight_per_account` is a per-account hard in-process request limit, set to `3` by default.
-`max_active_sessions_per_account` admits at most `5` recently active sessions per account by
-default. A new session may select another eligible account when either limit is full; an existing
-sticky session never switches accounts because of local pressure. If its account is full, or no
-account can admit a new session, the relay returns `429`. Anthropic's five-hour utilization is
+`max_active_sessions_per_account` admits at most `5` recently active, explicitly identified client
+sessions per account by default. Cache-prefix affinity without a session ID does not consume a
+session slot. A new session may select another eligible account when either limit is full; an
+existing sticky session never switches accounts because of local pressure. If its account is full,
+or no account can admit a new session, the relay returns `429`. Anthropic's five-hour utilization is
 sampled for the console and usage estimates only; it is not a routing or admission input. Both
 limits can be overridden with the matching `CLAUDE_RELAY_*` environment variables.
 
@@ -230,11 +231,12 @@ state remain with the account. The fence applies to every selection path, so `X-
 cannot be used to reach an `official` account from the compatible ingress.
 
 The relay first honors an explicit private account alias, then an account UUID already present in
-official-client metadata, then a persisted sticky binding. New sessions use the healthy account
-with the lowest in-process active-request count that still has both an in-flight slot and an active
-session slot; the existing cache-affinity hash breaks ties. Cache affinity is derived from the
-caller's existing cache breakpoint; requests without one use tools, system, and the first user
-message as a stable anchor.
+official-client metadata, then a persisted sticky binding. New explicitly identified sessions use
+the healthy account with the lowest in-process active-request count that still has both an in-flight
+slot and an active-session slot; the existing cache-affinity hash breaks ties. Cache affinity is
+derived from the caller's existing cache breakpoint; requests without one use tools, system, and
+the first user message as a stable anchor. This prefix remains sticky for cache reuse but is not
+treated as proof of a distinct client session.
 
 An overloaded sticky request returns `429` without deleting, migrating, or temporarily bypassing
 its binding. The in-flight counter and provisional new-session admissions are process-local because
@@ -256,8 +258,12 @@ corresponding ingress API key can use this override, so aliases should not conta
 other sensitive data.
 
 Transient `429`, `529`, network, upstream `5xx`, and token-refresh failures may move an unpinned
-request to one other account at most once. Existing sticky sessions and explicitly selected
-requests never fail over to another account because of a local admission limit.
+request to one other account at most once. Failover and account health are separate decisions:
+`529` and generic `5xx` do not persist an account cooldown. A `429` follows an explicit exhausted
+Anthropic window or `Retry-After`; without either, only that model is avoided for five seconds.
+Successful responses clear matching stale cooldowns when their headers prove that the window is
+allowed. Existing sticky sessions and explicitly selected requests never fail over to another
+account because of a local admission limit.
 
 ## Request transformation
 
@@ -270,7 +276,8 @@ requests never fail over to another account because of a local admission limit.
   schema rejects metadata. The returned count therefore includes the billing text sent to models.
 - `X-Claude-Code-Session-Id`, `X-Claude-Session-Id`, `X-Session-Id`, or `Session-Id` produces a
   stable pseudonymous session UUID. The official Claude Code header takes precedence. Without one,
-  the cache-affinity routing key provides a stable fallback identity.
+  the cache-affinity routing key still preserves cache locality but does not count as an active
+  client session.
 - No Claude Code identity or software-engineering system prompt is added.
 
 The relay supplies `anthropic-version: 2023-06-01` and `content-type: application/json` only when

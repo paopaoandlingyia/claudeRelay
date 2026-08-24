@@ -44,7 +44,7 @@ func newSessionAdmissionTracker(database *store.Store, maxActive int) *sessionAd
 // request for this session. Routing concurrent requests through that account
 // preserves affinity before the successful binding reaches SQLite.
 func (t *sessionAdmissionTracker) pendingAccount(routeKey string) (int64, bool) {
-	if t == nil || routeKey == "" {
+	if t == nil || !isExplicitSessionRoute(routeKey) {
 		return 0, false
 	}
 	t.mu.Lock()
@@ -60,7 +60,7 @@ func (t *sessionAdmissionTracker) pendingAccount(routeKey string) (int64, bool) 
 // session is counted atomically with other provisional admissions and returns
 // an idempotent release function held until the request finishes.
 func (t *sessionAdmissionTracker) reserve(ctx context.Context, routeKey string, accountID int64, existing bool) (func(), bool, error) {
-	if t == nil || routeKey == "" || accountID <= 0 || existing {
+	if t == nil || !isExplicitSessionRoute(routeKey) || accountID <= 0 || existing {
 		return func() {}, true, nil
 	}
 

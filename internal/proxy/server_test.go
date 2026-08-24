@@ -771,7 +771,7 @@ func TestForcedAccountDoesNotBypassWhenOverloaded(t *testing.T) {
 	}
 }
 
-func TestRetryAfterParsesDelayDateAndAnthropicWindow(t *testing.T) {
+func TestCooldownPolicyRequiresExplicitWindowExhaustion(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 
@@ -783,16 +783,23 @@ func TestRetryAfterParsesDelayDateAndAnthropicWindow(t *testing.T) {
 		t.Errorf("date Retry-After = %v, %v", got, ok)
 	}
 
-	headers := make(http.Header)
+	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(now.Add(5*time.Minute).Unix(), 10))
-	headers.Set("anthropic-ratelimit-unified-7d-reset", strconv.FormatInt(now.Add(time.Hour).Unix(), 10))
-	headers.Set("anthropic-ratelimit-unified-7d-surpassed-threshold", "true")
-	if got, ok := anthropicRateLimitDelay(headers, now); !ok || got != time.Hour {
-		t.Errorf("exhausted Anthropic window delay = %v, %v", got, ok)
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.31")
+	decision, ok := cooldownDecisionForResponse(headers, http.StatusTooManyRequests, "claude-test", now)
+	if !ok || decision.reason != cooldownReasonAmbiguous429 || decision.model != "claude-test" || !decision.until.Equal(now.Add(ambiguous429Cooldown)) {
+		t.Fatalf("ambiguous 429 decision = %#v ok=%v", decision, ok)
 	}
-	headers.Del("anthropic-ratelimit-unified-7d-surpassed-threshold")
-	if got, ok := anthropicRateLimitDelay(headers, now); !ok || got != 5*time.Minute {
-		t.Errorf("ambiguous Anthropic window delay = %v, %v", got, ok)
+	headers.Set("anthropic-ratelimit-unified-5h-status", "rejected")
+	decision, ok = cooldownDecisionForResponse(headers, http.StatusTooManyRequests, "claude-test", now)
+	if !ok || decision.reason != cooldownReasonFiveHourExhausted || decision.model != "" || !decision.until.Equal(now.Add(5*time.Minute)) {
+		t.Fatalf("exhausted 5h decision = %#v ok=%v", decision, ok)
+	}
+	if _, ok := cooldownDecisionForResponse(headers, 529, "claude-test", now); ok {
+		t.Fatal("529 persisted an account cooldown")
+	}
+	if _, ok := cooldownDecisionForResponse(headers, http.StatusInternalServerError, "claude-test", now); ok {
+		t.Fatal("500 persisted an account cooldown")
 	}
 }
 
@@ -821,6 +828,109 @@ func TestRetryableResponseSwitchesAccountOnce(t *testing.T) {
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || calls != 2 {
 		t.Fatalf("status = %d calls = %d body = %s", recorder.Code, calls, recorder.Body.String())
+	}
+}
+
+func TestGenericUpstreamFailuresFailOverWithoutCoolingAccounts(t *testing.T) {
+	t.Parallel()
+	statuses := []int{529, http.StatusInternalServerError}
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(statuses[calls])
+		calls++
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"retry me"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError || calls != 2 {
+		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
+	}
+	cooldowns, err := server.store.ActiveCooldowns(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cooldowns) != 0 {
+		t.Fatalf("generic upstream failures persisted cooldowns: %#v", cooldowns)
+	}
+}
+
+func TestAmbiguous429FailsOverWithShortModelCooldown(t *testing.T) {
+	t.Parallel()
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"retry me"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || calls != 2 {
+		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
+	}
+	cooldowns, err := server.store.ActiveCooldowns(t.Context(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cooldowns) != 1 || cooldowns[0].Model != "claude-test" || cooldowns[0].Reason != cooldownReasonAmbiguous429 {
+		t.Fatalf("ambiguous 429 cooldowns = %#v", cooldowns)
+	}
+	remaining := time.Until(time.Unix(cooldowns[0].UntilAt, 0))
+	if remaining <= 0 || remaining > ambiguous429Cooldown {
+		t.Fatalf("ambiguous 429 remaining cooldown = %v", remaining)
+	}
+}
+
+func TestExplicitFiveHourExhaustionCoolsAccountAcrossModels(t *testing.T) {
+	t.Parallel()
+	var calls int
+	var firstAuthorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			firstAuthorization = r.Header.Get("Authorization")
+			w.Header().Set("anthropic-ratelimit-unified-5h-status", "rejected")
+			w.Header().Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"retry me"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || calls != 2 {
+		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
+	}
+	alias := "secondary"
+	if firstAuthorization == "Bearer upstream-access-token" {
+		alias = "default"
+	}
+	account, found, err := server.store.AccountByAlias(t.Context(), alias)
+	if err != nil || !found {
+		t.Fatalf("first account %q found=%v err=%v", alias, found, err)
+	}
+	cooling, err := server.store.IsCooling(t.Context(), account.ID, "claude-other-model", time.Now())
+	if err != nil || !cooling {
+		t.Fatalf("cross-model cooling=%v err=%v", cooling, err)
 	}
 }
 

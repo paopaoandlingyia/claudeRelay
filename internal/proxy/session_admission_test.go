@@ -21,24 +21,24 @@ func TestSessionAdmissionCountsPendingRoutesAtomically(t *testing.T) {
 	}
 	tracker := newSessionAdmissionTracker(server.store, 1)
 
-	releaseFirst, admitted, err := tracker.reserve(t.Context(), "route-a", account.ID, false)
+	releaseFirst, admitted, err := tracker.reserve(t.Context(), "session:route-a", account.ID, false)
 	if err != nil || !admitted {
 		t.Fatalf("first admission admitted=%v err=%v", admitted, err)
 	}
-	releaseShared, admitted, err := tracker.reserve(t.Context(), "route-a", account.ID, false)
+	releaseShared, admitted, err := tracker.reserve(t.Context(), "session:route-a", account.ID, false)
 	if err != nil || !admitted {
 		t.Fatalf("shared route admission admitted=%v err=%v", admitted, err)
 	}
-	if _, admitted, err = tracker.reserve(t.Context(), "route-b", account.ID, false); err != nil || admitted {
+	if _, admitted, err = tracker.reserve(t.Context(), "session:route-b", account.ID, false); err != nil || admitted {
 		t.Fatalf("distinct route while full admitted=%v err=%v", admitted, err)
 	}
 
 	releaseFirst()
-	if _, admitted, err = tracker.reserve(t.Context(), "route-b", account.ID, false); err != nil || admitted {
+	if _, admitted, err = tracker.reserve(t.Context(), "session:route-b", account.ID, false); err != nil || admitted {
 		t.Fatalf("route admitted before all shared references released: admitted=%v err=%v", admitted, err)
 	}
 	releaseShared()
-	releaseNext, admitted, err := tracker.reserve(t.Context(), "route-b", account.ID, false)
+	releaseNext, admitted, err := tracker.reserve(t.Context(), "session:route-b", account.ID, false)
 	if err != nil || !admitted {
 		t.Fatalf("route after release admitted=%v err=%v", admitted, err)
 	}
@@ -69,7 +69,7 @@ func TestSessionAdmissionDoesNotOversubscribeConcurrentRoutes(t *testing.T) {
 		go func() {
 			defer workers.Done()
 			<-start
-			releaseSlot, admitted, reserveErr := tracker.reserve(t.Context(), fmt.Sprintf("route-%d", index), account.ID, false)
+			releaseSlot, admitted, reserveErr := tracker.reserve(t.Context(), fmt.Sprintf("session:route-%d", index), account.ID, false)
 			results <- struct {
 				admitted bool
 				err      error
@@ -102,6 +102,26 @@ func TestSessionAdmissionDoesNotOversubscribeConcurrentRoutes(t *testing.T) {
 	}
 }
 
+func TestCacheAffinityRoutesDoNotConsumeSessionAdmission(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+	account, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("default account = %#v found=%v err=%v", account, found, err)
+	}
+	tracker := newSessionAdmissionTracker(server.store, 1)
+	for _, routeKey := range []string{"prefix:one-shot-a", "prefix:one-shot-b"} {
+		release, admitted, reserveErr := tracker.reserve(t.Context(), routeKey, account.ID, false)
+		if reserveErr != nil || !admitted {
+			t.Fatalf("cache-affinity route %q admitted=%v err=%v", routeKey, admitted, reserveErr)
+		}
+		release()
+	}
+	if len(tracker.pending) != 0 || len(tracker.perAccount) != 0 {
+		t.Fatalf("cache-affinity routes created session reservations: pending=%d accounts=%d", len(tracker.pending), len(tracker.perAccount))
+	}
+}
+
 func TestNewSessionsUseAnotherAccountWhenPendingSlotIsFull(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t, "http://127.0.0.1:1", 4096)
@@ -109,7 +129,7 @@ func TestNewSessionsUseAnotherAccountWhenPendingSlotIsFull(t *testing.T) {
 	server.selector.sessions = newSessionAdmissionTracker(server.store, 1)
 
 	first, err := server.selector.selectAccount(t.Context(), requestRoute{
-		ConversationKey: "route-a",
+		ConversationKey: "session:route-a",
 		SelectionKey:    "selection-a",
 		Ingress:         store.AccountPoolCompatible,
 	}, "", map[int64]bool{})
@@ -120,7 +140,7 @@ func TestNewSessionsUseAnotherAccountWhenPendingSlotIsFull(t *testing.T) {
 	defer first.releaseSession()
 
 	second, err := server.selector.selectAccount(t.Context(), requestRoute{
-		ConversationKey: "route-b",
+		ConversationKey: "session:route-b",
 		SelectionKey:    "selection-b",
 		Ingress:         store.AccountPoolCompatible,
 	}, "", map[int64]bool{})

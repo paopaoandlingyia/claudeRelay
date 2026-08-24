@@ -332,7 +332,9 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		event.Selection = selected.Source
 		freshAccount, refreshErr := s.tokens.ensureFresh(incoming.Context(), selected.Account)
 		if refreshErr != nil {
-			_ = s.store.Cooldown(incoming.Context(), selected.Account.ID, "", time.Now().Add(time.Minute), "oauth_refresh_failed")
+			if cooldownErr := s.store.Cooldown(incoming.Context(), selected.Account.ID, "", time.Now().Add(time.Minute), "oauth_refresh_failed"); cooldownErr != nil {
+				slog.Warn("persist OAuth refresh cooldown", "request_id", requestID, "account", selected.Account.Alias, "error", cooldownErr)
+			}
 			if selected.Pinned || strings.TrimSpace(forcedAlias) != "" || attempt == 1 {
 				fail(http.StatusServiceUnavailable, "authentication_error", refreshErr.Error())
 				return
@@ -366,8 +368,13 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			break
 		}
 		if err == nil {
-			cooldown := retryAfter(response.Header, response.StatusCode)
-			_ = s.store.Cooldown(incoming.Context(), selected.Account.ID, route.Model, time.Now().Add(cooldown), http.StatusText(response.StatusCode))
+			observedAt := time.Now()
+			if decision, cool := cooldownDecisionForResponse(response.Header, response.StatusCode, route.Model, observedAt); cool {
+				if cooldownErr := s.store.CooldownObservedAt(incoming.Context(), selected.Account.ID, decision.model, decision.until, decision.reason, observedAt); cooldownErr != nil {
+					slog.Warn("persist upstream account cooldown", "request_id", requestID, "account", selected.Account.Alias,
+						"model", decision.model, "reason", decision.reason, "until", decision.until, "error", cooldownErr)
+				}
+			}
 		}
 		if selected.Pinned || strings.TrimSpace(forcedAlias) != "" || attempt == 1 {
 			break
@@ -410,8 +417,13 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	// after the copy would carry the moment this response ended rather than the
 	// moment upstream reported it, and two responses could be recorded in the
 	// opposite order to the readings they carry.
-	window, sampled := readFiveHourWindow(response.Header, time.Now())
-	if incoming.URL.Path == "/v1/messages" && response.StatusCode >= 200 && response.StatusCode < 300 && sampled {
+	observedAt := time.Now()
+	window, sampled := readFiveHourWindow(response.Header, observedAt)
+	successful := response.StatusCode >= 200 && response.StatusCode < 300
+	if successful {
+		s.recoverCooldownsFromSuccess(incoming.Context(), selected.Account.ID, route.Model, response.Header, observedAt)
+	}
+	if incoming.URL.Path == "/v1/messages" && successful && sampled {
 		// Publish the response-derived balance before streaming the body. The
 		// persisted accounting snapshot still waits until usage observation has
 		// finished below.
@@ -498,22 +510,6 @@ func retryableStatus(status int) bool {
 	return status == http.StatusTooManyRequests || status == 529 || status >= 500
 }
 
-func retryAfter(headers http.Header, status int) time.Duration {
-	now := time.Now()
-	if delay, ok := retryAfterHeader(headers.Get("Retry-After"), now); ok {
-		return delay
-	}
-	if status == http.StatusTooManyRequests {
-		if delay, ok := anthropicRateLimitDelay(headers, now); ok {
-			return delay
-		}
-	}
-	if status == http.StatusTooManyRequests {
-		return 30 * time.Second
-	}
-	return 10 * time.Second
-}
-
 func retryAfterHeader(raw string, now time.Time) (time.Duration, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -527,57 +523,6 @@ func retryAfterHeader(raw string, now time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 	return resetAt.Sub(now), true
-}
-
-// anthropicRateLimitDelay prefers the reset for a window explicitly reported
-// as exhausted. When utilization signals are absent, the earliest future reset
-// is safer than arbitrarily cooling through a longer, unrelated window.
-func anthropicRateLimitDelay(headers http.Header, now time.Time) (time.Duration, bool) {
-	type resetWindow struct {
-		name      string
-		resetAt   time.Time
-		exhausted bool
-	}
-	windows := make([]resetWindow, 0, 3)
-	for _, name := range []string{"5h", "7d", "7d_oi"} {
-		prefix := "anthropic-ratelimit-unified-" + name + "-"
-		resetUnix, err := strconv.ParseInt(strings.TrimSpace(headers.Get(prefix+"reset")), 10, 64)
-		if err != nil {
-			continue
-		}
-		resetAt := time.Unix(resetUnix, 0)
-		if !resetAt.After(now) {
-			continue
-		}
-		exhausted := strings.EqualFold(strings.TrimSpace(headers.Get(prefix+"surpassed-threshold")), "true")
-		if utilization, err := strconv.ParseFloat(strings.TrimSpace(headers.Get(prefix+"utilization")), 64); err == nil && utilization >= 1 {
-			exhausted = true
-		}
-		windows = append(windows, resetWindow{name: name, resetAt: resetAt, exhausted: exhausted})
-	}
-	if resetUnix, err := strconv.ParseInt(strings.TrimSpace(headers.Get("anthropic-ratelimit-unified-reset")), 10, 64); err == nil {
-		resetAt := time.Unix(resetUnix, 0)
-		if resetAt.After(now) {
-			windows = append(windows, resetWindow{name: "unified", resetAt: resetAt})
-		}
-	}
-	if len(windows) == 0 {
-		return 0, false
-	}
-	chosen := -1
-	for i := range windows {
-		if windows[i].exhausted && (chosen < 0 || !windows[chosen].exhausted || windows[i].resetAt.After(windows[chosen].resetAt)) {
-			chosen = i
-		}
-	}
-	if chosen < 0 {
-		for i := range windows {
-			if chosen < 0 || windows[i].resetAt.Before(windows[chosen].resetAt) {
-				chosen = i
-			}
-		}
-	}
-	return windows[chosen].resetAt.Sub(now), true
 }
 
 type flushWriter struct {

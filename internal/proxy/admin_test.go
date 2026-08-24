@@ -49,7 +49,7 @@ func TestListAccountsReportsCooldownAndRoutingActivity(t *testing.T) {
 	if err := server.store.Cooldown(t.Context(), account.ID, "claude-opus-5", until, "Too Many Requests"); err != nil {
 		t.Fatal(err)
 	}
-	if err := server.store.Bind(t.Context(), "route-key", account.ID, time.Hour); err != nil {
+	if err := server.store.Bind(t.Context(), "session:route-key", account.ID, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 

@@ -40,6 +40,15 @@ func TestSchemaV3MigratesExistingAccountsToCompatiblePool(t *testing.T) {
 		INSERT INTO accounts (
 			alias,type,access_token,account_uuid,device_id,enabled,created_at,updated_at
 		) VALUES ('legacy','claude','secret','11111111-1111-4111-8111-111111111111','device',1,1,1);
+		CREATE TABLE account_cooldowns (
+			account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+			model TEXT NOT NULL DEFAULT '',
+			until_at INTEGER NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY(account_id, model)
+		);
+		INSERT INTO account_cooldowns(account_id,model,until_at,reason)
+			VALUES (1,'claude-test',4102444800,'legacy cooldown');
 		PRAGMA user_version=3;
 	`)
 	if err != nil {
@@ -66,8 +75,15 @@ func TestSchemaV3MigratesExistingAccountsToCompatiblePool(t *testing.T) {
 	if err := database.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 5 {
-		t.Fatalf("schema version = %d, want 5", version)
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
+	}
+	var observedAt int64
+	if err := database.db.QueryRow(`SELECT observed_at FROM account_cooldowns WHERE account_id=1 AND model='claude-test'`).Scan(&observedAt); err != nil {
+		t.Fatalf("read migrated cooldown: %v", err)
+	}
+	if observedAt != 0 {
+		t.Fatalf("migrated cooldown observed_at = %d, want 0", observedAt)
 	}
 }
 
@@ -113,28 +129,31 @@ func TestExpiredBindingsAreIgnoredBeforePruning(t *testing.T) {
 	}
 	// The first Bind consumes the prune interval, so the expired row written by
 	// the second one is guaranteed to still be in the table.
-	if err := database.Bind(ctx, "warm", account.ID, time.Hour); err != nil {
+	if err := database.Bind(ctx, "session:warm", account.ID, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.Bind(ctx, "stale", account.ID, -time.Hour); err != nil {
+	if err := database.Bind(ctx, "prefix:affinity", account.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Bind(ctx, "prefix:stale", account.ID, -time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	var rows int
-	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_bindings WHERE route_key='stale'`).Scan(&rows); err != nil {
+	if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_bindings WHERE route_key='prefix:stale'`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if rows != 1 {
 		t.Fatalf("stale binding rows = %d, want the unpruned row to remain", rows)
 	}
-	if _, found, err := database.BoundAccount(ctx, "stale", AccountPoolCompatible, time.Now()); err != nil || found {
+	if _, found, err := database.BoundAccount(ctx, "prefix:stale", AccountPoolCompatible, time.Now()); err != nil || found {
 		t.Fatalf("expired binding was routable: found=%v err=%v", found, err)
 	}
 	counts, err := database.SessionBindingCounts(ctx, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if counts[account.ID] != 1 {
-		t.Fatalf("live binding count = %d, want 1", counts[account.ID])
+	if counts[account.ID] != 2 {
+		t.Fatalf("live binding count = %d, want 2", counts[account.ID])
 	}
 	active, err := database.ActiveSessionCounts(ctx, time.Now(), time.Now().Add(-5*time.Minute))
 	if err != nil {
@@ -346,6 +365,57 @@ func TestClearCooldownsRestoresRouting(t *testing.T) {
 	}
 	if len(accounts) != 1 {
 		t.Errorf("routable accounts = %d, want 1 after clearing the cooldown", len(accounts))
+	}
+}
+
+func TestCooldownDoesNotShortenAnExistingDecision(t *testing.T) {
+	t.Parallel()
+	database := newTestStore(t)
+	account := importTestAccount(t, database, "primary", "11111111-1111-4111-8111-111111111111")
+	now := time.Now()
+	longUntil := now.Add(time.Hour).Truncate(time.Second)
+	if err := database.Cooldown(t.Context(), account.ID, "claude-test", longUntil, "hard_window"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Cooldown(t.Context(), account.ID, "claude-test", now.Add(5*time.Second), "transient"); err != nil {
+		t.Fatal(err)
+	}
+	cooldowns, err := database.ActiveCooldowns(t.Context(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cooldowns) != 1 || cooldowns[0].UntilAt != longUntil.Unix() || cooldowns[0].Reason != "hard_window" {
+		t.Fatalf("cooldown after shorter decision = %#v", cooldowns)
+	}
+	cleared, err := database.ClearCooldownMatchesObservedBefore(t.Context(), account.ID,
+		[]CooldownMatch{{Model: "claude-test", Reason: "transient"}}, time.Now())
+	if err != nil || cleared != 0 {
+		t.Fatalf("mismatched reason cleared=%v err=%v", cleared, err)
+	}
+	cleared, err = database.ClearCooldownMatchesObservedBefore(t.Context(), account.ID,
+		[]CooldownMatch{{Model: "claude-test", Reason: "hard_window"}}, time.Now())
+	if err != nil || cleared != 1 {
+		t.Fatalf("matching reason cleared=%v err=%v", cleared, err)
+	}
+}
+
+func TestOlderObservationCannotClearNewerCooldown(t *testing.T) {
+	t.Parallel()
+	database := newTestStore(t)
+	account := importTestAccount(t, database, "primary", "11111111-1111-4111-8111-111111111111")
+	older := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Second)
+	if err := database.CooldownObservedAt(t.Context(), account.ID, "claude-test", newer.Add(time.Hour), "hard_window", newer); err != nil {
+		t.Fatal(err)
+	}
+	match := []CooldownMatch{{Model: "claude-test", Reason: "hard_window"}}
+	cleared, err := database.ClearCooldownMatchesObservedBefore(t.Context(), account.ID, match, older)
+	if err != nil || cleared != 0 {
+		t.Fatalf("older observation cleared=%v err=%v", cleared, err)
+	}
+	cleared, err = database.ClearCooldownMatchesObservedBefore(t.Context(), account.ID, match, newer)
+	if err != nil || cleared != 1 {
+		t.Fatalf("matching observation cleared=%v err=%v", cleared, err)
 	}
 }
 

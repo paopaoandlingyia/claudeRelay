@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	accountHeader    = "X-Claude-Relay-Account"
-	stickySessionTTL = time.Hour
+	accountHeader      = "X-Claude-Relay-Account"
+	stickySessionTTL   = time.Hour
+	sessionRoutePrefix = "session:"
 )
 
 type requestRoute struct {
@@ -59,7 +60,7 @@ func deriveRequestRoute(body []byte, headers http.Header, ingress string) (reque
 	// different clients and cannot collide on a sticky binding.
 	scope := shortHash(ingress)
 	if session != "" {
-		route.ConversationKey = "session:" + shortHash(scope+"\x00"+session)
+		route.ConversationKey = sessionRoutePrefix + shortHash(scope+"\x00"+session)
 	}
 
 	prefix := cachePrefix(root)
@@ -75,6 +76,10 @@ func deriveRequestRoute(body []byte, headers http.Header, ingress string) (reque
 		route.ConversationKey = route.SelectionKey
 	}
 	return route, nil
+}
+
+func isExplicitSessionRoute(routeKey string) bool {
+	return strings.HasPrefix(routeKey, sessionRoutePrefix)
 }
 
 func parseMetadataIdentity(value any) metadataIdentity {

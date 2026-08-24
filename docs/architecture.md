@@ -32,23 +32,26 @@ Transient failures permit at most one alternate account. Explicit account overri
 
 The console distinguishes three account signals that answer different operational questions:
 
-- Sticky bindings are successful routing affinities retained for their sliding one-hour lifetime.
-- Active sessions are those same bindings whose last successful request was within five minutes.
+- Sticky bindings are successful routing affinities retained for their sliding one-hour lifetime;
+  they can originate from either an explicit client session ID or a cache-prefix key.
+- Active sessions are only explicit session-ID bindings whose last successful request was within
+  five minutes. A shared prompt prefix is useful affinity evidence, not proof of a user session.
 - In-flight requests are the process-local reservations currently held through the end of the
   upstream response stream.
 
-The five-minute view reuses `session_bindings.updated_at`; it adds no session table, write, or
-background worker. It is the persisted signal used for new-session admission, while in-flight
-requests remain a separate process-local control.
+The five-minute view filters the existing `session_bindings` route-key namespace and reuses
+`updated_at`; it adds no session table, write, or background worker. It is the persisted signal used
+for explicit new-session admission, while prefix-only requests retain cache affinity without
+consuming session capacity. In-flight requests remain a separate process-local control.
 
 ## 2026-08-24: strict session admission without five-hour pacing
 
-The relay applies two independent per-account controls. New routing bindings are admitted while the
-account has fewer than five active sessions (recent successful bindings). A process-local
-provisional reservation covers the first upstream request until its successful SQLite binding, so
-simultaneous new sessions cannot all pass a stale count. Concurrent first requests for one route
-share its reservation and account affinity. Existing bindings remain usable even when the account
-is at the session limit.
+The relay applies two independent per-account controls. New explicitly identified sessions are
+admitted while the account has fewer than five active sessions. A process-local provisional
+reservation covers the first upstream request until its successful SQLite binding, so simultaneous
+new sessions cannot all pass a stale count. Concurrent first requests for one route share its
+reservation and account affinity. Existing bindings remain usable even when the account is at the
+session limit; prefix-only cache affinities never enter session admission.
 
 In-process upstream requests have a hard configurable limit (`max_inflight_per_account`, three by
 default). New sessions may try another eligible account, but an existing sticky session never
@@ -60,10 +63,19 @@ console and usage estimates. It is deliberately not a routing input: a time-enve
 reject otherwise healthy cache-affine work and duplicates the simpler controls that directly bound
 multi-user-like fan-out.
 
-Rate-limit cooling follows an upstream `Retry-After` value in either delay-seconds or HTTP-date
-form. On a `429` without that header, valid Anthropic unified window reset headers take precedence
-over the short fallback: an explicitly exhausted window determines the cooldown, otherwise the
-earliest future reset avoids conflating unrelated windows.
+Failover eligibility and persisted account health are deliberately separate. A `529` or generic
+`5xx` may be request-scoped or service-wide, so it can cause the single bounded failover but never
+writes an account cooldown. A `429` writes a window-length cooldown only when the corresponding
+Anthropic headers explicitly report `rejected`, a surpassed threshold, or full utilization and
+provide a plausible reset. Five-hour and general seven-day exhaustion apply to the whole account;
+the `7d_oi` window applies only to the requested model. Otherwise an explicit `Retry-After` applies
+to that model, and an ambiguous `429` avoids it for five seconds.
+
+Any successful response proves that a short ambiguous or `Retry-After` avoidance for the same model
+is stale. An explicit window status of `allowed` also clears the matching hard-window cooldown.
+Cooldown observations are ordered in SQLite so an older concurrent success cannot erase a newer
+decision. This recovery path is what returns a restored five-hour account to scheduling without a
+manual cooldown release.
 
 ## 2026-07-30: activation owns OAuth refresh
 

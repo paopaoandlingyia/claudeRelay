@@ -69,6 +69,13 @@ type Cooldown struct {
 	Reason    string
 }
 
+type CooldownMatch struct {
+	Model  string
+	Reason string
+}
+
+const schemaVersion = 6
+
 type Store struct {
 	db *sql.DB
 	// lastBindingPrune is the Unix second of the last expired-binding sweep.
@@ -139,7 +146,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
 	}
-	if version > 5 {
+	if version > schemaVersion {
 		return fmt.Errorf("database schema version %d is newer than this build supports", version)
 	}
 	statements := []string{
@@ -174,6 +181,7 @@ func (s *Store) initialize(ctx context.Context) error {
 			model TEXT NOT NULL DEFAULT '',
 			until_at INTEGER NOT NULL,
 			reason TEXT NOT NULL DEFAULT '',
+			observed_at INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(account_id, model)
 		)`,
 		`CREATE TABLE IF NOT EXISTS usage_hourly (
@@ -255,6 +263,17 @@ func (s *Store) initialize(ctx context.Context) error {
 			return err
 		}
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=5`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	if version < 6 {
+		// Response headers can arrive concurrently. Recording when a cooling
+		// decision was observed prevents an older success from deleting a newer
+		// decision for the same account, model, and reason.
+		if err := s.ensureColumn(ctx, "account_cooldowns", "observed_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=6`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}
@@ -609,13 +628,13 @@ func (s *Store) SessionBindingCounts(ctx context.Context, now time.Time) (map[in
 	return counts, rows.Err()
 }
 
-// ActiveSessionCounts reports live bindings that have carried a successful
-// request since cutoff. This is intentionally distinct from the one-hour
-// sticky-binding count: it approximates recently active client sessions rather
-// than retained routing affinity.
+// ActiveSessionCounts reports explicit session bindings that have carried a
+// successful request since cutoff. Prefix-only bindings still preserve cache
+// affinity, but they are not reliable client-session identities and therefore
+// do not participate in admission limits.
 func (s *Store) ActiveSessionCounts(ctx context.Context, now, cutoff time.Time) (map[int64]int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT account_id,COUNT(*) FROM session_bindings
-		WHERE expires_at>? AND updated_at>? GROUP BY account_id`, now.Unix(), cutoff.Unix())
+		WHERE route_key LIKE 'session:%' AND expires_at>? AND updated_at>? GROUP BY account_id`, now.Unix(), cutoff.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("count active sessions: %w", err)
 	}
@@ -632,12 +651,13 @@ func (s *Store) ActiveSessionCounts(ctx context.Context, now, cutoff time.Time) 
 	return counts, rows.Err()
 }
 
-// ActiveSessionCount returns the number of recently successful, live bindings
-// for one account. It is used as an admission signal for new conversations.
+// ActiveSessionCount returns the number of recently successful, explicit
+// session bindings for one account. It is used as an admission signal for new
+// conversations.
 func (s *Store) ActiveSessionCount(ctx context.Context, accountID int64, now, cutoff time.Time) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_bindings
-		WHERE account_id=? AND expires_at>? AND updated_at>?`, accountID, now.Unix(), cutoff.Unix()).Scan(&count)
+		WHERE account_id=? AND route_key LIKE 'session:%' AND expires_at>? AND updated_at>?`, accountID, now.Unix(), cutoff.Unix()).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count account active sessions: %w", err)
 	}
@@ -718,13 +738,52 @@ func (s *Store) pruneExpiredBindings(ctx context.Context, now time.Time) {
 }
 
 func (s *Store) Cooldown(ctx context.Context, accountID int64, model string, until time.Time, reason string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO account_cooldowns(account_id,model,until_at,reason) VALUES(?,?,?,?)
-		ON CONFLICT(account_id,model) DO UPDATE SET until_at=excluded.until_at,reason=excluded.reason`,
-		accountID, model, until.Unix(), reason)
+	return s.CooldownObservedAt(ctx, accountID, model, until, reason, time.Now())
+}
+
+// CooldownObservedAt records both the exclusion and when its upstream evidence
+// arrived. The observation timestamp gives success recovery a stable ordering
+// across concurrent responses.
+func (s *Store) CooldownObservedAt(ctx context.Context, accountID int64, model string, until time.Time, reason string, observedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO account_cooldowns(account_id,model,until_at,reason,observed_at) VALUES(?,?,?,?,?)
+		ON CONFLICT(account_id,model) DO UPDATE SET
+			until_at=MAX(account_cooldowns.until_at,excluded.until_at),
+			reason=CASE WHEN excluded.until_at>=account_cooldowns.until_at THEN excluded.reason ELSE account_cooldowns.reason END,
+			observed_at=CASE WHEN excluded.until_at>=account_cooldowns.until_at THEN excluded.observed_at ELSE account_cooldowns.observed_at END`,
+		accountID, model, until.Unix(), reason, observedAt.UnixNano())
 	if err != nil {
 		return fmt.Errorf("set account cooldown: %w", err)
 	}
 	return nil
+}
+
+// ClearCooldownMatchesObservedBefore removes matching decisions in one write,
+// but only when they are not newer than the response proving recovery. This
+// avoids an older in-flight success erasing a later cooling decision.
+func (s *Store) ClearCooldownMatchesObservedBefore(ctx context.Context, accountID int64, matches []CooldownMatch, observedAt time.Time) (int64, error) {
+	if len(matches) == 0 {
+		return 0, nil
+	}
+	var predicate strings.Builder
+	args := make([]any, 0, 2+len(matches)*2)
+	args = append(args, accountID, observedAt.UnixNano())
+	for i, match := range matches {
+		if i > 0 {
+			predicate.WriteString(" OR ")
+		}
+		predicate.WriteString("(model=? AND reason=?)")
+		args = append(args, match.Model, match.Reason)
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM account_cooldowns
+		WHERE account_id=? AND observed_at<=? AND (`+predicate.String()+`)`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("clear recovered account cooldowns: %w", err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("inspect recovered account cooldowns: %w", err)
+	}
+	return removed, nil
 }
 
 func (s *Store) IsCooling(ctx context.Context, accountID int64, model string, now time.Time) (bool, error) {
