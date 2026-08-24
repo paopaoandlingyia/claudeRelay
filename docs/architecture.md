@@ -75,6 +75,12 @@ default). New sessions may try another eligible account, but an existing sticky 
 switches accounts because of either local control. A local limit returns `429`; `503` is reserved
 for unavailable account capacity such as disabled or cooling accounts.
 
+The downstream contract groups failures by caller action rather than scheduler internals. Every
+normal local admission failure returns `429 rate_limit_error` with one stable capacity message;
+whether an in-flight slot, a session slot, or all eligible accounts caused it remains in trusted
+diagnostics. This avoids exposing account identity and prevents clients from depending on routing
+implementation details.
+
 Anthropic's unified five-hour utilization remains sampled from successful response headers for the
 console and usage estimates. It is deliberately not a routing input: a time-envelope estimate can
 reject otherwise healthy cache-affine work and duplicates the simpler controls that directly bound

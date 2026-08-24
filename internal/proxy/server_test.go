@@ -661,6 +661,25 @@ func TestAuthenticationFailureDoesNotExposeAccountAlias(t *testing.T) {
 	}
 }
 
+func TestUnavailableAccountsUseStablePublicError(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+	if _, err := server.store.SetAccountEnabled(t.Context(), "default", false); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-test","messages":[]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(recorder.Body.String(), `"type":"api_error"`) ||
+		!strings.Contains(recorder.Body.String(), accountUnavailableMessage) ||
+		strings.Contains(recorder.Body.String(), "default") {
+		t.Fatalf("unstable unavailable-account error: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestStickySessionKeepsSelectedAccount(t *testing.T) {
 	t.Parallel()
 	var authorizations []string
@@ -725,7 +744,9 @@ func TestStickyOverloadReturns429WithoutSwitchingAccount(t *testing.T) {
 	if first.Code != http.StatusTooManyRequests || len(authorizations) != 0 {
 		t.Fatalf("sticky overload status=%d authorizations=%#v body=%s", first.Code, authorizations, first.Body.String())
 	}
-	if strings.Contains(first.Body.String(), primary.Alias) || !strings.Contains(first.Body.String(), "bound session reached its in-flight limit") {
+	if strings.Contains(first.Body.String(), primary.Alias) ||
+		!strings.Contains(first.Body.String(), `"type":"rate_limit_error"`) ||
+		!strings.Contains(first.Body.String(), relayCapacityClientMessage) {
 		t.Fatalf("sticky overload exposed account identity: %s", first.Body.String())
 	}
 	bound, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountPoolCompatible, time.Now())

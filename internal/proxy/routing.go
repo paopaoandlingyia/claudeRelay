@@ -304,6 +304,11 @@ func (e safeSelectionError) ClientMessage() string { return e.clientMessage }
 
 type localRateLimitError struct{ safeSelectionError }
 
+const (
+	relayCapacityClientMessage = "relay capacity limit reached; retry later"
+	accountUnavailableMessage  = "no account is currently available; retry later"
+)
+
 func selectionFailed(clientMessage, format string, args ...any) error {
 	return safeSelectionError{diagnostic: fmt.Sprintf(format, args...), clientMessage: clientMessage}
 }
@@ -458,7 +463,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 				if !cooling {
 					selected, ok := s.makeLimitedSelection(account, "session_pending", false)
 					if !ok {
-						return selection{}, locallyRateLimited("the bound session reached its in-flight limit",
+						return selection{}, locallyRateLimited(relayCapacityClientMessage,
 							"account %q reached its in-flight limit", account.Alias)
 					}
 					selected, admitted, admissionErr := s.admitSession(ctx, route, selected, false)
@@ -488,7 +493,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if found && !cooling && !excluded[account.ID] {
 			selected, ok := s.makeLimitedSelection(account, "sticky", false)
 			if !ok {
-				return selection{}, locallyRateLimited("the bound session reached its in-flight limit",
+				return selection{}, locallyRateLimited(relayCapacityClientMessage,
 					"account %q reached its in-flight limit", account.Alias)
 			}
 			selected, admitted, admissionErr := s.admitSession(ctx, route, selected, true)
@@ -559,10 +564,10 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	}
 	for _, account := range accounts {
 		if !excluded[account.ID] {
-			const message = "all eligible accounts reached a local session or in-flight limit"
-			return selection{}, locallyRateLimited(message, message)
+			return selection{}, locallyRateLimited(relayCapacityClientMessage,
+				"all eligible accounts reached a local session or in-flight limit")
 		}
 	}
-	return selection{}, selectionFailed("no healthy account is currently available",
+	return selection{}, selectionFailed(accountUnavailableMessage,
 		"no healthy Claude subscription account is available for the %s ingress", route.Ingress)
 }

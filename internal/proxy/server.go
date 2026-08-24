@@ -319,10 +319,12 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 				event.Selection = ""
 			}
 			status := http.StatusServiceUnavailable
-			clientMessage := "account selection failed"
+			errorType := "api_error"
+			clientMessage := accountUnavailableMessage
 			var rateLimit localRateLimitError
 			if errors.As(err, &rateLimit) {
 				status = http.StatusTooManyRequests
+				errorType = "rate_limit_error"
 			}
 			var safeError selectionClientError
 			if errors.As(err, &safeError) {
@@ -332,7 +334,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			event.Error = err.Error()
 			slog.Warn("account selection failed", "request_id", requestID, "path", incoming.URL.Path,
 				"ingress", ingress, "status", status, "error", err)
-			writeError(w, status, "api_error", clientMessage)
+			writeError(w, status, errorType, clientMessage)
 			return
 		}
 		releaseLoad = selected.release
