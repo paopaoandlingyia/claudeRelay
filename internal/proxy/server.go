@@ -67,18 +67,6 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	if cfg.MaxActiveSessionsPerAccount < 1 {
 		return nil, fmt.Errorf("config max_active_sessions_per_account must be positive")
 	}
-	if cfg.FiveHourPacing30mPercent == 0 {
-		cfg.FiveHourPacing30mPercent = config.DefaultFiveHourPacing30mPercent
-	}
-	if cfg.FiveHourPacing150mPercent == 0 {
-		cfg.FiveHourPacing150mPercent = config.DefaultFiveHourPacing150mPercent
-	}
-	if cfg.FiveHourPacing270mPercent == 0 {
-		cfg.FiveHourPacing270mPercent = config.DefaultFiveHourPacing270mPercent
-	}
-	if cfg.FiveHourPacing30mPercent < 0 || cfg.FiveHourPacing30mPercent > 100 || cfg.FiveHourPacing150mPercent < cfg.FiveHourPacing30mPercent || cfg.FiveHourPacing150mPercent > 100 || cfg.FiveHourPacing270mPercent < cfg.FiveHourPacing150mPercent || cfg.FiveHourPacing270mPercent > 100 {
-		return nil, fmt.Errorf("invalid five-hour usage guard configuration")
-	}
 	upstream, err := url.Parse(cfg.UpstreamBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse upstream URL: %w", err)
@@ -93,11 +81,12 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	}
 	oauthClient := claudeoauth.New(&http.Client{Transport: transport, Timeout: 60 * time.Second})
 	load := newAccountLoadTracker()
+	sessions := newSessionAdmissionTracker(database, cfg.MaxActiveSessionsPerAccount)
 	server := &Server{
 		cfg:       cfg,
 		store:     database,
 		load:      load,
-		selector:  accountSelector{store: database, load: load, maxInflightPerAcct: cfg.MaxInflightPerAccount, maxActiveSessions: cfg.MaxActiveSessionsPerAccount},
+		selector:  accountSelector{store: database, load: load, maxInflightPerAcct: cfg.MaxInflightPerAccount, sessions: sessions},
 		upstream:  upstream,
 		client:    &http.Client{Transport: transport},
 		oauth:     oauthClient,
@@ -107,8 +96,7 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
 	server.usage = newAccountUsageManager(database, server.tokens, server.client, upstream)
 	server.accounting = accounting.NewManager(database)
-	server.sampler = newSubscriptionSampler(cfg.MaxInflightPerAccount, [3]float64{cfg.FiveHourPacing30mPercent, cfg.FiveHourPacing150mPercent, cfg.FiveHourPacing270mPercent})
-	server.selector.sampler = server.sampler
+	server.sampler = newSubscriptionSampler(cfg.MaxInflightPerAccount)
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.routes(),
@@ -311,9 +299,13 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	var response *http.Response
 	var selected selection
 	var releaseLoad func()
+	var releaseSession func()
 	defer func() {
 		if releaseLoad != nil {
 			releaseLoad()
+		}
+		if releaseSession != nil {
+			releaseSession()
 		}
 	}()
 	for attempt := 0; attempt < 2; attempt++ {
@@ -326,10 +318,16 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 				event.Account = ""
 				event.Selection = ""
 			}
-			fail(http.StatusServiceUnavailable, "api_error", err.Error())
+			status := http.StatusServiceUnavailable
+			var rateLimit localRateLimitError
+			if errors.As(err, &rateLimit) {
+				status = http.StatusTooManyRequests
+			}
+			fail(status, "api_error", err.Error())
 			return
 		}
 		releaseLoad = selected.release
+		releaseSession = selected.releaseSession
 		event.Account = selected.Account.Alias
 		event.Selection = selected.Source
 		freshAccount, refreshErr := s.tokens.ensureFresh(incoming.Context(), selected.Account)
@@ -341,6 +339,10 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			}
 			releaseLoad()
 			releaseLoad = nil
+			if releaseSession != nil {
+				releaseSession()
+				releaseSession = nil
+			}
 			excluded[selected.Account.ID] = true
 			event.Failover = &metrics.Failover{Account: selected.Account.Alias, Error: refreshErr.Error()}
 			continue
@@ -372,6 +374,10 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		}
 		releaseLoad()
 		releaseLoad = nil
+		if releaseSession != nil {
+			releaseSession()
+			releaseSession = nil
+		}
 		failover := metrics.Failover{Account: selected.Account.Alias}
 		if response != nil {
 			failover.Status = response.StatusCode

@@ -91,7 +91,7 @@ func (s *Server) accountViews(r *http.Request, accounts []store.Account) ([]acco
 	if err != nil {
 		return nil, err
 	}
-	active, err := s.store.ActiveSessionCounts(r.Context(), now, now.Add(-5*time.Minute))
+	active, err := s.store.ActiveSessionCounts(r.Context(), now, now.Add(-activeSessionWindow))
 	if err != nil {
 		return nil, err
 	}

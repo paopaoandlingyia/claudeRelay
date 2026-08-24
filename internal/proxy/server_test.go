@@ -657,7 +657,7 @@ func TestStickySessionKeepsSelectedAccount(t *testing.T) {
 	}
 }
 
-func TestStickyOverloadTemporarilyBypassesWithoutRebinding(t *testing.T) {
+func TestStickyOverloadReturns429WithoutSwitchingAccount(t *testing.T) {
 	t.Parallel()
 	var authorizations []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -692,8 +692,8 @@ func TestStickyOverloadTemporarilyBypassesWithoutRebinding(t *testing.T) {
 		return recorder
 	}
 	first := send()
-	if first.Code != http.StatusOK || len(authorizations) != 1 || authorizations[0] != "Bearer token-secondary" {
-		t.Fatalf("overload fallback status=%d authorizations=%#v body=%s", first.Code, authorizations, first.Body.String())
+	if first.Code != http.StatusTooManyRequests || len(authorizations) != 0 {
+		t.Fatalf("sticky overload status=%d authorizations=%#v body=%s", first.Code, authorizations, first.Body.String())
 	}
 	bound, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountPoolCompatible, time.Now())
 	if err != nil || !found || bound.ID != primary.ID {
@@ -702,11 +702,11 @@ func TestStickyOverloadTemporarilyBypassesWithoutRebinding(t *testing.T) {
 	holdPrimary()
 
 	second := send()
-	if second.Code != http.StatusOK || len(authorizations) != 2 || authorizations[1] != "Bearer upstream-access-token" {
+	if second.Code != http.StatusOK || len(authorizations) != 1 || authorizations[0] != "Bearer upstream-access-token" {
 		t.Fatalf("sticky recovery status=%d authorizations=%#v body=%s", second.Code, authorizations, second.Body.String())
 	}
 	records := server.metrics.Recent(2)
-	if len(records) != 2 || records[1].Selection != "sticky_overload_fallback" {
+	if len(records) != 2 || records[0].Selection != "sticky" || records[1].Status != http.StatusTooManyRequests || records[1].Account != "" {
 		t.Fatalf("routing records = %#v", records)
 	}
 }
@@ -766,7 +766,7 @@ func TestForcedAccountDoesNotBypassWhenOverloaded(t *testing.T) {
 	request.Header.Set("x-api-key", "downstream-key")
 	request.Header.Set(accountHeader, "default")
 	server.routes().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusServiceUnavailable {
+	if recorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }

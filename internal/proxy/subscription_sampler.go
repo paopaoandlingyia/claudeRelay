@@ -99,47 +99,10 @@ type accountSampler struct {
 type subscriptionSampler struct {
 	accounts          sync.Map
 	maxQueuedReadings int
-	pacing30m         float64
-	pacing150m        float64
-	pacing270m        float64
 }
 
-func newSubscriptionSampler(maxQueuedReadings int, policy ...[3]float64) *subscriptionSampler {
-	s := &subscriptionSampler{maxQueuedReadings: maxQueuedReadings, pacing30m: 25, pacing150m: 65, pacing270m: 100}
-	if len(policy) > 0 {
-		s.pacing30m, s.pacing150m, s.pacing270m = policy[0][0], policy[0][1], policy[0][2]
-	}
-	return s
-}
-
-// allows reports whether an account is within the simple five-hour pacing
-// guard. Missing or stale samples are allowed because the upstream response
-// headers are the only authoritative signal available to the relay.
-func (s *subscriptionSampler) allows(account store.Account, now time.Time) (bool, string) {
-	value, ok := s.accounts.Load(accountUsageCacheKey(account))
-	if !ok {
-		return true, ""
-	}
-	reading := value.(*accountSampler).latest()
-	if reading == nil || reading.resetsAt == "" {
-		return true, ""
-	}
-	reset, err := strconv.ParseInt(reading.resetsAt, 10, 64)
-	if err != nil {
-		return true, ""
-	}
-	// A reading from the previous window must not pause an account after its
-	// reset; the next successful response will establish the new window.
-	if !now.Before(time.Unix(reset, 0)) {
-		return true, ""
-	}
-	start := time.Unix(reset, 0).Add(-5 * time.Hour)
-	minutes := now.Sub(start).Minutes()
-	allowed := pacingLimit(minutes, s.pacing30m, s.pacing150m, s.pacing270m)
-	if reading.usedPercent > allowed {
-		return false, "five_hour_usage_rate_limit"
-	}
-	return true, ""
+func newSubscriptionSampler(maxQueuedReadings int) *subscriptionSampler {
+	return &subscriptionSampler{maxQueuedReadings: maxQueuedReadings}
 }
 
 // latest returns the newest response observation. The persisted pointer is a
@@ -189,25 +152,6 @@ func (s *subscriptionSampler) current(account store.Account, now time.Time) (fiv
 		return fiveHourReading{}, false
 	}
 	return *reading, true
-}
-
-// pacingLimit linearly interpolates the configured utilization envelope at
-// 30, 150, and 270 minutes into a five-hour window. After 270 minutes the
-// account may consume the remainder without an artificial reserve.
-func pacingLimit(minutes, at30, at150, at270 float64) float64 {
-	if minutes <= 0 {
-		return 0
-	}
-	if minutes < 30 {
-		return at30 * minutes / 30
-	}
-	if minutes < 150 {
-		return at30 + (at150-at30)*(minutes-30)/120
-	}
-	if minutes < 270 {
-		return at150 + (at270-at150)*(minutes-150)/120
-	}
-	return 100
 }
 
 // forAccount keys state by the account's own identity rather than its database

@@ -60,6 +60,7 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 	t.Setenv("CLAUDE_RELAY_UPSTREAM_PROXY", "http://proxy:7890")
 	t.Setenv("CLAUDE_RELAY_MAX_REQUEST_BYTES", "1048576")
 	t.Setenv("CLAUDE_RELAY_MAX_INFLIGHT_PER_ACCOUNT", "6")
+	t.Setenv("CLAUDE_RELAY_MAX_ACTIVE_SESSIONS_PER_ACCOUNT", "4")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -78,6 +79,9 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 	}
 	if cfg.MaxInflightPerAccount != 6 {
 		t.Fatalf("max inflight per account = %d", cfg.MaxInflightPerAccount)
+	}
+	if cfg.MaxActiveSessionsPerAccount != 4 {
+		t.Fatalf("max active sessions per account = %d", cfg.MaxActiveSessionsPerAccount)
 	}
 }
 

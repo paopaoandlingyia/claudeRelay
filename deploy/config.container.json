@@ -7,11 +7,8 @@
   "upstream_base_url": "https://api.anthropic.com",
   "upstream_proxy": "",
   "max_request_bytes": 33554432,
-  "max_inflight_per_account": 8,
+  "max_inflight_per_account": 3,
   "max_active_sessions_per_account": 5,
-  "five_hour_pacing_30m_percent": 25,
-  "five_hour_pacing_150m_percent": 65,
-  "five_hour_pacing_270m_percent": 100,
   "auto_refresh_enabled": true,
   "request_log_size": 500
 }

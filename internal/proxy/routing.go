@@ -212,20 +212,24 @@ func shortHash(value string) string {
 }
 
 type selection struct {
-	Account       store.Account
-	Pinned        bool
-	Source        string
-	PersistSticky bool
-	release       func()
+	Account        store.Account
+	Pinned         bool
+	Source         string
+	PersistSticky  bool
+	release        func()
+	releaseSession func()
 }
 
 type accountSelector struct {
 	store              *store.Store
 	load               *accountLoadTracker
 	maxInflightPerAcct int
-	maxActiveSessions  int
-	sampler            *subscriptionSampler
+	sessions           *sessionAdmissionTracker
 }
+
+type localRateLimitError struct{ message string }
+
+func (e localRateLimitError) Error() string { return e.message }
 
 func (s accountSelector) makeSelection(account store.Account, source string, pinned, persistSticky bool) selection {
 	release := func() {}
@@ -252,6 +256,37 @@ func (s accountSelector) makeLimitedSelection(account store.Account, source stri
 	return selection{Account: account, Pinned: pinned, Source: source, PersistSticky: persistSticky, release: release}, true
 }
 
+func (s accountSelector) wasBoundTo(ctx context.Context, route requestRoute, accountID int64) (bool, error) {
+	if route.ConversationKey == "" {
+		return false, nil
+	}
+	bound, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.Ingress, time.Now())
+	if err != nil {
+		return false, err
+	}
+	return found && bound.ID == accountID, nil
+}
+
+func (s accountSelector) admitSession(ctx context.Context, route requestRoute, selected selection, existing bool) (selection, bool, error) {
+	if s.sessions == nil {
+		selected.releaseSession = func() {}
+		return selected, true, nil
+	}
+	release, admitted, err := s.sessions.reserve(ctx, route.ConversationKey, selected.Account.ID, existing)
+	if err != nil || !admitted {
+		if selected.release != nil {
+			selected.release()
+		}
+		return selection{}, false, err
+	}
+	selected.releaseSession = release
+	return selected, true, nil
+}
+
+func locallyRateLimited(format string, args ...any) error {
+	return localRateLimitError{message: fmt.Sprintf(format, args...)}
+}
+
 func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, forcedAlias string, excluded map[int64]bool) (selection, error) {
 	forcedAlias = strings.TrimSpace(forcedAlias)
 	if forcedAlias != "" {
@@ -273,14 +308,21 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if cooling {
 			return selection{}, fmt.Errorf("requested account %q is temporarily cooling down", forcedAlias)
 		}
-		if s.sampler != nil {
-			if ok, reason := s.sampler.allows(account, time.Now()); !ok {
-				return selection{}, fmt.Errorf("requested account %q is unavailable: %s", forcedAlias, reason)
-			}
-		}
 		selected, ok := s.makeLimitedSelection(account, "header", true, true)
 		if !ok {
-			return selection{}, fmt.Errorf("requested account %q reached its in-flight limit", forcedAlias)
+			return selection{}, locallyRateLimited("requested account %q reached its in-flight limit", forcedAlias)
+		}
+		existing, err := s.wasBoundTo(ctx, route, account.ID)
+		if err != nil {
+			selected.release()
+			return selection{}, err
+		}
+		selected, admitted, err := s.admitSession(ctx, route, selected, existing)
+		if err != nil {
+			return selection{}, err
+		}
+		if !admitted {
+			return selection{}, locallyRateLimited("requested account %q reached its active-session limit", forcedAlias)
 		}
 		return selected, nil
 	}
@@ -298,18 +340,51 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			if s.sampler != nil {
-				if ok, _ := s.sampler.allows(account, time.Now()); !ok {
-					found = false
-				}
-			}
-		}
-		if found && !cooling && !excluded[account.ID] {
 			selected, ok := s.makeLimitedSelection(account, "account_uuid", false, true)
 			if !ok {
 				found = false
 			} else {
-				return selected, nil
+				existing, boundErr := s.wasBoundTo(ctx, route, account.ID)
+				if boundErr != nil {
+					selected.release()
+					return selection{}, boundErr
+				}
+				selected, admitted, admissionErr := s.admitSession(ctx, route, selected, existing)
+				if admissionErr != nil {
+					return selection{}, admissionErr
+				}
+				if admitted {
+					return selected, nil
+				}
+				found = false
+			}
+		}
+	}
+
+	if route.ConversationKey != "" && s.sessions != nil {
+		if accountID, pending := s.sessions.pendingAccount(route.ConversationKey); pending && !excluded[accountID] {
+			account, found, err := s.store.AccountByID(ctx, accountID)
+			if err != nil {
+				return selection{}, err
+			}
+			if found && account.Enabled && store.IngressMayUse(route.Ingress, account.Pool) {
+				cooling, coolingErr := s.store.IsCooling(ctx, account.ID, route.Model, time.Now())
+				if coolingErr != nil {
+					return selection{}, coolingErr
+				}
+				if !cooling {
+					selected, ok := s.makeLimitedSelection(account, "session_pending", false, true)
+					if !ok {
+						return selection{}, locallyRateLimited("account %q reached its in-flight limit", account.Alias)
+					}
+					selected, admitted, admissionErr := s.admitSession(ctx, route, selected, false)
+					if admissionErr != nil {
+						return selection{}, admissionErr
+					}
+					if admitted {
+						return selected, nil
+					}
+				}
 			}
 		}
 	}
@@ -327,116 +402,81 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			if s.sampler != nil {
-				if ok, _ := s.sampler.allows(account, time.Now()); !ok {
-					found = false
-				}
+			selected, ok := s.makeLimitedSelection(account, "sticky", false, true)
+			if !ok {
+				return selection{}, locallyRateLimited("account %q reached its in-flight limit", account.Alias)
 			}
-		}
-		if found && !cooling && !excluded[account.ID] {
-			if s.load == nil {
-				return s.makeSelection(account, "sticky", false, true), nil
+			selected, admitted, admissionErr := s.admitSession(ctx, route, selected, true)
+			if admissionErr != nil {
+				return selection{}, admissionErr
 			}
-
-			if release, current, ok := s.load.reserveBelow(account.ID, s.maxInflightPerAcct); ok {
-				return selection{
-					Account:       account,
-					Source:        "sticky",
-					PersistSticky: true,
-					release:       release,
-				}, nil
-			} else {
-				accounts, accountsErr := s.store.Accounts(ctx, route.Ingress, route.Model, time.Now())
-				if accountsErr != nil {
-					return selection{}, accountsErr
-				}
-				fallbackNow := time.Now()
-				active, activeErr := s.store.ActiveSessionCounts(ctx, fallbackNow, fallbackNow.Add(-5*time.Minute))
-				if activeErr != nil {
-					return selection{}, activeErr
-				}
-				eligible := accounts[:0]
-				for _, candidate := range accounts {
-					if s.maxActiveSessions > 0 && active[candidate.ID] >= s.maxActiveSessions {
-						continue
-					}
-					if s.sampler != nil {
-						if allowed, _ := s.sampler.allows(candidate, fallbackNow); !allowed {
-							continue
-						}
-					}
-					eligible = append(eligible, candidate)
-				}
-				accounts = eligible
-				fallbackExcluded := make(map[int64]bool, len(excluded)+1)
-				for id, excludedAccount := range excluded {
-					fallbackExcluded[id] = excludedAccount
-				}
-				fallbackExcluded[account.ID] = true
-				alternate, alternateRelease, foundAlternate := s.load.reserveLeastLoaded(
-					accounts, route.SelectionKey, fallbackExcluded, current,
-				)
-				if foundAlternate {
-					return selection{
-						Account:       alternate,
-						Source:        "sticky_overload_fallback",
-						PersistSticky: false,
-						release:       alternateRelease,
-					}, nil
-				}
-				return selection{}, fmt.Errorf("account %q reached its in-flight limit and no alternate account is available", account.Alias)
+			if admitted {
+				return selected, nil
 			}
 		}
 	}
 
-	now := time.Now()
-	accounts, err := s.store.Accounts(ctx, route.Ingress, route.Model, now)
+	accounts, err := s.store.Accounts(ctx, route.Ingress, route.Model, time.Now())
 	if err != nil {
 		return selection{}, err
 	}
-	active, err := s.store.ActiveSessionCounts(ctx, now, now.Add(-5*time.Minute))
-	if err != nil {
-		return selection{}, err
+	localExcluded := make(map[int64]bool, len(excluded)+len(accounts))
+	for id, skip := range excluded {
+		localExcluded[id] = skip
 	}
-	filtered := accounts[:0]
-	for _, account := range accounts {
-		if s.maxActiveSessions > 0 && active[account.ID] >= s.maxActiveSessions {
-			continue
-		}
-		if s.sampler != nil {
-			if ok, _ := s.sampler.allows(account, now); !ok {
-				continue
-			}
-		}
-		filtered = append(filtered, account)
-	}
-	accounts = filtered
 	if s.load != nil {
-		account, release, found := s.load.reserveLeastLoaded(accounts, route.SelectionKey, excluded, s.maxInflightPerAcct)
-		if found {
-			return selection{
+		for {
+			account, release, found := s.load.reserveLeastLoaded(accounts, route.SelectionKey, localExcluded, s.maxInflightPerAcct)
+			if !found {
+				break
+			}
+			selected, admitted, admissionErr := s.admitSession(ctx, route, selection{
 				Account:       account,
 				Source:        "load_balance",
 				PersistSticky: true,
 				release:       release,
-			}, nil
+			}, false)
+			if admissionErr != nil {
+				return selection{}, admissionErr
+			}
+			if admitted {
+				return selected, nil
+			}
+			localExcluded[account.ID] = true
 		}
 	}
 
-	var chosen *store.Account
-	var chosenScore [32]byte
-	for i := range accounts {
-		account := accounts[i]
-		if excluded[account.ID] {
-			continue
-		}
-		score := accountSelectionScore(route.SelectionKey, account.Alias)
-		if chosen == nil || bytes.Compare(score[:], chosenScore[:]) > 0 {
-			chosen, chosenScore = &account, score
+	if s.load == nil {
+		for {
+			var chosen *store.Account
+			var chosenScore [32]byte
+			for i := range accounts {
+				account := accounts[i]
+				if localExcluded[account.ID] {
+					continue
+				}
+				score := accountSelectionScore(route.SelectionKey, account.Alias)
+				if chosen == nil || bytes.Compare(score[:], chosenScore[:]) > 0 {
+					chosen, chosenScore = &account, score
+				}
+			}
+			if chosen == nil {
+				break
+			}
+			selected, admitted, admissionErr := s.admitSession(ctx, route, s.makeSelection(*chosen, "cache_affinity", false, true), false)
+			if admissionErr != nil {
+				return selection{}, admissionErr
+			}
+			if admitted {
+				return selected, nil
+			}
+			localExcluded[chosen.ID] = true
 		}
 	}
-	if chosen == nil {
-		return selection{}, fmt.Errorf("no healthy Claude subscription account is available for the %s ingress", route.Ingress)
+	for _, account := range accounts {
+		if !excluded[account.ID] {
+			return selection{}, locallyRateLimited("all Claude subscription accounts reached a local session or in-flight limit")
+		}
 	}
-	return s.makeSelection(*chosen, "cache_affinity", false, true), nil
+	return selection{}, fmt.Errorf("no healthy Claude subscription account is available for the %s ingress", route.Ingress)
 }

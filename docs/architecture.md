@@ -14,8 +14,8 @@ Account selection uses the following precedence:
 2. `account_uuid` from an official client's structured `metadata.user_id` when it matches an
    imported account.
 3. A successful session binding with a sliding one-hour lifetime.
-4. The least-loaded enabled, non-cooling account for a new request or a locally overloaded
-   sticky binding; rendezvous hashing of the cache-prefix key breaks load ties.
+4. The least-loaded enabled, non-cooling account that can admit a new session; rendezvous hashing
+   of the cache-prefix key breaks load ties.
 
 The cache-prefix key reads existing Anthropic `cache_control` breakpoints without rewriting them.
 When no breakpoint exists, tools, system, and the first user message form the stable anchor. Route
@@ -28,21 +28,6 @@ selection stages when unavailable.
 
 Transient failures permit at most one alternate account. Explicit account overrides do not fail over.
 
-## 2026-08-02: sticky routing yields to local load temporarily
-
-Sticky bindings remain the default because they preserve cache affinity, but a binding is a
-preference rather than an availability boundary. The relay keeps an in-process active-request
-counter per account and uses `max_inflight_per_account` (8 by default) as a soft threshold. When a
-sticky account reaches that threshold and another healthy account has a lower load, the current
-request temporarily bypasses the binding. The original SQLite binding is retained, so later work
-returns to it after the load falls; a single-account deployment remains available even above the
-threshold.
-
-The counter is reserved before the upstream request and released only after the full response body
-has been copied or the client context is canceled. It is not persisted to SQLite because the
-supported topology is one relay process. Explicit account aliases remain pinned, and local load
-fallback does not clear or migrate a sticky binding.
-
 ## 2026-08-13: routing affinity is not session activity
 
 The console distinguishes three account signals that answer different operational questions:
@@ -53,22 +38,27 @@ The console distinguishes three account signals that answer different operationa
   upstream response stream.
 
 The five-minute view reuses `session_bindings.updated_at`; it adds no session table, write, or
-background worker. These values are observational and do not impose a session or hard concurrency
-limit. Limits remain deferred until normal small-pool usage provides a useful baseline.
+background worker. It is the persisted signal used for new-session admission, while in-flight
+requests remain a separate process-local control.
 
-## 2026-08-21: account admission and five-hour pacing guards
+## 2026-08-24: strict session admission without five-hour pacing
 
-The relay now applies three simple per-account guards. New routing bindings are filtered when the
-account already has five active sessions (recent successful bindings); existing sticky sessions
-remain usable until they become inactive. In-process upstream requests have a hard configurable
-limit (`max_inflight_per_account`, eight by default), and no alternate account means the request
-fails rather than exceeding the limit.
+The relay applies two independent per-account controls. New routing bindings are admitted while the
+account has fewer than five active sessions (recent successful bindings). A process-local
+provisional reservation covers the first upstream request until its successful SQLite binding, so
+simultaneous new sessions cannot all pass a stale count. Concurrent first requests for one route
+share its reservation and account affinity. Existing bindings remain usable even when the account
+is at the session limit.
 
-Each account's latest Anthropic unified five-hour utilization header is also compared with a
-piecewise-linear utilization envelope: 25% at 30 minutes, 65% at 150 minutes, and 100% at 270
-minutes. An account above that envelope is removed from ordinary selection; after 270 minutes no
-artificial reserve is imposed. Missing or unparsable samples remain fail-open because the upstream
-header is the only authoritative signal and the relay does not invent quota values.
+In-process upstream requests have a hard configurable limit (`max_inflight_per_account`, three by
+default). New sessions may try another eligible account, but an existing sticky session never
+switches accounts because of either local control. A local limit returns `429`; `503` is reserved
+for unavailable account capacity such as disabled or cooling accounts.
+
+Anthropic's unified five-hour utilization remains sampled from successful response headers for the
+console and usage estimates. It is deliberately not a routing input: a time-envelope estimate can
+reject otherwise healthy cache-affine work and duplicates the simpler controls that directly bound
+multi-user-like fan-out.
 
 Rate-limit cooling follows an upstream `Retry-After` value in either delay-seconds or HTTP-date
 form. On a `429` without that header, valid Anthropic unified window reset headers take precedence

@@ -11,32 +11,26 @@ import (
 
 const (
 	defaultMaxRequestBytes             int64 = 32 << 20
-	DefaultMaxInflightPerAccount             = 8
+	DefaultMaxInflightPerAccount             = 3
 	DefaultMaxActiveSessionsPerAccount       = 5
-	DefaultFiveHourPacing30mPercent          = 25.0
-	DefaultFiveHourPacing150mPercent         = 65.0
-	DefaultFiveHourPacing270mPercent         = 100.0
 	defaultRequestLogSize                    = 500
 	maxRequestLogSize                        = 10000
 )
 
 type Config struct {
-	Listen                      string  `json:"listen"`
-	RelayAPIKey                 string  `json:"relay_api_key"`
-	OfficialAPIKey              string  `json:"official_api_key"`
-	AdminAPIKey                 string  `json:"admin_api_key"`
-	DatabaseFile                string  `json:"database_file"`
-	CredentialsFile             string  `json:"credentials_file"`
-	UpstreamBaseURL             string  `json:"upstream_base_url"`
-	UpstreamProxy               string  `json:"upstream_proxy"`
-	MaxRequestBytes             int64   `json:"max_request_bytes"`
-	MaxInflightPerAccount       int     `json:"max_inflight_per_account"`
-	MaxActiveSessionsPerAccount int     `json:"max_active_sessions_per_account"`
-	FiveHourPacing30mPercent    float64 `json:"five_hour_pacing_30m_percent"`
-	FiveHourPacing150mPercent   float64 `json:"five_hour_pacing_150m_percent"`
-	FiveHourPacing270mPercent   float64 `json:"five_hour_pacing_270m_percent"`
-	AutoRefresh                 bool    `json:"auto_refresh_enabled"`
-	RequestLogSize              int     `json:"request_log_size"`
+	Listen                      string `json:"listen"`
+	RelayAPIKey                 string `json:"relay_api_key"`
+	OfficialAPIKey              string `json:"official_api_key"`
+	AdminAPIKey                 string `json:"admin_api_key"`
+	DatabaseFile                string `json:"database_file"`
+	CredentialsFile             string `json:"credentials_file"`
+	UpstreamBaseURL             string `json:"upstream_base_url"`
+	UpstreamProxy               string `json:"upstream_proxy"`
+	MaxRequestBytes             int64  `json:"max_request_bytes"`
+	MaxInflightPerAccount       int    `json:"max_inflight_per_account"`
+	MaxActiveSessionsPerAccount int    `json:"max_active_sessions_per_account"`
+	AutoRefresh                 bool   `json:"auto_refresh_enabled"`
+	RequestLogSize              int    `json:"request_log_size"`
 }
 
 func Load(path string) (Config, error) {
@@ -49,9 +43,6 @@ func Load(path string) (Config, error) {
 		AutoRefresh:                 true,
 		MaxInflightPerAccount:       DefaultMaxInflightPerAccount,
 		MaxActiveSessionsPerAccount: DefaultMaxActiveSessionsPerAccount,
-		FiveHourPacing30mPercent:    DefaultFiveHourPacing30mPercent,
-		FiveHourPacing150mPercent:   DefaultFiveHourPacing150mPercent,
-		FiveHourPacing270mPercent:   DefaultFiveHourPacing270mPercent,
 		RequestLogSize:              defaultRequestLogSize,
 	}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
@@ -112,27 +103,6 @@ func applyEnvironment(cfg *Config) error {
 		}
 		cfg.MaxActiveSessionsPerAccount = parsed
 	}
-	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_FIVE_HOUR_PACING_30M_PERCENT")); value != "" {
-		parsed, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			return fmt.Errorf("parse CLAUDE_RELAY_FIVE_HOUR_PACING_30M_PERCENT: %w", err)
-		}
-		cfg.FiveHourPacing30mPercent = parsed
-	}
-	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_FIVE_HOUR_PACING_150M_PERCENT")); value != "" {
-		parsed, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			return fmt.Errorf("parse CLAUDE_RELAY_FIVE_HOUR_PACING_150M_PERCENT: %w", err)
-		}
-		cfg.FiveHourPacing150mPercent = parsed
-	}
-	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_FIVE_HOUR_PACING_270M_PERCENT")); value != "" {
-		parsed, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			return fmt.Errorf("parse CLAUDE_RELAY_FIVE_HOUR_PACING_270M_PERCENT: %w", err)
-		}
-		cfg.FiveHourPacing270mPercent = parsed
-	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_REQUEST_LOG_SIZE")); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil {
@@ -188,9 +158,6 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.MaxActiveSessionsPerAccount < 1 {
 		return fmt.Errorf("config max_active_sessions_per_account must be positive")
-	}
-	if cfg.FiveHourPacing30mPercent < 0 || cfg.FiveHourPacing30mPercent > 100 || cfg.FiveHourPacing150mPercent < cfg.FiveHourPacing30mPercent || cfg.FiveHourPacing150mPercent > 100 || cfg.FiveHourPacing270mPercent < cfg.FiveHourPacing150mPercent || cfg.FiveHourPacing270mPercent > 100 {
-		return fmt.Errorf("config five-hour pacing percentages must be monotonic and between 0 and 100")
 	}
 	if cfg.RequestLogSize < 0 || cfg.RequestLogSize > maxRequestLogSize {
 		return fmt.Errorf("config request_log_size must be between 0 and %d", maxRequestLogSize)

@@ -90,13 +90,12 @@ func TestCurrentFiveHourWindowExpiresAtReset(t *testing.T) {
 	}
 }
 
-func TestObservedFiveHourWindowUpdatesPacingBeforePersistence(t *testing.T) {
+func TestObservedFiveHourWindowIsCurrentBeforePersistence(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1786676000, 0)
 	account := store.Account{ID: 1, Credential: credential.Credential{AccountUUID: "11111111-1111-4111-8111-111111111111"}}
 	sampler := newSubscriptionSampler(config.DefaultMaxInflightPerAccount)
 	sampler.observe(account, fiveHourReading{
-		// Thirty minutes have elapsed, so the default pacing envelope allows 25%.
 		resetsAt:    strconv.FormatInt(now.Add(4*time.Hour+30*time.Minute).Unix(), 10),
 		usedPercent: 31,
 		observedAt:  now.UnixMilli(),
@@ -104,8 +103,8 @@ func TestObservedFiveHourWindowUpdatesPacingBeforePersistence(t *testing.T) {
 	if sampler.forAccount(account).stored.Load() != nil {
 		t.Fatal("live observation was unexpectedly treated as a persisted sample")
 	}
-	if allowed, reason := sampler.allows(account, now); allowed || reason != "five_hour_usage_rate_limit" {
-		t.Fatalf("pacing after response observation = allowed %v reason %q", allowed, reason)
+	if reading, ok := sampler.current(account, now); !ok || reading.usedPercent != 31 {
+		t.Fatalf("current live observation = %+v ok=%v", reading, ok)
 	}
 }
 
@@ -237,17 +236,5 @@ func TestSubscriptionSamplerSeparatesAccountIncarnations(t *testing.T) {
 	sampler.forget(account(1, "11111111-1111-4111-8111-111111111111"))
 	if first == sampler.forAccount(account(1, "11111111-1111-4111-8111-111111111111")) {
 		t.Fatal("a reimported account inherited the deleted incarnation's readings")
-	}
-}
-
-func TestPacingLimitInterpolatesConfiguredEnvelope(t *testing.T) {
-	t.Parallel()
-	checks := []struct{ minutes, want float64 }{
-		{0, 0}, {15, 12.5}, {30, 25}, {90, 45}, {150, 65}, {210, 82.5}, {270, 100}, {300, 100},
-	}
-	for _, check := range checks {
-		if got := pacingLimit(check.minutes, 25, 65, 100); got != check.want {
-			t.Errorf("pacingLimit(%v) = %v, want %v", check.minutes, got, check.want)
-		}
 	}
 }

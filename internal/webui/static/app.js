@@ -590,7 +590,7 @@ const SELECTION_LABELS = {
   header: "指定账号",
   account_uuid: "签名身份",
   sticky: "粘性会话",
-  sticky_overload_fallback: "粘性回退",
+  session_pending: "新会话并发请求",
   load_balance: "负载均衡",
   cache_affinity: "缓存亲和",
 };
