@@ -319,11 +319,20 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 				event.Selection = ""
 			}
 			status := http.StatusServiceUnavailable
+			clientMessage := "account selection failed"
 			var rateLimit localRateLimitError
 			if errors.As(err, &rateLimit) {
 				status = http.StatusTooManyRequests
 			}
-			fail(status, "api_error", err.Error())
+			var safeError selectionClientError
+			if errors.As(err, &safeError) {
+				clientMessage = safeError.ClientMessage()
+			}
+			event.Status = status
+			event.Error = err.Error()
+			slog.Warn("account selection failed", "request_id", requestID, "path", incoming.URL.Path,
+				"ingress", ingress, "status", status, "error", err)
+			writeError(w, status, "api_error", clientMessage)
 			return
 		}
 		releaseLoad = selected.release
@@ -332,11 +341,15 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		event.Selection = selected.Source
 		freshAccount, refreshErr := s.tokens.ensureFresh(incoming.Context(), selected.Account)
 		if refreshErr != nil {
+			slog.Warn("account authentication failed", "request_id", requestID, "path", incoming.URL.Path,
+				"ingress", ingress, "account", selected.Account.Alias, "error", refreshErr)
 			if cooldownErr := s.store.Cooldown(incoming.Context(), selected.Account.ID, "", time.Now().Add(time.Minute), "oauth_refresh_failed"); cooldownErr != nil {
 				slog.Warn("persist OAuth refresh cooldown", "request_id", requestID, "account", selected.Account.Alias, "error", cooldownErr)
 			}
 			if selected.Pinned || strings.TrimSpace(forcedAlias) != "" || attempt == 1 {
-				fail(http.StatusServiceUnavailable, "authentication_error", refreshErr.Error())
+				event.Status = http.StatusServiceUnavailable
+				event.Error = refreshErr.Error()
+				writeError(w, http.StatusServiceUnavailable, "authentication_error", "selected account authentication is temporarily unavailable")
 				return
 			}
 			releaseLoad()

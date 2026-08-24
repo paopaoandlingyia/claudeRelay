@@ -232,9 +232,23 @@ type accountSelector struct {
 	sessions           *sessionAdmissionTracker
 }
 
-type localRateLimitError struct{ message string }
+type selectionClientError interface {
+	ClientMessage() string
+}
 
-func (e localRateLimitError) Error() string { return e.message }
+type safeSelectionError struct {
+	diagnostic    string
+	clientMessage string
+}
+
+func (e safeSelectionError) Error() string         { return e.diagnostic }
+func (e safeSelectionError) ClientMessage() string { return e.clientMessage }
+
+type localRateLimitError struct{ safeSelectionError }
+
+func selectionFailed(clientMessage, format string, args ...any) error {
+	return safeSelectionError{diagnostic: fmt.Sprintf(format, args...), clientMessage: clientMessage}
+}
 
 func (s accountSelector) makeSelection(account store.Account, source string, pinned, persistSticky bool) selection {
 	release := func() {}
@@ -288,8 +302,11 @@ func (s accountSelector) admitSession(ctx context.Context, route requestRoute, s
 	return selected, true, nil
 }
 
-func locallyRateLimited(format string, args ...any) error {
-	return localRateLimitError{message: fmt.Sprintf(format, args...)}
+func locallyRateLimited(clientMessage, format string, args ...any) error {
+	return localRateLimitError{safeSelectionError{
+		diagnostic:    fmt.Sprintf(format, args...),
+		clientMessage: clientMessage,
+	}}
 }
 
 func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, forcedAlias string, excluded map[int64]bool) (selection, error) {
@@ -300,10 +317,11 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			return selection{}, err
 		}
 		if !found || !account.Enabled {
-			return selection{}, fmt.Errorf("requested account %q is unavailable", forcedAlias)
+			return selection{}, selectionFailed("requested account is unavailable", "requested account %q is unavailable", forcedAlias)
 		}
 		if !store.IngressMayUse(route.Ingress, account.Pool) {
-			return selection{}, fmt.Errorf("requested account %q is in the %s pool and cannot serve %s traffic",
+			return selection{}, selectionFailed("requested account cannot serve this traffic",
+				"requested account %q is in the %s pool and cannot serve %s traffic",
 				forcedAlias, account.Pool, route.Ingress)
 		}
 		cooling, err := s.store.IsCooling(ctx, account.ID, route.Model, time.Now())
@@ -311,11 +329,13 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			return selection{}, err
 		}
 		if cooling {
-			return selection{}, fmt.Errorf("requested account %q is temporarily cooling down", forcedAlias)
+			return selection{}, selectionFailed("requested account is temporarily cooling down",
+				"requested account %q is temporarily cooling down", forcedAlias)
 		}
 		selected, ok := s.makeLimitedSelection(account, "header", true, true)
 		if !ok {
-			return selection{}, locallyRateLimited("requested account %q reached its in-flight limit", forcedAlias)
+			return selection{}, locallyRateLimited("requested account reached its in-flight limit",
+				"requested account %q reached its in-flight limit", forcedAlias)
 		}
 		existing, err := s.wasBoundTo(ctx, route, account.ID)
 		if err != nil {
@@ -327,7 +347,8 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			return selection{}, err
 		}
 		if !admitted {
-			return selection{}, locallyRateLimited("requested account %q reached its active-session limit", forcedAlias)
+			return selection{}, locallyRateLimited("requested account reached its active-session limit",
+				"requested account %q reached its active-session limit", forcedAlias)
 		}
 		return selected, nil
 	}
@@ -380,7 +401,8 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 				if !cooling {
 					selected, ok := s.makeLimitedSelection(account, "session_pending", false, true)
 					if !ok {
-						return selection{}, locallyRateLimited("account %q reached its in-flight limit", account.Alias)
+						return selection{}, locallyRateLimited("the bound session reached its in-flight limit",
+							"account %q reached its in-flight limit", account.Alias)
 					}
 					selected, admitted, admissionErr := s.admitSession(ctx, route, selected, false)
 					if admissionErr != nil {
@@ -409,7 +431,8 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if found && !cooling && !excluded[account.ID] {
 			selected, ok := s.makeLimitedSelection(account, "sticky", false, true)
 			if !ok {
-				return selection{}, locallyRateLimited("account %q reached its in-flight limit", account.Alias)
+				return selection{}, locallyRateLimited("the bound session reached its in-flight limit",
+					"account %q reached its in-flight limit", account.Alias)
 			}
 			selected, admitted, admissionErr := s.admitSession(ctx, route, selected, true)
 			if admissionErr != nil {
@@ -480,8 +503,10 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	}
 	for _, account := range accounts {
 		if !excluded[account.ID] {
-			return selection{}, locallyRateLimited("all Claude subscription accounts reached a local session or in-flight limit")
+			const message = "all eligible accounts reached a local session or in-flight limit"
+			return selection{}, locallyRateLimited(message, message)
 		}
 	}
-	return selection{}, fmt.Errorf("no healthy Claude subscription account is available for the %s ingress", route.Ingress)
+	return selection{}, selectionFailed("no healthy account is currently available",
+		"no healthy Claude subscription account is available for the %s ingress", route.Ingress)
 }

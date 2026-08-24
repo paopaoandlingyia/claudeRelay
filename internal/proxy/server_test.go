@@ -251,7 +251,8 @@ func TestForcedAccountCannotEnterTheOfficialPoolFromCompatible(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable ||
-		!strings.Contains(recorder.Body.String(), "cannot serve compatible traffic") {
+		!strings.Contains(recorder.Body.String(), "requested account cannot serve this traffic") ||
+		strings.Contains(recorder.Body.String(), "default") {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	if upstreamCalls != 0 {
@@ -631,6 +632,35 @@ func TestForcedAccountHeaderSelectsAliasAndIsNotForwarded(t *testing.T) {
 	}
 }
 
+func TestAuthenticationFailureDoesNotExposeAccountAlias(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+	account, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("default account found=%v err=%v", found, err)
+	}
+	credential := account.Credential
+	credential.ExpiresAt = time.Now().Add(-time.Hour).Format(time.RFC3339)
+	credential.RefreshToken = ""
+	if _, err := server.store.ImportAccount(t.Context(), account.Alias, credential); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.SetAccountEnabled(t.Context(), account.Alias, true); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	request.Header.Set(accountHeader, account.Alias)
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(recorder.Body.String(), "authentication is temporarily unavailable") ||
+		strings.Contains(recorder.Body.String(), account.Alias) {
+		t.Fatalf("authentication failure exposed account identity: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestStickySessionKeepsSelectedAccount(t *testing.T) {
 	t.Parallel()
 	var authorizations []string
@@ -694,6 +724,9 @@ func TestStickyOverloadReturns429WithoutSwitchingAccount(t *testing.T) {
 	first := send()
 	if first.Code != http.StatusTooManyRequests || len(authorizations) != 0 {
 		t.Fatalf("sticky overload status=%d authorizations=%#v body=%s", first.Code, authorizations, first.Body.String())
+	}
+	if strings.Contains(first.Body.String(), primary.Alias) || !strings.Contains(first.Body.String(), "bound session reached its in-flight limit") {
+		t.Fatalf("sticky overload exposed account identity: %s", first.Body.String())
 	}
 	bound, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountPoolCompatible, time.Now())
 	if err != nil || !found || bound.ID != primary.ID {
