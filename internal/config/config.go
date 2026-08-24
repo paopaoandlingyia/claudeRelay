@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultMaxRequestBytes             int64 = 32 << 20
-	DefaultMaxInflightPerAccount             = 3
+	DefaultMaxInflightPerAccount             = 8
 	DefaultMaxActiveSessionsPerAccount       = 5
 	defaultRequestLogSize                    = 500
 	maxRequestLogSize                        = 10000

@@ -53,7 +53,7 @@ new sessions cannot all pass a stale count. Concurrent first requests for one ro
 reservation and account affinity. Existing bindings remain usable even when the account is at the
 session limit; prefix-only cache affinities never enter session admission.
 
-In-process upstream requests have a hard configurable limit (`max_inflight_per_account`, three by
+In-process upstream requests have a hard configurable limit (`max_inflight_per_account`, eight by
 default). New sessions may try another eligible account, but an existing sticky session never
 switches accounts because of either local control. A local limit returns `429`; `503` is reserved
 for unavailable account capacity such as disabled or cooling accounts.

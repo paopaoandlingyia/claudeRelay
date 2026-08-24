@@ -68,7 +68,7 @@ $env:CLAUDE_RELAY_ADMIN_API_KEY = "replace-with-a-different-long-random-key"
 Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a URL such as
 `http://127.0.0.1:7890` when upstream traffic must use a local proxy.
 
-`max_inflight_per_account` is a per-account hard in-process request limit, set to `3` by default.
+`max_inflight_per_account` is a per-account hard in-process request limit, set to `8` by default.
 `max_active_sessions_per_account` admits at most `5` recently active, explicitly identified client
 sessions per account by default. Cache-prefix affinity without a session ID does not consume a
 session slot. A new session may select another eligible account when either limit is full; an

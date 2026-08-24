@@ -84,7 +84,7 @@ The image contains only non-secret defaults. Compose passes these supported runt
 | `CLAUDE_RELAY_ADMIN_API_KEY` | Administration key for WebUI, OAuth, and account state | Required and must differ |
 | `CLAUDE_RELAY_UPSTREAM_PROXY` | Optional outbound HTTP(S) proxy | Empty |
 | `CLAUDE_RELAY_MAX_REQUEST_BYTES` | Maximum request body size | `33554432` |
-| `CLAUDE_RELAY_MAX_INFLIGHT_PER_ACCOUNT` | Hard per-account in-flight request limit | `3` |
+| `CLAUDE_RELAY_MAX_INFLIGHT_PER_ACCOUNT` | Hard per-account in-flight request limit | `8` |
 | `CLAUDE_RELAY_MAX_ACTIVE_SESSIONS_PER_ACCOUNT` | New-session admission limit per account | `5` |
 | `CLAUDE_RELAY_AUTO_REFRESH_ENABLED` | Emergency global OAuth refresh switch | `true` |
 | `CLAUDE_RELAY_BIND_ADDRESS` | Host-side published address | `127.0.0.1` |
