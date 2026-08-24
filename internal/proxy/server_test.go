@@ -1003,6 +1003,170 @@ func TestRoutingPrefixIgnoresContentAfterCacheBreakpoint(t *testing.T) {
 	if first.SelectionKey != second.SelectionKey {
 		t.Fatalf("cache prefix keys differ: %q != %q", first.SelectionKey, second.SelectionKey)
 	}
+	if first.StickyTTL != defaultCacheStickyTTL || second.StickyTTL != defaultCacheStickyTTL {
+		t.Fatalf("default cache sticky TTLs = %v, %v", first.StickyTTL, second.StickyTTL)
+	}
+}
+
+func TestRoutingStickyTTLSeparatesSessionsCachesAndFallbacks(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		body    string
+		headers http.Header
+		wantTTL time.Duration
+	}{
+		{
+			name:    "explicit session remains one hour",
+			body:    `{"model":"m","messages":[{"role":"user","content":"hello"}]}`,
+			headers: http.Header{"X-Claude-Session-Id": []string{"session-a"}},
+			wantTTL: sessionStickyTTL,
+		},
+		{
+			name:    "cache breakpoint defaults to five minutes",
+			body:    `{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[]}`,
+			wantTTL: defaultCacheStickyTTL,
+		},
+		{
+			name:    "request level automatic cache defaults to five minutes",
+			body:    `{"model":"m","cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":"hello"}]}`,
+			wantTTL: defaultCacheStickyTTL,
+		},
+		{
+			name:    "request level automatic cache follows one hour declaration",
+			body:    `{"model":"m","cache_control":{"type":"ephemeral","ttl":"1h"},"messages":[{"role":"user","content":"hello"}]}`,
+			wantTTL: time.Hour,
+		},
+		{
+			name: "longest included cache lifetime wins",
+			body: `{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral","ttl":"1h"}}],` +
+				`"messages":[{"role":"user","content":[{"type":"text","text":"turn","cache_control":{"type":"ephemeral","ttl":"5m"}}]}]}`,
+			wantTTL: time.Hour,
+		},
+		{
+			name:    "ordinary anchor is selection only",
+			body:    `{"model":"m","system":"stable","messages":[{"role":"user","content":"hello"}]}`,
+			wantTTL: 0,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			route, err := deriveRequestRoute([]byte(test.body), test.headers, store.AccountPoolCompatible)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if route.StickyTTL != test.wantTTL {
+				t.Fatalf("sticky TTL = %v, want %v", route.StickyTTL, test.wantTTL)
+			}
+			if route.ConversationKey == "" || route.SelectionKey == "" {
+				t.Fatalf("route lost stable identity: %#v", route)
+			}
+		})
+	}
+}
+
+func TestStickyTTLAtCompletionUsesCacheObservationTime(t *testing.T) {
+	t.Parallel()
+	observedAt := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
+	cacheRoute := requestRoute{ConversationKey: "prefix:cache", StickyTTL: defaultCacheStickyTTL}
+	if got := stickyTTLAtCompletion(cacheRoute, observedAt, observedAt.Add(2*time.Minute)); got != 3*time.Minute {
+		t.Fatalf("cache TTL after stream = %v, want 3m", got)
+	}
+	if got := stickyTTLAtCompletion(cacheRoute, observedAt, observedAt.Add(6*time.Minute)); got != 0 {
+		t.Fatalf("expired cache TTL after stream = %v, want 0", got)
+	}
+	sessionRoute := requestRoute{ConversationKey: "session:explicit", StickyTTL: sessionStickyTTL}
+	if got := stickyTTLAtCompletion(sessionRoute, observedAt, observedAt.Add(10*time.Minute)); got != sessionStickyTTL {
+		t.Fatalf("session TTL after stream = %v, want %v", got, sessionStickyTTL)
+	}
+}
+
+func TestOnlyDeclaredAffinityPersistsAfterSuccess(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	tests := []struct {
+		name          string
+		body          string
+		foundAfter    time.Duration
+		wantFound     bool
+		notFoundAfter time.Duration
+	}{
+		{
+			name:      "ordinary fallback is not persisted",
+			body:      `{"model":"m","system":"no-cache","messages":[{"role":"user","content":"fallback"}]}`,
+			wantFound: false,
+		},
+		{
+			name:          "default cache persists within five minutes",
+			body:          `{"model":"m","system":[{"type":"text","text":"five","cache_control":{"type":"ephemeral"}}],"messages":[]}`,
+			foundAfter:    4 * time.Minute,
+			wantFound:     true,
+			notFoundAfter: 6 * time.Minute,
+		},
+		{
+			name:          "one hour cache persists beyond five minutes",
+			body:          `{"model":"m","system":[{"type":"text","text":"hour","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[]}`,
+			foundAfter:    30 * time.Minute,
+			wantFound:     true,
+			notFoundAfter: 61 * time.Minute,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			route, err := deriveRequestRoute([]byte(test.body), nil, store.AccountPoolCompatible)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(test.body))
+			request.Header.Set("x-api-key", "downstream-key")
+			server.routes().ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			_, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey,
+				store.AccountPoolCompatible, time.Now().Add(test.foundAfter))
+			if err != nil || found != test.wantFound {
+				t.Fatalf("binding found=%v want=%v err=%v route=%#v", found, test.wantFound, err, route)
+			}
+			if test.notFoundAfter > 0 {
+				_, found, err = server.store.BoundAccount(t.Context(), route.ConversationKey,
+					store.AccountPoolCompatible, time.Now().Add(test.notFoundAfter))
+				if err != nil || found {
+					t.Fatalf("expired binding found=%v err=%v route=%#v", found, err, route)
+				}
+			}
+		})
+	}
+}
+
+func TestOrdinaryFallbackIgnoresLegacyPrefixBinding(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "http://127.0.0.1:1", 4096)
+	route, err := deriveRequestRoute([]byte(`{"model":"m","messages":[{"role":"user","content":"legacy"}]}`), nil, store.AccountPoolCompatible)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("default account found=%v err=%v", found, err)
+	}
+	if err := server.store.Bind(t.Context(), route.ConversationKey, account.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := server.selector.selectAccount(t.Context(), route, "", map[int64]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer selected.release()
+	defer selected.releaseSession()
+	if selected.Source == "sticky" {
+		t.Fatal("ordinary fallback honored a legacy persisted binding")
+	}
 }
 
 func TestAdminAccountLifecycleDoesNotExposeTokens(t *testing.T) {

@@ -464,12 +464,28 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		event.Error = "response interrupted"
 		return
 	}
-	if response.StatusCode < 400 && selected.PersistSticky {
-		if bindErr := s.store.Bind(incoming.Context(), route.ConversationKey, selected.Account.ID, stickySessionTTL); bindErr != nil {
-			slog.Warn("persist session binding", "request_id", requestID, "error", bindErr)
+	if response.StatusCode < 400 {
+		if ttl := stickyTTLAtCompletion(route, observedAt, time.Now()); ttl > 0 {
+			if bindErr := s.store.Bind(incoming.Context(), route.ConversationKey, selected.Account.ID, ttl); bindErr != nil {
+				slog.Warn("persist routing affinity", "request_id", requestID, "ttl", ttl, "error", bindErr)
+			}
 		}
 	}
 	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
+}
+
+func stickyTTLAtCompletion(route requestRoute, observedAt, completedAt time.Time) time.Duration {
+	if route.StickyTTL <= 0 {
+		return 0
+	}
+	if isExplicitSessionRoute(route.ConversationKey) {
+		return route.StickyTTL
+	}
+	remaining := observedAt.Add(route.StickyTTL).Sub(completedAt)
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
 }
 
 func (s *Server) doUpstream(incoming *http.Request, body []byte, accessToken string) (*http.Response, error) {

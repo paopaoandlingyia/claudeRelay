@@ -71,7 +71,9 @@ Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a 
 `max_inflight_per_account` is a per-account hard in-process request limit, set to `8` by default.
 `max_active_sessions_per_account` admits at most `5` recently active, explicitly identified client
 sessions per account by default. Cache-prefix affinity without a session ID does not consume a
-session slot. A new session may select another eligible account when either limit is full; an
+session slot. Explicit client sessions retain sliding one-hour affinity; declared cache prefixes
+retain affinity for their five-minute default or explicit one-hour lifetime. A new session may
+select another eligible account when either limit is full; an
 existing sticky session never switches accounts because of local pressure. If its account is full,
 or no account can admit a new session, the relay returns `429`. Anthropic's five-hour utilization is
 sampled for the console and usage estimates only; it is not a routing or admission input. Both
@@ -234,9 +236,13 @@ The relay first honors an explicit private account alias, then an account UUID a
 official-client metadata, then a persisted sticky binding. New explicitly identified sessions use
 the healthy account with the lowest in-process active-request count that still has both an in-flight
 slot and an active-session slot; the existing cache-affinity hash breaks ties. Cache affinity is
-derived from the caller's existing cache breakpoint; requests without one use tools, system, and
-the first user message as a stable anchor. This prefix remains sticky for cache reuse but is not
-treated as proof of a distinct client session.
+derived from the caller's existing request-level cache declaration or block-level breakpoint;
+requests without one use tools, system, and the first user message as a stable selection anchor. An
+explicit session binding has a sliding one-hour lifetime. A cache-prefix binding follows the longest
+included `cache_control` lifetime: five minutes when `ttl` is omitted and one hour for
+`ttl: "1h"`. A content-only fallback is not
+persisted, so it remains deterministic when account loads tie but can rebalance when capacity
+differs. Cache-prefix affinity is never treated as proof of a distinct client session.
 
 An overloaded sticky request returns `429` without deleting, migrating, or temporarily bypassing
 its binding. The in-flight counter and provisional new-session admissions are process-local because

@@ -13,13 +13,14 @@ Account selection uses the following precedence:
 1. `X-Claude-Relay-Account` explicit alias override.
 2. `account_uuid` from an official client's structured `metadata.user_id` when it matches an
    imported account.
-3. A successful session binding with a sliding one-hour lifetime.
+3. A successful explicit-session or declared-cache binding while its respective lifetime remains.
 4. The least-loaded enabled, non-cooling account that can admit a new session; rendezvous hashing
    of the cache-prefix key breaks load ties.
 
-The cache-prefix key reads existing Anthropic `cache_control` breakpoints without rewriting them.
-When no breakpoint exists, tools, system, and the first user message form the stable anchor. Route
-keys stored in SQLite are hashes and do not contain raw prompts or client session identifiers.
+The cache-prefix key reads existing Anthropic request-level or block-level `cache_control` without
+rewriting it. When no cache declaration exists, tools, system, and the first user message form a
+deterministic selection anchor but are not persisted as a binding. Route keys stored in SQLite are
+hashes and do not contain raw prompts or client session identifiers.
 
 Each account owns its OAuth tokens, stable account/device attribution identity, enabled state, and
 model-specific cooldowns. Selection therefore occurs before minimum subscription attribution is
@@ -32,8 +33,8 @@ Transient failures permit at most one alternate account. Explicit account overri
 
 The console distinguishes three account signals that answer different operational questions:
 
-- Sticky bindings are successful routing affinities retained for their sliding one-hour lifetime;
-  they can originate from either an explicit client session ID or a cache-prefix key.
+- Sticky bindings are successful routing affinities. Explicit session IDs have a sliding one-hour
+  lifetime; declared cache prefixes follow their five-minute or one-hour cache lifetime.
 - Active sessions are only explicit session-ID bindings whose last successful request was within
   five minutes. A shared prompt prefix is useful affinity evidence, not proof of a user session.
 - In-flight requests are the process-local reservations currently held through the end of the
@@ -43,6 +44,22 @@ The five-minute view filters the existing `session_bindings` route-key namespace
 `updated_at`; it adds no session table, write, or background worker. It is the persisted signal used
 for explicit new-session admission, while prefix-only requests retain cache affinity without
 consuming session capacity. In-flight requests remain a separate process-local control.
+
+## 2026-08-24: declared cache lifetime bounds prefix affinity
+
+Session identity and cache evidence have different lifetimes. An explicit session ID remains bound
+for one sliding hour so a paused client can resume on the same account. Without a session ID, only
+an actual request-level or block-level `cache_control` declaration earns a persisted binding. An
+omitted cache `ttl` means five minutes; any included `ttl: "1h"` extends the account-level prefix
+affinity to one hour because switching accounts would lose every cached segment on the original
+account.
+
+Tools, system, and the first user message still form a stable fallback selection hash when no cache
+breakpoint exists. That hash also seeds relay-generated upstream session metadata, but it is never
+read from or written to `session_bindings`: equal account loads remain deterministic, while real
+capacity differences can rebalance the request. Cache affinity starts when upstream response
+headers arrive rather than when a possibly long SSE stream finishes, so the binding cannot outlive
+the declared upstream cache merely because generation was slow.
 
 ## 2026-08-24: strict session admission without five-hour pacing
 

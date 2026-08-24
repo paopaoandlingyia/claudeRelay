@@ -706,11 +706,16 @@ func (s *Store) Bind(ctx context.Context, routeKey string, accountID int64, ttl 
 	}
 	now := time.Now()
 	s.pruneExpiredBindings(ctx, now)
+	// A shorter declaration cannot invalidate a longer cache that still exists
+	// on the same account. Switching accounts starts a fresh lifetime because
+	// the new account cannot inherit the old account's cached prefix.
 	_, err := s.db.ExecContext(ctx, `INSERT INTO session_bindings(route_key,account_id,expires_at,updated_at)
-		VALUES(?,?,?,?) ON CONFLICT(route_key) DO UPDATE SET account_id=excluded.account_id,
-		expires_at=excluded.expires_at,updated_at=excluded.updated_at`, routeKey, accountID, now.Add(ttl).Unix(), now.Unix())
+		VALUES(?,?,?,?) ON CONFLICT(route_key) DO UPDATE SET
+		expires_at=CASE WHEN session_bindings.account_id=excluded.account_id
+			THEN MAX(session_bindings.expires_at,excluded.expires_at) ELSE excluded.expires_at END,
+		account_id=excluded.account_id,updated_at=excluded.updated_at`, routeKey, accountID, now.Add(ttl).Unix(), now.Unix())
 	if err != nil {
-		return fmt.Errorf("bind session: %w", err)
+		return fmt.Errorf("bind routing affinity: %w", err)
 	}
 	return nil
 }

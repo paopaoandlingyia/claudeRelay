@@ -171,6 +171,38 @@ func TestExpiredBindingsAreIgnoredBeforePruning(t *testing.T) {
 	}
 }
 
+func TestBindingKeepsLongerAffinityOnlyOnTheSameAccount(t *testing.T) {
+	t.Parallel()
+	database := newTestStore(t)
+	first := importTestAccount(t, database, "first", "11111111-1111-4111-8111-111111111111")
+	second := importTestAccount(t, database, "second", "22222222-2222-4222-8222-222222222222")
+	for _, account := range []Account{first, second} {
+		if _, err := database.SetAccountEnabled(t.Context(), account.Alias, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.Bind(t.Context(), "prefix:cache", first.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Bind(t.Context(), "prefix:cache", first.ID, 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	bound, found, err := database.BoundAccount(t.Context(), "prefix:cache", AccountPoolCompatible, time.Now().Add(30*time.Minute))
+	if err != nil || !found || bound.ID != first.ID {
+		t.Fatalf("short refresh reduced same-account affinity: bound=%#v found=%v err=%v", bound, found, err)
+	}
+	if err := database.Bind(t.Context(), "prefix:cache", second.ID, 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := database.BoundAccount(t.Context(), "prefix:cache", AccountPoolCompatible, time.Now().Add(30*time.Minute)); err != nil || found {
+		t.Fatalf("account switch inherited old affinity: found=%v err=%v", found, err)
+	}
+	bound, found, err = database.BoundAccount(t.Context(), "prefix:cache", AccountPoolCompatible, time.Now())
+	if err != nil || !found || bound.ID != second.ID {
+		t.Fatalf("new account binding unavailable: bound=%#v found=%v err=%v", bound, found, err)
+	}
+}
+
 func TestImportBindingAndCooldown(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "relay.db")

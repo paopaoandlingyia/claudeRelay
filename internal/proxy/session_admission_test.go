@@ -131,6 +131,7 @@ func TestNewSessionsUseAnotherAccountWhenPendingSlotIsFull(t *testing.T) {
 	first, err := server.selector.selectAccount(t.Context(), requestRoute{
 		ConversationKey: "session:route-a",
 		SelectionKey:    "selection-a",
+		StickyTTL:       sessionStickyTTL,
 		Ingress:         store.AccountPoolCompatible,
 	}, "", map[int64]bool{})
 	if err != nil {
@@ -142,6 +143,7 @@ func TestNewSessionsUseAnotherAccountWhenPendingSlotIsFull(t *testing.T) {
 	second, err := server.selector.selectAccount(t.Context(), requestRoute{
 		ConversationKey: "session:route-b",
 		SelectionKey:    "selection-b",
+		StickyTTL:       sessionStickyTTL,
 		Ingress:         store.AccountPoolCompatible,
 	}, "", map[int64]bool{})
 	if err != nil {

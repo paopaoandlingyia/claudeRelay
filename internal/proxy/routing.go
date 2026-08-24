@@ -15,16 +15,22 @@ import (
 )
 
 const (
-	accountHeader      = "X-Claude-Relay-Account"
-	stickySessionTTL   = time.Hour
-	sessionRoutePrefix = "session:"
+	accountHeader         = "X-Claude-Relay-Account"
+	sessionStickyTTL      = time.Hour
+	defaultCacheStickyTTL = 5 * time.Minute
+	sessionRoutePrefix    = "session:"
 )
 
 type requestRoute struct {
+	// ConversationKey remains a stable attribution seed for every request.
+	// Selectors consult or persist it only when StickyTTL is positive.
 	ConversationKey string
 	SelectionKey    string
-	AccountUUID     string
-	Model           string
+	// StickyTTL is one hour for an explicit client session, the declared cache
+	// lifetime for a cache prefix, and zero for a content-only fallback.
+	StickyTTL   time.Duration
+	AccountUUID string
+	Model       string
 	// Ingress is the pool name of the API key that authenticated the request. It
 	// scopes routing keys and decides which account pools may be selected.
 	Ingress string
@@ -61,11 +67,17 @@ func deriveRequestRoute(body []byte, headers http.Header, ingress string) (reque
 	scope := shortHash(ingress)
 	if session != "" {
 		route.ConversationKey = sessionRoutePrefix + shortHash(scope+"\x00"+session)
+		route.StickyTTL = sessionStickyTTL
 	}
 
-	prefix := cachePrefix(root)
+	prefix, cacheTTL := cachePrefix(root)
 	if prefix == nil {
 		prefix = ordinaryAnchor(root)
+	}
+	// Request-level automatic caching has no explicit content breakpoint. Keep
+	// the stable ordinary anchor, but still honor its declared cache lifetime.
+	if topLevelTTL := declaredCacheStickyTTL(root); topLevelTTL > cacheTTL {
+		cacheTTL = topLevelTTL
 	}
 	raw, err := json.Marshal(prefix)
 	if err != nil {
@@ -74,6 +86,7 @@ func deriveRequestRoute(body []byte, headers http.Header, ingress string) (reque
 	route.SelectionKey = "prefix:" + shortHash(scope+"\x00"+route.Model+"\x00"+string(raw))
 	if route.ConversationKey == "" {
 		route.ConversationKey = route.SelectionKey
+		route.StickyTTL = cacheTTL
 	}
 	return route, nil
 }
@@ -102,21 +115,72 @@ func firstSessionHeader(headers http.Header) string {
 	return ""
 }
 
-func cachePrefix(root map[string]any) any {
+func cachePrefix(root map[string]any) (any, time.Duration) {
 	tools, _ := root["tools"].([]any)
 	system := normalizeRoutingBlocks(root["system"])
 	messages, _ := root["messages"].([]any)
 
 	if prefix, ok := messagePrefixThroughCacheControl(messages); ok {
-		return map[string]any{"tools": tools, "system": system, "messages": prefix}
+		return map[string]any{"tools": tools, "system": system, "messages": prefix},
+			maxCacheStickyTTL(tools, system, prefix)
 	}
 	if prefix, ok := blocksThroughCacheControl(system); ok {
-		return map[string]any{"tools": tools, "system": prefix}
+		return map[string]any{"tools": tools, "system": prefix}, maxCacheStickyTTL(tools, prefix, nil)
 	}
 	if prefix, ok := blocksThroughCacheControl(tools); ok {
-		return map[string]any{"tools": prefix}
+		return map[string]any{"tools": prefix}, maxCacheStickyTTL(prefix, nil, nil)
 	}
-	return nil
+	return nil, 0
+}
+
+// maxCacheStickyTTL returns the longest declared lifetime among the cache
+// breakpoints whose content contributes to one routing prefix. Anthropic's
+// omitted ttl is the five-minute default; only an explicit 1h declaration
+// extends account affinity to an hour.
+func maxCacheStickyTTL(tools, system, messages []any) time.Duration {
+	longest := time.Duration(0)
+	visit := func(value any) {
+		if ttl := declaredCacheStickyTTL(value); ttl > longest {
+			longest = ttl
+		}
+	}
+	for _, block := range tools {
+		visit(block)
+	}
+	for _, block := range system {
+		visit(block)
+	}
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if content, ok := message["content"].([]any); ok {
+			for _, block := range content {
+				visit(block)
+			}
+			continue
+		}
+		visit(message["content"])
+	}
+	return longest
+}
+
+func declaredCacheStickyTTL(value any) time.Duration {
+	block, ok := value.(map[string]any)
+	if !ok {
+		return 0
+	}
+	raw, exists := block["cache_control"]
+	if !exists {
+		return 0
+	}
+	cacheControl, _ := raw.(map[string]any)
+	ttl, _ := cacheControl["ttl"].(string)
+	if strings.EqualFold(strings.TrimSpace(ttl), "1h") {
+		return time.Hour
+	}
+	return defaultCacheStickyTTL
 }
 
 func ordinaryAnchor(root map[string]any) any {
@@ -203,12 +267,7 @@ func cloneMap(source map[string]any) map[string]any {
 }
 
 func hasCacheControl(value any) bool {
-	block, ok := value.(map[string]any)
-	if !ok {
-		return false
-	}
-	_, exists := block["cache_control"]
-	return exists
+	return declaredCacheStickyTTL(value) > 0
 }
 
 func shortHash(value string) string {
@@ -220,7 +279,6 @@ type selection struct {
 	Account        store.Account
 	Pinned         bool
 	Source         string
-	PersistSticky  bool
 	release        func()
 	releaseSession func()
 }
@@ -250,33 +308,32 @@ func selectionFailed(clientMessage, format string, args ...any) error {
 	return safeSelectionError{diagnostic: fmt.Sprintf(format, args...), clientMessage: clientMessage}
 }
 
-func (s accountSelector) makeSelection(account store.Account, source string, pinned, persistSticky bool) selection {
+func (s accountSelector) makeSelection(account store.Account, source string, pinned bool) selection {
 	release := func() {}
 	if s.load != nil {
 		release = s.load.reserve(account.ID)
 	}
 	return selection{
-		Account:       account,
-		Pinned:        pinned,
-		Source:        source,
-		PersistSticky: persistSticky,
-		release:       release,
+		Account: account,
+		Pinned:  pinned,
+		Source:  source,
+		release: release,
 	}
 }
 
-func (s accountSelector) makeLimitedSelection(account store.Account, source string, pinned, persistSticky bool) (selection, bool) {
+func (s accountSelector) makeLimitedSelection(account store.Account, source string, pinned bool) (selection, bool) {
 	if s.load == nil {
-		return s.makeSelection(account, source, pinned, persistSticky), true
+		return s.makeSelection(account, source, pinned), true
 	}
 	release, _, ok := s.load.reserveBelow(account.ID, s.maxInflightPerAcct)
 	if !ok {
 		return selection{}, false
 	}
-	return selection{Account: account, Pinned: pinned, Source: source, PersistSticky: persistSticky, release: release}, true
+	return selection{Account: account, Pinned: pinned, Source: source, release: release}, true
 }
 
 func (s accountSelector) wasBoundTo(ctx context.Context, route requestRoute, accountID int64) (bool, error) {
-	if route.ConversationKey == "" {
+	if route.StickyTTL <= 0 || route.ConversationKey == "" {
 		return false, nil
 	}
 	bound, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.Ingress, time.Now())
@@ -332,7 +389,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			return selection{}, selectionFailed("requested account is temporarily cooling down",
 				"requested account %q is temporarily cooling down", forcedAlias)
 		}
-		selected, ok := s.makeLimitedSelection(account, "header", true, true)
+		selected, ok := s.makeLimitedSelection(account, "header", true)
 		if !ok {
 			return selection{}, locallyRateLimited("requested account reached its in-flight limit",
 				"requested account %q reached its in-flight limit", forcedAlias)
@@ -366,7 +423,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			selected, ok := s.makeLimitedSelection(account, "account_uuid", false, true)
+			selected, ok := s.makeLimitedSelection(account, "account_uuid", false)
 			if !ok {
 				found = false
 			} else {
@@ -399,7 +456,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 					return selection{}, coolingErr
 				}
 				if !cooling {
-					selected, ok := s.makeLimitedSelection(account, "session_pending", false, true)
+					selected, ok := s.makeLimitedSelection(account, "session_pending", false)
 					if !ok {
 						return selection{}, locallyRateLimited("the bound session reached its in-flight limit",
 							"account %q reached its in-flight limit", account.Alias)
@@ -416,7 +473,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		}
 	}
 
-	if route.ConversationKey != "" {
+	if route.StickyTTL > 0 && route.ConversationKey != "" {
 		account, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.Ingress, time.Now())
 		if err != nil {
 			return selection{}, err
@@ -429,7 +486,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			selected, ok := s.makeLimitedSelection(account, "sticky", false, true)
+			selected, ok := s.makeLimitedSelection(account, "sticky", false)
 			if !ok {
 				return selection{}, locallyRateLimited("the bound session reached its in-flight limit",
 					"account %q reached its in-flight limit", account.Alias)
@@ -459,10 +516,9 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 				break
 			}
 			selected, admitted, admissionErr := s.admitSession(ctx, route, selection{
-				Account:       account,
-				Source:        "load_balance",
-				PersistSticky: true,
-				release:       release,
+				Account: account,
+				Source:  "load_balance",
+				release: release,
 			}, false)
 			if admissionErr != nil {
 				return selection{}, admissionErr
@@ -491,7 +547,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			if chosen == nil {
 				break
 			}
-			selected, admitted, admissionErr := s.admitSession(ctx, route, s.makeSelection(*chosen, "cache_affinity", false, true), false)
+			selected, admitted, admissionErr := s.admitSession(ctx, route, s.makeSelection(*chosen, "cache_affinity", false), false)
 			if admissionErr != nil {
 				return selection{}, admissionErr
 			}
