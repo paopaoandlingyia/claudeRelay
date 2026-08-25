@@ -13,6 +13,7 @@ const state = {
   requests: [],
   usage: null,
   prices: [],
+  expandedFiveHourAccounts: new Set(),
   autoRefreshEnabled: true,
   panel: "accounts",
   pendingOAuth: readJSON(sessionStorage, "claudeRelayPendingOAuth"),
@@ -142,7 +143,6 @@ function render() {
   renderAccounts();
   renderRequests();
   renderConnect();
-  renderUsage();
 }
 
 function renderHealth(healthy) {
@@ -407,26 +407,31 @@ function renderUsage() {
   const estimateBody = $("usageEstimatesBody");
   estimateBody.replaceChildren();
   for (const estimate of estimates.slice().reverse()) {
+    const account = estimate.account || "";
     const models = Array.isArray(estimate.by_model) ? estimate.by_model : [];
     const row = document.createElement("tr");
-    const accountCell = cell(document.createTextNode(estimate.account || "—"));
+    const accountCell = cell(document.createTextNode(account || "—"));
     let detailRow = null;
     if (models.length > 0) {
+      const expanded = state.expandedFiveHourAccounts.has(account);
       const toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "usage-estimate-toggle";
-      toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-expanded", String(expanded));
       const indicator = document.createElement("span");
       indicator.className = "usage-estimate-indicator";
       indicator.textContent = "›";
-      toggle.append(indicator, document.createTextNode(estimate.account || "—"));
+      toggle.append(indicator, document.createTextNode(account || "—"));
       accountCell.replaceChildren(toggle);
 
       detailRow = buildFiveHourModelDetails(estimate, models);
+      detailRow.classList.toggle("hidden", !expanded);
       toggle.addEventListener("click", () => {
-        const expanded = toggle.getAttribute("aria-expanded") !== "true";
-        toggle.setAttribute("aria-expanded", String(expanded));
-        detailRow.classList.toggle("hidden", !expanded);
+        const nextExpanded = toggle.getAttribute("aria-expanded") !== "true";
+        toggle.setAttribute("aria-expanded", String(nextExpanded));
+        detailRow.classList.toggle("hidden", !nextExpanded);
+        if (nextExpanded) state.expandedFiveHourAccounts.add(account);
+        else state.expandedFiveHourAccounts.delete(account);
       });
     }
     const observedCost = numberCell(formatUSD(estimate.observed_cost_usd || 0));
