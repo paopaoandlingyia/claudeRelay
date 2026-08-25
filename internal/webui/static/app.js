@@ -407,15 +407,43 @@ function renderUsage() {
   const estimateBody = $("usageEstimatesBody");
   estimateBody.replaceChildren();
   for (const estimate of estimates.slice().reverse()) {
+    const models = Array.isArray(estimate.by_model) ? estimate.by_model : [];
     const row = document.createElement("tr");
+    const accountCell = cell(document.createTextNode(estimate.account || "—"));
+    let detailRow = null;
+    if (models.length > 0) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "usage-estimate-toggle";
+      toggle.setAttribute("aria-expanded", "false");
+      const indicator = document.createElement("span");
+      indicator.className = "usage-estimate-indicator";
+      indicator.textContent = "›";
+      toggle.append(indicator, document.createTextNode(estimate.account || "—"));
+      accountCell.replaceChildren(toggle);
+
+      detailRow = buildFiveHourModelDetails(estimate, models);
+      toggle.addEventListener("click", () => {
+        const expanded = toggle.getAttribute("aria-expanded") !== "true";
+        toggle.setAttribute("aria-expanded", String(expanded));
+        detailRow.classList.toggle("hidden", !expanded);
+      });
+    }
+    const observedCost = numberCell(formatUSD(estimate.observed_cost_usd || 0));
+    const fullWindowCost = numberCell(formatUSD(estimate.full_window_usd || 0));
+    if (estimate.unpriced) {
+      observedCost.title = "不含未定价模型";
+      fullWindowCost.title = "不含未定价模型";
+    }
     row.append(
-      cell(document.createTextNode(estimate.account || "—")),
+      accountCell,
       cell(document.createTextNode(`${new Date(estimate.from).toLocaleString()} → ${new Date(estimate.to).toLocaleString()}`)),
       numberCell(`${Number(estimate.used_percent_delta || 0).toFixed(1)}%`),
-      numberCell(formatUSD(estimate.observed_cost_usd || 0)),
-      numberCell(formatUSD(estimate.full_window_usd || 0)),
+      observedCost,
+      fullWindowCost,
     );
     estimateBody.appendChild(row);
+    if (detailRow) estimateBody.appendChild(detailRow);
   }
 
   const pricesBody = $("pricesBody");
@@ -434,6 +462,49 @@ function renderUsage() {
     );
     pricesBody.appendChild(row);
   }
+}
+
+function buildFiveHourModelDetails(estimate, models) {
+  const row = document.createElement("tr");
+  row.className = "usage-estimate-details hidden";
+  const wrapperCell = document.createElement("td");
+  wrapperCell.colSpan = 5;
+  const wrapper = document.createElement("div");
+  wrapper.className = "usage-estimate-models";
+  const table = document.createElement("table");
+  table.className = "grid usage-table usage-estimate-model-table";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const [label, numeric] of [["模型", false], ["请求", true], ["输入", true], ["缓存写入", true], ["缓存读取", true], ["输出", true], ["API 等价值", true], ["占比", true]]) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    if (numeric) th.className = "col-number";
+    headRow.appendChild(th);
+  }
+  head.appendChild(headRow);
+  const body = document.createElement("tbody");
+  const total = Number(estimate.observed_cost_usd || 0);
+  for (const value of models) {
+    const usage = value.usage || {};
+    const writes = (usage.cache_creation_5m_tokens || 0) + (usage.cache_creation_1h_tokens || 0);
+    const modelRow = document.createElement("tr");
+    modelRow.append(
+      cell(stack(strong(value.model || "—"), value.unpriced ? small("未定价") : null)),
+      numberCell(formatTokens(usage.requests || 0)),
+      numberCell(formatTokens(usage.input_tokens || 0)),
+      numberCell(formatTokens(writes)),
+      numberCell(formatTokens(usage.cache_read_tokens || 0)),
+      numberCell(formatTokens(usage.output_tokens || 0)),
+      numberCell(value.unpriced ? "—" : formatUSD(value.cost_usd || 0)),
+      numberCell(value.unpriced || total <= 0 ? "—" : `${(Number(value.cost_usd || 0) / total * 100).toFixed(1)}%`),
+    );
+    body.appendChild(modelRow);
+  }
+  table.append(head, body);
+  wrapper.appendChild(table);
+  wrapperCell.appendChild(wrapper);
+  row.appendChild(wrapperCell);
+  return row;
 }
 
 function renderUsageRows(body, values, key, includeCacheWrite) {

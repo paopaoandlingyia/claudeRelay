@@ -316,6 +316,11 @@ not be the true start of the window, because only the numerator and the denomina
 the same span. Relay cost across that span divided by the percentage it gained yields the
 full-window estimate. Readings are kept for thirty days.
 
+The console keeps that extrapolation at account scope because Anthropic reports only one
+utilization percentage for the account. It derives per-model token and API-price deltas from the
+same two snapshots and nests them beneath the account row as composition, without inventing a
+model-level share of subscription quota.
+
 ## 2026-08-01: CCH has no relay semantics
 
 The supported official path is Claude Code configured with a third-party API URL. Captures of that

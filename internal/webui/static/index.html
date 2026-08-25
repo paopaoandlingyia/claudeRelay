@@ -170,6 +170,11 @@
         </div>
       </div>
       <div class="usage-dashboard">
+        <div class="card usage-card">
+          <div class="usage-card-head"><div><h3>最新五小时窗口</h3><small>账号级额度外推；展开账号可查看同一观测区间内的模型构成</small></div></div>
+          <div id="usageEstimatesEmpty" class="usage-empty-note">还没有窗口积累到可测量的额度变化。中转流量经过时会自动取样，无需手动刷新。</div>
+          <div class="table-wrap"><table id="usageEstimatesTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th>观测区间</th><th class="col-number">额度增量</th><th class="col-number">区间价值</th><th class="col-number">完整窗口外推</th></tr></thead><tbody id="usageEstimatesBody"></tbody></table></div>
+        </div>
         <div class="usage-summary-grid">
           <article class="card"><small>API 标价等价值</small><strong id="usageCost">—</strong><span id="usageCostNote">按发生时价格估算</span></article>
           <article class="card"><small>普通输入</small><strong id="usageInput">—</strong><span>tokens</span></article>
@@ -186,11 +191,6 @@
             <div class="usage-card-head"><div><h3>按账号</h3><small>所有流量都经过 relay 时才完整</small></div></div>
             <div class="table-wrap"><table class="grid usage-table"><thead><tr><th>账号</th><th class="col-number">请求</th><th class="col-number">输入</th><th class="col-number">缓存读取</th><th class="col-number">输出</th><th class="col-number">价值</th></tr></thead><tbody id="usageAccountsBody"></tbody></table></div>
           </div>
-        </div>
-        <div class="card usage-card">
-          <div class="usage-card-head"><div><h3>五小时窗口估值</h3><small>同一重置窗口内首次与最新一次额度读数之间的外推结果</small></div></div>
-          <div id="usageEstimatesEmpty" class="usage-empty-note">还没有窗口积累到可测量的额度变化。中转流量经过时会自动取样，无需手动刷新。</div>
-          <div class="table-wrap"><table id="usageEstimatesTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th>区间</th><th class="col-number">额度增量</th><th class="col-number">区间价值</th><th class="col-number">完整窗口外推</th></tr></thead><tbody id="usageEstimatesBody"></tbody></table></div>
         </div>
         <div class="card usage-card">
           <div class="usage-card-head"><div><h3>模型价格</h3><small>精确模型优先于以 * 结尾的前缀；修改通过新增生效版本完成</small></div></div>

@@ -85,6 +85,42 @@ func TestFiveHourEstimateRequiresSameResetWindow(t *testing.T) {
 	}
 }
 
+func TestFiveHourEstimateBreaksObservedValueDownByModel(t *testing.T) {
+	prices := []store.ModelPrice{
+		{ModelPattern: "sonnet", EffectiveFrom: 1, InputUSDPerMTok: 2},
+		{ModelPattern: "opus", EffectiveFrom: 1, OutputUSDPerMTok: 10},
+	}
+	snapshots := []store.SubscriptionUsageSnapshot{
+		{AccountID: 1, Account: "a", ObservedAt: time.Unix(20, 0).UnixMilli(), ResetsAt: "same", UsedPercent: 30,
+			Totals: map[string]store.UsageCounters{
+				"sonnet":  {InputTokens: 2_000_000, Requests: 4},
+				"opus":    {OutputTokens: 500_000, Requests: 2},
+				"unknown": {InputTokens: 100, Requests: 1},
+			}},
+		{AccountID: 1, Account: "a", ObservedAt: time.Unix(10, 0).UnixMilli(), ResetsAt: "same", UsedPercent: 10,
+			Totals: map[string]store.UsageCounters{
+				"sonnet": {InputTokens: 1_000_000, Requests: 1},
+			}},
+	}
+	estimates := buildFiveHourEstimates(snapshots, prices)
+	if len(estimates) != 1 {
+		t.Fatalf("estimates=%+v", estimates)
+	}
+	got := estimates[0]
+	if got.ObservedCostUSD != 7 || got.FullWindowUSD != 35 || !got.Unpriced || len(got.ByModel) != 3 {
+		t.Fatalf("estimate=%+v", got)
+	}
+	if got.ByModel[0].Model != "opus" || got.ByModel[0].CostUSD != 5 || got.ByModel[0].Usage.Requests != 2 {
+		t.Fatalf("first model=%+v", got.ByModel[0])
+	}
+	if got.ByModel[1].Model != "sonnet" || got.ByModel[1].CostUSD != 2 || got.ByModel[1].Usage.Requests != 3 {
+		t.Fatalf("second model=%+v", got.ByModel[1])
+	}
+	if got.ByModel[2].Model != "unknown" || !got.ByModel[2].Unpriced {
+		t.Fatalf("unpriced model=%+v", got.ByModel[2])
+	}
+}
+
 // Every step here moves utilization by one percent, the finest movement the
 // upstream reports. Pairing neighbours would extrapolate each step on its own;
 // anchoring measures the whole span. Newest first, matching the store ordering.

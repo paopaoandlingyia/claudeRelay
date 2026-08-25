@@ -87,6 +87,52 @@ func TestSchemaV3MigratesExistingAccountsToCompatiblePool(t *testing.T) {
 	}
 }
 
+func TestSchemaV7RemovesOnlySeededSonnetFiveIncrease(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		source    string
+		wantCount int
+	}{
+		{name: "seeded price", source: "Anthropic API pricing", wantCount: 0},
+		{name: "operator price", source: "operator override", wantCount: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "relay.db")
+			database, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = database.db.Exec(`INSERT INTO model_prices(model_pattern,effective_from,
+				input_usd_per_mtok,output_usd_per_mtok,cache_creation_5m_usd_per_mtok,
+				cache_creation_1h_usd_per_mtok,cache_read_usd_per_mtok,source,created_at)
+				VALUES('claude-sonnet-5*',1788192000,3,15,3.75,6,0.3,?,1)`, test.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.db.Exec(`PRAGMA user_version=6`); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			database, err = Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			var count int
+			if err := database.db.QueryRow(`SELECT COUNT(*) FROM model_prices WHERE
+				model_pattern='claude-sonnet-5*' AND effective_from=1788192000`).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != test.wantCount {
+				t.Fatalf("future Sonnet 5 price count = %d, want %d", count, test.wantCount)
+			}
+		})
+	}
+}
+
 // TestConnectionPragmas pins the per-connection settings to the DSN. Running
 // them as one-off statements at startup would leave any additional pooled
 // connection without foreign_keys, silently disabling ON DELETE CASCADE.

@@ -59,7 +59,6 @@ var defaultModelPrices = []ModelPrice{
 	{ModelPattern: "claude-opus-4-7*", InputUSDPerMTok: 5, OutputUSDPerMTok: 25, CacheCreation5mUSDPerMTok: 6.25, CacheCreation1hUSDPerMTok: 10, CacheReadUSDPerMTok: .5},
 	{ModelPattern: "claude-opus-4-6*", InputUSDPerMTok: 5, OutputUSDPerMTok: 25, CacheCreation5mUSDPerMTok: 6.25, CacheCreation1hUSDPerMTok: 10, CacheReadUSDPerMTok: .5},
 	{ModelPattern: "claude-opus-4-5*", InputUSDPerMTok: 5, OutputUSDPerMTok: 25, CacheCreation5mUSDPerMTok: 6.25, CacheCreation1hUSDPerMTok: 10, CacheReadUSDPerMTok: .5},
-	{ModelPattern: "claude-sonnet-5*", EffectiveFrom: 1788192000, InputUSDPerMTok: 3, OutputUSDPerMTok: 15, CacheCreation5mUSDPerMTok: 3.75, CacheCreation1hUSDPerMTok: 6, CacheReadUSDPerMTok: .3},
 	{ModelPattern: "claude-sonnet-5*", InputUSDPerMTok: 2, OutputUSDPerMTok: 10, CacheCreation5mUSDPerMTok: 2.5, CacheCreation1hUSDPerMTok: 4, CacheReadUSDPerMTok: .2},
 	{ModelPattern: "claude-sonnet-4-6*", InputUSDPerMTok: 3, OutputUSDPerMTok: 15, CacheCreation5mUSDPerMTok: 3.75, CacheCreation1hUSDPerMTok: 6, CacheReadUSDPerMTok: .3},
 	{ModelPattern: "claude-sonnet-4-5*", InputUSDPerMTok: 3, OutputUSDPerMTok: 15, CacheCreation5mUSDPerMTok: 3.75, CacheCreation1hUSDPerMTok: 6, CacheReadUSDPerMTok: .3},

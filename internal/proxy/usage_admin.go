@@ -19,13 +19,15 @@ type valuedUsage struct {
 }
 
 type fiveHourEstimate struct {
-	Account          string  `json:"account"`
-	From             int64   `json:"from"`
-	To               int64   `json:"to"`
-	ResetsAt         string  `json:"resets_at,omitempty"`
-	UsedPercentDelta float64 `json:"used_percent_delta"`
-	ObservedCostUSD  float64 `json:"observed_cost_usd"`
-	FullWindowUSD    float64 `json:"full_window_usd"`
+	Account          string        `json:"account"`
+	From             int64         `json:"from"`
+	To               int64         `json:"to"`
+	ResetsAt         string        `json:"resets_at,omitempty"`
+	UsedPercentDelta float64       `json:"used_percent_delta"`
+	ObservedCostUSD  float64       `json:"observed_cost_usd"`
+	FullWindowUSD    float64       `json:"full_window_usd"`
+	ByModel          []valuedUsage `json:"by_model"`
+	Unpriced         bool          `json:"unpriced,omitempty"`
 }
 
 type usageDashboardResponse struct {
@@ -266,13 +268,13 @@ func buildFiveHourEstimates(snapshots []store.SubscriptionUsageSnapshot, prices 
 		if deltaPercent < minMeasurablePercentDelta {
 			continue
 		}
-		cost := snapshotDeltaCost(span.first.Totals, span.last.Totals, prices, span.last.ObservedAt/1000)
+		byModel, cost, unpriced := snapshotDeltaByModel(span.first.Totals, span.last.Totals, prices, span.last.ObservedAt/1000)
 		if cost <= 0 {
 			continue
 		}
 		estimates = append(estimates, fiveHourEstimate{Account: span.last.Account, From: span.first.ObservedAt,
 			To: span.last.ObservedAt, ResetsAt: span.resetsAt, UsedPercentDelta: deltaPercent,
-			ObservedCostUSD: cost, FullWindowUSD: cost / deltaPercent * 100})
+			ObservedCostUSD: cost, FullWindowUSD: cost / deltaPercent * 100, ByModel: byModel, Unpriced: unpriced})
 	}
 	return estimates
 }
@@ -301,8 +303,10 @@ func latestFiveHourEstimatePerAccount(estimates []fiveHourEstimate) []fiveHourEs
 	return result
 }
 
-func snapshotDeltaCost(before, after map[string]store.UsageCounters, prices []store.ModelPrice, at int64) float64 {
+func snapshotDeltaByModel(before, after map[string]store.UsageCounters, prices []store.ModelPrice, at int64) ([]valuedUsage, float64, bool) {
+	values := make([]valuedUsage, 0, len(after))
 	cost := 0.0
+	unpriced := false
 	for model, current := range after {
 		prior := before[model]
 		delta := store.UsageCounters{
@@ -310,12 +314,30 @@ func snapshotDeltaCost(before, after map[string]store.UsageCounters, prices []st
 			CacheCreation5mTokens: max64(0, current.CacheCreation5mTokens-prior.CacheCreation5mTokens),
 			CacheCreation1hTokens: max64(0, current.CacheCreation1hTokens-prior.CacheCreation1hTokens),
 			CacheReadTokens:       max64(0, current.CacheReadTokens-prior.CacheReadTokens),
+			Requests:              max64(0, current.Requests-prior.Requests),
+			Incomplete:            max64(0, current.Incomplete-prior.Incomplete),
 		}
+		if delta.InputTokens == 0 && delta.OutputTokens == 0 && delta.CacheCreation5mTokens == 0 &&
+			delta.CacheCreation1hTokens == 0 && delta.CacheReadTokens == 0 && delta.Requests == 0 && delta.Incomplete == 0 {
+			continue
+		}
+		value := valuedUsage{Model: model, Usage: delta}
 		if price, ok := matchingPrice(prices, model, at); ok {
-			cost += usageCost(delta, price)
+			value.CostUSD = usageCost(delta, price)
+			cost += value.CostUSD
+		} else {
+			value.Unpriced = true
+			unpriced = true
 		}
+		values = append(values, value)
 	}
-	return cost
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].CostUSD == values[j].CostUSD {
+			return values[i].Model < values[j].Model
+		}
+		return values[i].CostUSD > values[j].CostUSD
+	})
+	return values, cost, unpriced
 }
 
 func max64(a, b int64) int64 {

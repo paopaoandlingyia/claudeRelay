@@ -74,7 +74,7 @@ type CooldownMatch struct {
 	Reason string
 }
 
-const schemaVersion = 6
+const schemaVersion = 7
 
 type Store struct {
 	db *sql.DB
@@ -274,6 +274,22 @@ func (s *Store) initialize(ctx context.Context) error {
 			return err
 		}
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=6`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	if version < 7 {
+		// Sonnet 5's launch price became permanent, so the previously announced
+		// September increase will not occur. Match every seeded field so a price
+		// the operator entered independently is never mistaken for our obsolete
+		// default.
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM model_prices WHERE
+			model_pattern='claude-sonnet-5*' AND effective_from=1788192000 AND
+			input_usd_per_mtok=3 AND output_usd_per_mtok=15 AND
+			cache_creation_5m_usd_per_mtok=3.75 AND cache_creation_1h_usd_per_mtok=6 AND
+			cache_read_usd_per_mtok=0.3 AND source='Anthropic API pricing'`); err != nil {
+			return fmt.Errorf("remove obsolete Sonnet 5 price increase: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=7`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}

@@ -523,6 +523,12 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .usage-card-head small { color: var(--muted); font-size: 10px; }
 .usage-table { min-width: 660px; font-size: 11px; }
 .usage-table th, .usage-table td { padding: 9px 11px; }
+.usage-estimate-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; color: inherit; background: none; font: inherit; font-weight: 600; cursor: pointer; }
+.usage-estimate-indicator { display: inline-block; color: var(--muted); font-size: 16px; line-height: 1; transition: transform 120ms ease; }
+.usage-estimate-toggle[aria-expanded="true"] .usage-estimate-indicator { transform: rotate(90deg); }
+.usage-estimate-details > td { padding: 0 !important; background: var(--surface-2); }
+.usage-estimate-models { padding: 8px 12px 12px 28px; overflow-x: auto; }
+.usage-estimate-model-table { min-width: 760px; margin: 0; background: var(--surface); }
 .usage-warning { padding: 10px 13px; border: 1px solid var(--warn); border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--warn); font-size: 11px; }
 .usage-empty-note { padding: 12px 17px 17px; color: var(--faint); font-size: 11px; }
 .price-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }

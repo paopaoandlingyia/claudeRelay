@@ -36,6 +36,23 @@ func TestUsageBucketsAggregateAndPricesAreVersioned(t *testing.T) {
 	}
 }
 
+func TestSonnetFivePermanentPriceHasNoFutureIncrease(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	prices, err := database.ModelPrices(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, price := range prices {
+		if price.ModelPattern == "claude-sonnet-5*" && price.EffectiveFrom > 1 {
+			t.Fatalf("unexpected future Sonnet 5 price: %+v", price)
+		}
+	}
+}
+
 // An anchored estimate measures from a window's first reading, so that reading
 // has to survive however many later ones sampling adds. Returning the newest N
 // rows would drop it and quietly shrink the span being measured.
