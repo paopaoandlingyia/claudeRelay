@@ -56,6 +56,7 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 	t.Setenv("CLAUDE_RELAY_API_KEY", "environment-key")
 	t.Setenv("CLAUDE_RELAY_OFFICIAL_API_KEY", "environment-official-key")
 	t.Setenv("CLAUDE_RELAY_ADMIN_API_KEY", "environment-admin-key")
+	t.Setenv("CLAUDE_RELAY_AVAILABILITY_API_KEY", "environment-availability-key")
 	t.Setenv("CLAUDE_RELAY_DATABASE_FILE", "/data/claude-relay.db")
 	t.Setenv("CLAUDE_RELAY_UPSTREAM_PROXY", "http://proxy:7890")
 	t.Setenv("CLAUDE_RELAY_MAX_REQUEST_BYTES", "1048576")
@@ -67,9 +68,10 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Listen != "0.0.0.0:8567" || cfg.RelayAPIKey != "environment-key" ||
-		cfg.OfficialAPIKey != "environment-official-key" || cfg.AdminAPIKey != "environment-admin-key" {
-		t.Fatalf("server environment overrides = listen %q compatible key %q official key %q admin key %q",
-			cfg.Listen, cfg.RelayAPIKey, cfg.OfficialAPIKey, cfg.AdminAPIKey)
+		cfg.OfficialAPIKey != "environment-official-key" || cfg.AdminAPIKey != "environment-admin-key" ||
+		cfg.AvailabilityAPIKey != "environment-availability-key" {
+		t.Fatalf("server environment overrides = listen %q compatible key %q official key %q admin key %q availability key %q",
+			cfg.Listen, cfg.RelayAPIKey, cfg.OfficialAPIKey, cfg.AdminAPIKey, cfg.AvailabilityAPIKey)
 	}
 	if cfg.DatabaseFile != "/data/claude-relay.db" || cfg.UpstreamProxy != "http://proxy:7890" {
 		t.Fatalf("runtime environment overrides = database %q proxy %q", cfg.DatabaseFile, cfg.UpstreamProxy)

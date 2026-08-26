@@ -17,8 +17,9 @@ $rng.Dispose()
 -join ($bytes | ForEach-Object { $_.ToString("x2") })
 ```
 
-Run the generation command three times and put different values in `CLAUDE_RELAY_API_KEY`,
-`CLAUDE_RELAY_OFFICIAL_API_KEY`, and `CLAUDE_RELAY_ADMIN_API_KEY` in `.env`, then start the service:
+Run the generation command four times and put different values in `CLAUDE_RELAY_API_KEY`,
+`CLAUDE_RELAY_OFFICIAL_API_KEY`, `CLAUDE_RELAY_ADMIN_API_KEY`, and
+`CLAUDE_RELAY_AVAILABILITY_API_KEY` in `.env`, then start the service:
 
 ```powershell
 docker compose up -d --build
@@ -82,6 +83,7 @@ The image contains only non-secret defaults. Compose passes these supported runt
 | `CLAUDE_RELAY_API_KEY` | Relay key for messages, token counting, and account override | Required |
 | `CLAUDE_RELAY_OFFICIAL_API_KEY` | Optional Claude Code-shaped ingress, isolated to official accounts | Empty |
 | `CLAUDE_RELAY_ADMIN_API_KEY` | Administration key for WebUI, OAuth, and account state | Required and must differ |
+| `CLAUDE_RELAY_AVAILABILITY_API_KEY` | Read-only key for `GET /ops/v1/availability` | Empty (endpoint disabled) |
 | `CLAUDE_RELAY_UPSTREAM_PROXY` | Optional outbound HTTP(S) proxy | Empty |
 | `CLAUDE_RELAY_MAX_REQUEST_BYTES` | Maximum request body size | `33554432` |
 | `CLAUDE_RELAY_MAX_INFLIGHT_PER_ACCOUNT` | Hard per-account in-flight request limit | `8` |

@@ -22,6 +22,7 @@ type Config struct {
 	RelayAPIKey                 string `json:"relay_api_key"`
 	OfficialAPIKey              string `json:"official_api_key"`
 	AdminAPIKey                 string `json:"admin_api_key"`
+	AvailabilityAPIKey          string `json:"availability_api_key"`
 	DatabaseFile                string `json:"database_file"`
 	CredentialsFile             string `json:"credentials_file"`
 	UpstreamBaseURL             string `json:"upstream_base_url"`
@@ -69,6 +70,9 @@ func applyEnvironment(cfg *Config) error {
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_ADMIN_API_KEY")); value != "" {
 		cfg.AdminAPIKey = value
+	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_AVAILABILITY_API_KEY")); value != "" {
+		cfg.AvailabilityAPIKey = value
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_CREDENTIALS_FILE")); value != "" {
 		cfg.CredentialsFile = value
@@ -121,6 +125,7 @@ func (cfg *Config) validate() error {
 	cfg.RelayAPIKey = strings.TrimSpace(cfg.RelayAPIKey)
 	cfg.OfficialAPIKey = strings.TrimSpace(cfg.OfficialAPIKey)
 	cfg.AdminAPIKey = strings.TrimSpace(cfg.AdminAPIKey)
+	cfg.AvailabilityAPIKey = strings.TrimSpace(cfg.AvailabilityAPIKey)
 	cfg.DatabaseFile = strings.TrimSpace(cfg.DatabaseFile)
 	cfg.CredentialsFile = strings.TrimSpace(cfg.CredentialsFile)
 	cfg.UpstreamBaseURL = strings.TrimRight(strings.TrimSpace(cfg.UpstreamBaseURL), "/")
@@ -146,6 +151,9 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.OfficialAPIKey != "" && (cfg.OfficialAPIKey == cfg.RelayAPIKey || cfg.OfficialAPIKey == cfg.AdminAPIKey) {
 		return fmt.Errorf("official, compatible, and admin API keys must be different")
+	}
+	if cfg.AvailabilityAPIKey != "" && (cfg.AvailabilityAPIKey == cfg.RelayAPIKey || cfg.AvailabilityAPIKey == cfg.OfficialAPIKey || cfg.AvailabilityAPIKey == cfg.AdminAPIKey) {
+		return fmt.Errorf("availability, official, compatible, and admin API keys must be different")
 	}
 	if cfg.DatabaseFile == "" {
 		cfg.DatabaseFile = "data/claude-relay.db"

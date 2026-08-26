@@ -145,6 +145,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /{$}", webui.Index)
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", webui.Assets()))
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /ops/v1/availability", s.availability)
 	mux.HandleFunc("POST /v1/messages", s.forward)
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.forward)
 	mux.HandleFunc("GET /admin/v1/overview", s.overview)
@@ -178,7 +179,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
-		if strings.HasPrefix(r.URL.Path, "/admin/") {
+		if strings.HasPrefix(r.URL.Path, "/admin/") || strings.HasPrefix(r.URL.Path, "/ops/") {
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Pragma", "no-cache")
 		}
@@ -198,6 +199,14 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/admin/") {
 			if !secureKeyEqual(provided, s.cfg.AdminAPIKey) {
+				writeError(w, http.StatusUnauthorized, "authentication_error", "invalid API key")
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/ops/") {
+			if s.cfg.AvailabilityAPIKey == "" || !secureKeyEqual(provided, s.cfg.AvailabilityAPIKey) {
 				writeError(w, http.StatusUnauthorized, "authentication_error", "invalid API key")
 				return
 			}
