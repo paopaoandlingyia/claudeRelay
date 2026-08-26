@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 )
 
@@ -69,6 +70,11 @@ func (s *Store) AddFiveHourEvents(ctx context.Context, events []FiveHourEvent) e
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, event := range events {
+		reset, normalizeErr := canonicalFiveHourReset(ctx, tx, event.AccountID, event.ResetsAt)
+		if normalizeErr != nil {
+			return normalizeErr
+		}
+		event.ResetsAt = reset
 		if err := insertFiveHourEvent(ctx, tx, event); err != nil {
 			return err
 		}
@@ -135,6 +141,11 @@ func (s *Store) MarkFiveHourExhausted(ctx context.Context, event FiveHourEvent, 
 		return fmt.Errorf("begin five-hour exhaustion: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	reset, err := canonicalFiveHourReset(ctx, tx, event.AccountID, event.ResetsAt)
+	if err != nil {
+		return err
+	}
+	event.ResetsAt = reset
 	if err := insertFiveHourEvent(ctx, tx, event); err != nil {
 		return err
 	}
@@ -292,4 +303,126 @@ func (s *Store) ClearFiveHourObservations(ctx context.Context) error {
 		return fmt.Errorf("clear five-hour windows: %w", err)
 	}
 	return tx.Commit()
+}
+
+func canonicalFiveHourReset(ctx context.Context, tx *sql.Tx, accountID int64, reset string) (string, error) {
+	reset = strings.TrimSpace(reset)
+	seconds, err := strconv.ParseInt(reset, 10, 64)
+	if err != nil || accountID <= 0 {
+		return reset, nil
+	}
+	var existing string
+	err = tx.QueryRowContext(ctx, `SELECT resets_at FROM five_hour_windows
+		WHERE account_id=? AND CAST(resets_at AS INTEGER) BETWEEN ? AND ?
+		ORDER BY CASE WHEN resets_at=? THEN 0 ELSE 1 END, ABS(CAST(resets_at AS INTEGER)-?) LIMIT 1`,
+		accountID, seconds-1, seconds+1, reset, seconds).Scan(&existing)
+	if err == nil {
+		return existing, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", fmt.Errorf("resolve five-hour reset identity: %w", err)
+	}
+	return reset, nil
+}
+
+func (s *Store) mergeAdjacentFiveHourWindows(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin five-hour reset migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT account_id,resets_at,first_observed_at,last_observed_at,
+		first_used_percent,last_used_percent,max_used_percent,exhausted_at,exhaustion_reason
+		FROM five_hour_windows ORDER BY account_id,CAST(resets_at AS INTEGER),resets_at`)
+	if err != nil {
+		return fmt.Errorf("query five-hour resets for migration: %w", err)
+	}
+	var windows []FiveHourWindow
+	for rows.Next() {
+		var window FiveHourWindow
+		if err := rows.Scan(&window.AccountID, &window.ResetsAt, &window.FirstObservedAt, &window.LastObservedAt,
+			&window.FirstUsedPercent, &window.LastUsedPercent, &window.MaxUsedPercent,
+			&window.ExhaustedAt, &window.ExhaustionReason); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan five-hour reset for migration: %w", err)
+		}
+		windows = append(windows, window)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close five-hour reset migration rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate five-hour resets for migration: %w", err)
+	}
+
+	for start := 0; start < len(windows); {
+		end := start + 1
+		previous, parseErr := strconv.ParseInt(windows[start].ResetsAt, 10, 64)
+		if parseErr == nil {
+			for end < len(windows) && windows[end].AccountID == windows[start].AccountID {
+				current, currentErr := strconv.ParseInt(windows[end].ResetsAt, 10, 64)
+				if currentErr != nil || current-previous > 1 {
+					break
+				}
+				previous = current
+				end++
+			}
+		}
+		if end-start > 1 {
+			cluster := windows[start:end]
+			canonical := 0
+			mostMessages := int64(-1)
+			for index := range cluster {
+				var messages int64
+				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM five_hour_events
+					WHERE account_id=? AND resets_at=? AND kind=?`, cluster[index].AccountID,
+					cluster[index].ResetsAt, FiveHourEventMessages).Scan(&messages); err != nil {
+					return fmt.Errorf("count five-hour messages for migration: %w", err)
+				}
+				if messages >= mostMessages {
+					canonical = index
+					mostMessages = messages
+				}
+			}
+			merged := cluster[canonical]
+			for index := range cluster {
+				window := cluster[index]
+				if window.FirstObservedAt < merged.FirstObservedAt {
+					merged.FirstObservedAt = window.FirstObservedAt
+					merged.FirstUsedPercent = window.FirstUsedPercent
+				}
+				if window.LastObservedAt > merged.LastObservedAt {
+					merged.LastObservedAt = window.LastObservedAt
+					merged.LastUsedPercent = window.LastUsedPercent
+				}
+				merged.MaxUsedPercent = math.Max(merged.MaxUsedPercent, window.MaxUsedPercent)
+				if window.ExhaustedAt > 0 && (merged.ExhaustedAt == 0 || window.ExhaustedAt < merged.ExhaustedAt) {
+					merged.ExhaustedAt = window.ExhaustedAt
+					merged.ExhaustionReason = window.ExhaustionReason
+				}
+				if window.ResetsAt != merged.ResetsAt {
+					if _, err := tx.ExecContext(ctx, `UPDATE five_hour_events SET resets_at=? WHERE account_id=? AND resets_at=?`,
+						merged.ResetsAt, merged.AccountID, window.ResetsAt); err != nil {
+						return fmt.Errorf("merge five-hour event reset identity: %w", err)
+					}
+				}
+				if _, err := tx.ExecContext(ctx, `DELETE FROM five_hour_windows WHERE account_id=? AND resets_at=?`,
+					window.AccountID, window.ResetsAt); err != nil {
+					return fmt.Errorf("remove duplicate five-hour window: %w", err)
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO five_hour_windows(account_id,resets_at,first_observed_at,
+				last_observed_at,first_used_percent,last_used_percent,max_used_percent,exhausted_at,exhaustion_reason)
+				VALUES(?,?,?,?,?,?,?,?,?)`, merged.AccountID, merged.ResetsAt, merged.FirstObservedAt,
+				merged.LastObservedAt, merged.FirstUsedPercent, merged.LastUsedPercent, merged.MaxUsedPercent,
+				merged.ExhaustedAt, merged.ExhaustionReason); err != nil {
+				return fmt.Errorf("insert merged five-hour window: %w", err)
+			}
+		}
+		start = end
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit five-hour reset migration: %w", err)
+	}
+	return nil
 }

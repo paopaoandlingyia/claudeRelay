@@ -74,7 +74,7 @@ type CooldownMatch struct {
 	Reason string
 }
 
-const schemaVersion = 8
+const schemaVersion = 9
 
 type Store struct {
 	db *sql.DB
@@ -324,6 +324,17 @@ func (s *Store) initialize(ctx context.Context) error {
 			return fmt.Errorf("remove legacy five-hour estimates: %w", err)
 		}
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=8`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	if version < 9 {
+		// The Messages header reports an epoch second, while the OAuth usage
+		// surface can describe the same reset boundary one second earlier. Merge
+		// those adjacent identities before new observations continue the series.
+		if err := s.mergeAdjacentFiveHourWindows(ctx); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=9`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}

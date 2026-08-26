@@ -75,6 +75,93 @@ func TestMarkFiveHourExhaustedCreatesWindowWithoutUtilizationReading(t *testing.
 	}
 }
 
+func TestFiveHourEventsMergeAdjacentResetIdentities(t *testing.T) {
+	database := newTestStore(t)
+	account := importTestAccount(t, database, "jitter", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+	ctx := context.Background()
+	reset := time.Now().Add(4 * time.Hour).Truncate(time.Second)
+	if err := database.AddFiveHourEvents(ctx, []FiveHourEvent{{
+		EventKey: "oauth-jitter", AccountID: account.ID, ResetsAt: strconv.FormatInt(reset.Add(-time.Second).Unix(), 10),
+		Kind: FiveHourEventOAuth, ObservedAt: 1000, CompletedAt: 1000, UsedPercent: 0, Complete: true,
+	}, {
+		EventKey: "message-exact", AccountID: account.ID, ResetsAt: strconv.FormatInt(reset.Unix(), 10),
+		Kind: FiveHourEventMessages, ObservedAt: 2000, CompletedAt: 2500, Model: "opus", Status: 200,
+		UsedPercent: 100, Usage: UsageCounters{OutputTokens: 20, Requests: 1}, UsageSeen: true, Complete: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MarkFiveHourExhausted(ctx, FiveHourEvent{
+		EventKey: "exhaustion-exact", AccountID: account.ID, ResetsAt: strconv.FormatInt(reset.Unix(), 10),
+		ObservedAt: 3000, CompletedAt: 3000, Status: 429, UsedPercent: 100,
+	}, "explicit"); err != nil {
+		t.Fatal(err)
+	}
+	windows, err := database.FiveHourWindows(ctx, true, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 1 || windows[0].EventCount != 1 || windows[0].ByModel["opus"].OutputTokens != 20 {
+		t.Fatalf("adjacent resets produced split windows: %+v", windows)
+	}
+	events, err := database.AllFiveHourEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.ResetsAt != windows[0].ResetsAt {
+			t.Fatalf("event %q reset=%q, window reset=%q", event.EventKey, event.ResetsAt, windows[0].ResetsAt)
+		}
+	}
+}
+
+func TestSchemaNineMergesExistingAdjacentFiveHourWindows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.db")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := importTestAccount(t, database, "migration", "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+	reset := time.Now().Add(4 * time.Hour).Truncate(time.Second).Unix()
+	if _, err := database.db.Exec(`INSERT INTO five_hour_windows(account_id,resets_at,first_observed_at,last_observed_at,
+		first_used_percent,last_used_percent,max_used_percent,exhausted_at,exhaustion_reason) VALUES
+		(?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?)`,
+		account.ID, strconv.FormatInt(reset-1, 10), 1000, 1500, 0, 10, 10, 0, "",
+		account.ID, strconv.FormatInt(reset, 10), 2000, 3000, 20, 100, 100, 3000, "explicit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`INSERT INTO five_hour_events(event_key,account_id,resets_at,kind,observed_at,
+		completed_at,model,status,used_percent,input_tokens,usage_seen,complete) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"migration-message", account.ID, strconv.FormatInt(reset, 10), FiveHourEventMessages,
+		2000, 2500, "opus", 200, 100, 30, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.Exec(`PRAGMA user_version=8`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	windows, err := database.AllFiveHourWindows(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 1 {
+		t.Fatalf("migration left adjacent windows: %+v", windows)
+	}
+	window := windows[0]
+	if window.ResetsAt != strconv.FormatInt(reset, 10) || window.FirstObservedAt != 1000 ||
+		window.LastObservedAt != 3000 || window.FirstUsedPercent != 0 || window.LastUsedPercent != 100 ||
+		window.MaxUsedPercent != 100 || window.ExhaustedAt != 3000 || window.ExhaustionReason != "explicit" {
+		t.Fatalf("merged window=%+v", window)
+	}
+}
+
 func TestSchemaEightDropsLegacyFiveHourSnapshots(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "relay.db")
 	database, err := Open(path)
