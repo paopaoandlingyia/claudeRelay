@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -289,17 +290,22 @@ func (s *Server) accountUsage(w http.ResponseWriter, r *http.Request, force bool
 		return
 	}
 	if force {
-		if err := s.accounting.Flush(r.Context()); err != nil {
-			writeError(w, http.StatusInternalServerError, "api_error", "failed to persist relay usage before subscription snapshot")
-			return
-		}
 		for _, window := range view.Windows {
 			if window.ID != "five_hour" {
 				continue
 			}
-			if err := s.store.CaptureSubscriptionUsageSnapshot(r.Context(), account.ID, view.FetchedAt, normalizeResetIdentity(window.ResetsAt), window.UsedPercent); err != nil {
-				writeError(w, http.StatusInternalServerError, "api_error", "failed to save subscription usage snapshot")
+			reset := normalizeResetIdentity(window.ResetsAt)
+			event := store.FiveHourEvent{
+				EventKey: "oauth:" + requestIDFromContext(r.Context()) + ":" + strconv.FormatInt(view.FetchedAt, 10), AccountID: account.ID,
+				ResetsAt: reset, Kind: store.FiveHourEventOAuth, ObservedAt: view.FetchedAt,
+				CompletedAt: view.FetchedAt, UsedPercent: window.UsedPercent, Complete: true,
+			}
+			if err := s.store.AddFiveHourEvents(r.Context(), []store.FiveHourEvent{event}); err != nil {
+				writeError(w, http.StatusInternalServerError, "api_error", "failed to save five-hour observation")
 				return
+			}
+			if resetSeconds, parseErr := strconv.ParseInt(reset, 10, 64); parseErr == nil && time.Now().Before(time.Unix(resetSeconds, 0)) {
+				s.sampler.observe(account, fiveHourReading{resetsAt: reset, usedPercent: window.UsedPercent, observedAt: view.FetchedAt})
 			}
 			break
 		}

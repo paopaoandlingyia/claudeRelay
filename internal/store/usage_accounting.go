@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -223,107 +221,14 @@ func (s *Store) SaveModelPrice(ctx context.Context, price ModelPrice) (ModelPric
 	return price, nil
 }
 
-type SubscriptionUsageSnapshot struct {
-	ID          int64                    `json:"id"`
-	AccountID   int64                    `json:"account_id"`
-	Account     string                   `json:"account"`
-	ObservedAt  int64                    `json:"observed_at"`
-	ResetsAt    string                   `json:"resets_at,omitempty"`
-	UsedPercent float64                  `json:"used_percent"`
-	Totals      map[string]UsageCounters `json:"totals"`
-}
-
-// subscriptionSnapshotRetention bounds how far back snapshots are kept. A window
-// is measured from readings inside itself, so anything older than a few weeks
-// only serves history, and sampling that follows relayed traffic would otherwise
-// grow this table without limit.
-const (
-	subscriptionSnapshotRetention   = 30 * 24 * time.Hour
-	snapshotPruneInterval           = time.Hour
-	subscriptionSnapshotPruneWindow = int64(subscriptionSnapshotRetention / time.Millisecond)
-)
-
-// pruneSubscriptionUsageSnapshots drops readings past the retention horizon at
-// most once per interval. Housekeeping must not fail the capture the caller
-// asked for, so a failure is logged and left for the next sweep.
-func (s *Store) pruneSubscriptionUsageSnapshots(ctx context.Context, now time.Time) {
-	last := s.lastSnapshotPrune.Load()
-	if now.Unix()-last < int64(snapshotPruneInterval.Seconds()) {
-		return
-	}
-	if !s.lastSnapshotPrune.CompareAndSwap(last, now.Unix()) {
-		return
-	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM subscription_usage_snapshots WHERE observed_at<?`,
-		now.UnixMilli()-subscriptionSnapshotPruneWindow); err != nil {
-		slog.Warn("prune subscription usage snapshots", "error", err)
-	}
-}
-
-func (s *Store) CaptureSubscriptionUsageSnapshot(ctx context.Context, accountID int64, observedAt int64, resetsAt string, usedPercent float64) error {
-	totals, err := s.UsageTotalsByModel(ctx, accountID)
-	if err != nil {
-		return err
-	}
-	s.pruneSubscriptionUsageSnapshots(ctx, time.Now())
-	raw, err := json.Marshal(totals)
-	if err != nil {
-		return fmt.Errorf("encode usage snapshot totals: %w", err)
-	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO subscription_usage_snapshots(account_id,observed_at,resets_at,used_percent,totals_json)
-		VALUES(?,?,?,?,?) ON CONFLICT(account_id,observed_at) DO UPDATE SET resets_at=excluded.resets_at,
-		used_percent=excluded.used_percent,totals_json=excluded.totals_json`, accountID, observedAt, strings.TrimSpace(resetsAt), usedPercent, string(raw))
-	if err != nil {
-		return fmt.Errorf("capture subscription usage snapshot: %w", err)
-	}
-	return nil
-}
-
-// SubscriptionUsageSnapshots returns the earliest and the latest reading of each
-// five-hour window, which is all an anchored estimate needs. Returning the most
-// recent N readings instead would move an anchor forward as sampling continues,
-// shrinking the very span the anchor exists to accumulate.
-//
-// The two ends are chosen by observed_at rather than by insert order, because
-// sampling runs off the request goroutines and one of them can reach the
-// database ahead of a reading taken before it.
-func (s *Store) SubscriptionUsageSnapshots(ctx context.Context) ([]SubscriptionUsageSnapshot, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.account_id,a.alias,s.observed_at,s.resets_at,s.used_percent,s.totals_json
-		FROM subscription_usage_snapshots s JOIN accounts a ON a.id=s.account_id
-		WHERE (s.account_id,s.resets_at,s.observed_at) IN (
-			SELECT account_id,resets_at,MIN(observed_at) FROM subscription_usage_snapshots WHERE resets_at<>'' GROUP BY account_id,resets_at
-			UNION
-			SELECT account_id,resets_at,MAX(observed_at) FROM subscription_usage_snapshots WHERE resets_at<>'' GROUP BY account_id,resets_at)
-		ORDER BY s.observed_at DESC`)
-	if err != nil {
-		return nil, fmt.Errorf("query usage snapshots: %w", err)
-	}
-	defer rows.Close()
-	var snapshots []SubscriptionUsageSnapshot
-	for rows.Next() {
-		var snapshot SubscriptionUsageSnapshot
-		var raw string
-		if err := rows.Scan(&snapshot.ID, &snapshot.AccountID, &snapshot.Account, &snapshot.ObservedAt, &snapshot.ResetsAt, &snapshot.UsedPercent, &raw); err != nil {
-			return nil, fmt.Errorf("scan usage snapshot: %w", err)
-		}
-		if err := json.Unmarshal([]byte(raw), &snapshot.Totals); err != nil {
-			return nil, fmt.Errorf("decode usage snapshot totals: %w", err)
-		}
-		snapshots = append(snapshots, snapshot)
-	}
-	return snapshots, rows.Err()
-}
-
 func (s *Store) ClearUsageAccounting(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin clear usage accounting: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, statement := range []string{`DELETE FROM subscription_usage_snapshots`, `DELETE FROM usage_hourly`} {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("clear usage accounting: %w", err)
-		}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_hourly`); err != nil {
+		return fmt.Errorf("clear usage accounting: %w", err)
 	}
 	return tx.Commit()
 }

@@ -401,55 +401,12 @@ function renderUsage() {
   renderUsageRows($("usageModelsBody"), dashboard.by_model || [], "model", true);
   renderUsageRows($("usageAccountsBody"), dashboard.by_account || [], "account", false);
 
-  const estimates = Array.isArray(dashboard.five_hour_estimates) ? dashboard.five_hour_estimates : [];
-  $("usageEstimatesEmpty").classList.toggle("hidden", estimates.length !== 0);
-  $("usageEstimatesTable").classList.toggle("hidden", estimates.length === 0);
-  const estimateBody = $("usageEstimatesBody");
-  estimateBody.replaceChildren();
-  for (const estimate of estimates.slice().reverse()) {
-    const account = estimate.account || "";
-    const models = Array.isArray(estimate.by_model) ? estimate.by_model : [];
-    const row = document.createElement("tr");
-    const accountCell = cell(document.createTextNode(account || "—"));
-    let detailRow = null;
-    if (models.length > 0) {
-      const expanded = state.expandedFiveHourAccounts.has(account);
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "usage-estimate-toggle";
-      toggle.setAttribute("aria-expanded", String(expanded));
-      const indicator = document.createElement("span");
-      indicator.className = "usage-estimate-indicator";
-      indicator.textContent = "›";
-      toggle.append(indicator, document.createTextNode(account || "—"));
-      accountCell.replaceChildren(toggle);
-
-      detailRow = buildFiveHourModelDetails(estimate, models);
-      detailRow.classList.toggle("hidden", !expanded);
-      toggle.addEventListener("click", () => {
-        const nextExpanded = toggle.getAttribute("aria-expanded") !== "true";
-        toggle.setAttribute("aria-expanded", String(nextExpanded));
-        detailRow.classList.toggle("hidden", !nextExpanded);
-        if (nextExpanded) state.expandedFiveHourAccounts.add(account);
-        else state.expandedFiveHourAccounts.delete(account);
-      });
-    }
-    const observedCost = numberCell(formatUSD(estimate.observed_cost_usd || 0));
-    const fullWindowCost = numberCell(formatUSD(estimate.full_window_usd || 0));
-    if (estimate.unpriced) {
-      observedCost.title = "不含未定价模型";
-      fullWindowCost.title = "不含未定价模型";
-    }
-    row.append(
-      accountCell,
-      cell(document.createTextNode(`${new Date(estimate.from).toLocaleString()} → ${new Date(estimate.to).toLocaleString()}`)),
-      numberCell(`${Number(estimate.used_percent_delta || 0).toFixed(1)}%`),
-      observedCost,
-      fullWindowCost,
-    );
-    estimateBody.appendChild(row);
-    if (detailRow) estimateBody.appendChild(detailRow);
-  }
+  const currentWindows = Array.isArray(dashboard.five_hour_current) ? dashboard.five_hour_current : [];
+  const exhaustedWindows = Array.isArray(dashboard.five_hour_exhausted) ? dashboard.five_hour_exhausted : [];
+  const stats = dashboard.five_hour_stats || {};
+  $("fiveHourStats").textContent = `逐请求归属上游窗口 · 已积累 ${formatTokens(stats.windows || 0)} 个窗口、${formatTokens(stats.events || 0)} 条事件、${formatTokens(stats.exhausted || 0)} 个耗尽窗口`;
+  renderFiveHourWindows(currentWindows, "current");
+  renderFiveHourWindows(exhaustedWindows, "exhausted");
 
   const pricesBody = $("pricesBody");
   pricesBody.replaceChildren();
@@ -469,7 +426,69 @@ function renderUsage() {
   }
 }
 
-function buildFiveHourModelDetails(estimate, models) {
+function renderFiveHourWindows(windows, kind) {
+  const prefix = kind === "current" ? "fiveHourCurrent" : "fiveHourExhausted";
+  $(prefix + "Empty").classList.toggle("hidden", windows.length !== 0);
+  $(prefix + "Table").classList.toggle("hidden", windows.length === 0);
+  const body = $(prefix + "Body");
+  body.replaceChildren();
+  for (const window of windows) {
+    const account = window.account || "";
+    const models = Array.isArray(window.by_model) ? window.by_model : [];
+    const expansionKey = `${kind}:${account}:${window.resets_at || 0}`;
+    const row = document.createElement("tr");
+    const accountCell = cell(document.createTextNode(account || "—"));
+    let detailRow = null;
+    if (models.length > 0) {
+      const expanded = state.expandedFiveHourAccounts.has(expansionKey);
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "usage-estimate-toggle";
+      toggle.setAttribute("aria-expanded", String(expanded));
+      const indicator = document.createElement("span");
+      indicator.className = "usage-estimate-indicator";
+      indicator.textContent = "›";
+      toggle.append(indicator, document.createTextNode(account || "—"));
+      accountCell.replaceChildren(toggle);
+
+      detailRow = buildFiveHourModelDetails(window, models);
+      detailRow.classList.toggle("hidden", !expanded);
+      toggle.addEventListener("click", () => {
+        const nextExpanded = toggle.getAttribute("aria-expanded") !== "true";
+        toggle.setAttribute("aria-expanded", String(nextExpanded));
+        detailRow.classList.toggle("hidden", !nextExpanded);
+        if (nextExpanded) state.expandedFiveHourAccounts.add(expansionKey);
+        else state.expandedFiveHourAccounts.delete(expansionKey);
+      });
+    }
+    const observedCost = numberCell(formatUSD(window.observed_cost_usd || 0));
+    if (window.unpriced) {
+      observedCost.title = "不含未定价模型";
+    }
+    if (kind === "current") {
+      const percent = Number(window.max_used_percent);
+      row.append(
+        accountCell,
+        numberCell(percent >= 0 ? `${percent.toFixed(1)}%` : "—"),
+        cell(document.createTextNode(window.resets_at ? new Date(window.resets_at).toLocaleString() : "—")),
+        numberCell(formatTokens(window.event_count || 0)),
+        observedCost,
+      );
+    } else {
+      row.append(
+        accountCell,
+        cell(document.createTextNode(window.exhausted_at ? new Date(window.exhausted_at).toLocaleString() : "—")),
+        cell(document.createTextNode(window.resets_at ? new Date(window.resets_at).toLocaleString() : "—")),
+        numberCell(formatTokens(window.event_count || 0)),
+        observedCost,
+      );
+    }
+    body.appendChild(row);
+    if (detailRow) body.appendChild(detailRow);
+  }
+}
+
+function buildFiveHourModelDetails(window, models) {
   const row = document.createElement("tr");
   row.className = "usage-estimate-details hidden";
   const wrapperCell = document.createElement("td");
@@ -480,7 +499,7 @@ function buildFiveHourModelDetails(estimate, models) {
   table.className = "grid usage-table usage-estimate-model-table";
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const [label, numeric] of [["模型", false], ["请求", true], ["输入", true], ["缓存写入", true], ["缓存读取", true], ["输出", true], ["API 等价值", true], ["占比", true]]) {
+  for (const [label, numeric] of [["模型", false], ["请求", true], ["输入", true], ["5m 写入", true], ["1h 写入", true], ["缓存读取", true], ["输出", true], ["API 等价值", true], ["占比", true]]) {
     const th = document.createElement("th");
     th.textContent = label;
     if (numeric) th.className = "col-number";
@@ -488,16 +507,16 @@ function buildFiveHourModelDetails(estimate, models) {
   }
   head.appendChild(headRow);
   const body = document.createElement("tbody");
-  const total = Number(estimate.observed_cost_usd || 0);
+  const total = Number(window.observed_cost_usd || 0);
   for (const value of models) {
     const usage = value.usage || {};
-    const writes = (usage.cache_creation_5m_tokens || 0) + (usage.cache_creation_1h_tokens || 0);
     const modelRow = document.createElement("tr");
     modelRow.append(
       cell(stack(strong(value.model || "—"), value.unpriced ? small("未定价") : null)),
       numberCell(formatTokens(usage.requests || 0)),
       numberCell(formatTokens(usage.input_tokens || 0)),
-      numberCell(formatTokens(writes)),
+      numberCell(formatTokens(usage.cache_creation_5m_tokens || 0)),
+      numberCell(formatTokens(usage.cache_creation_1h_tokens || 0)),
       numberCell(formatTokens(usage.cache_read_tokens || 0)),
       numberCell(formatTokens(usage.output_tokens || 0)),
       numberCell(value.unpriced ? "—" : formatUSD(value.cost_usd || 0)),
@@ -595,12 +614,58 @@ async function savePrice(element) {
 }
 
 async function clearUsage() {
-  const accepted = await confirmDialog({ title: "清空用量统计", lead: "这会永久删除已采集的 token 聚合和订阅额度快照。模型价格不会删除。", items: ["历史 API 等价值和五小时估值无法恢复"], accept: "永久清空", danger: true });
+  const accepted = await confirmDialog({ title: "清空常规用量", lead: "这会永久删除按小时聚合的 token 用量。五小时长期观测和模型价格不会删除。", items: ["按时间范围、模型和账号汇总的历史值无法恢复"], accept: "永久清空", danger: true });
   if (!accepted) return;
   try {
     await api("/admin/v1/usage", { method: "DELETE" });
     await loadUsage();
     showToast("用量统计已清空");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function exportFiveHourObservations() {
+  try {
+    const response = await fetch("/admin/v1/usage/five-hour/export", {
+      headers: { "x-api-key": state.apiKey },
+    });
+    if (!response.ok) {
+      let payload = null;
+      try { payload = await response.json(); } catch { /* non-JSON error */ }
+      throw new Error(payload?.error?.message || `导出失败（${response.status}）`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "claude-relay-five-hour.zip";
+    const link = document.createElement("a");
+    const downloadURL = URL.createObjectURL(blob);
+    link.href = downloadURL;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(downloadURL), 0);
+    showToast("五小时观测已导出");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function clearFiveHourObservations() {
+  const accepted = await confirmDialog({
+    title: "清空五小时观测",
+    lead: "这会永久删除逐请求事件和已识别的窗口。常规用量聚合与模型价格不会删除。",
+    items: ["建议先导出 ZIP；清空后将从下一次请求重新积累"],
+    accept: "永久清空",
+    danger: true,
+  });
+  if (!accepted) return;
+  try {
+    await api("/admin/v1/usage/five-hour", { method: "DELETE" });
+    state.expandedFiveHourAccounts.clear();
+    await loadUsage();
+    showToast("五小时观测已清空");
   } catch (error) {
     showToast(error.message, true);
   }
@@ -1629,6 +1694,8 @@ $("submitRenameButton").addEventListener("click", submitRename);
 $("usageRange").addEventListener("change", () => loadUsage().catch((error) => showToast(error.message, true)));
 $("refreshUsageButton").addEventListener("click", () => loadUsage({ notify: true }).catch((error) => showToast(error.message, true)));
 $("addPriceButton").addEventListener("click", openPriceDialog);
+$("exportFiveHourButton").addEventListener("click", exportFiveHourObservations);
+$("clearFiveHourButton").addEventListener("click", clearFiveHourObservations);
 $("savePriceButton").addEventListener("click", (event) => savePrice(event.currentTarget));
 $("clearUsageButton").addEventListener("click", clearUsage);
 

@@ -87,6 +87,13 @@ func TestAccountUsageReadsOnlyReturnedWindowsAndCaches(t *testing.T) {
 	if forced.Cached {
 		t.Fatal("forced refresh was reported as cached")
 	}
+	events, err := server.store.AllFiveHourEvents(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Kind != store.FiveHourEventOAuth || events[0].UsedPercent != 11.25 {
+		t.Fatalf("forced refresh observations = %+v", events)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if usageCalls != 2 || profileCalls != 2 {

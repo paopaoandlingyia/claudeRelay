@@ -262,13 +262,46 @@ but cannot make an otherwise valid usage reading fail.
 Successful results live in a two-minute in-memory cache, but the console never reads or refreshes
 them automatically. Only an explicit per-account action calls the cache-bypassing refresh endpoint,
 so opening the console and its five-second operations poll generate no Anthropic usage requests.
-Ordinary cached reads are not persisted. An explicit refresh now writes a calibration snapshot as
-described in the 2026-08-09 decision; no scheduling decision is derived from it.
+Ordinary cached reads are not persisted. An explicit refresh writes one quota observation as
+described in the 2026-08-26 decision; no scheduling decision is derived from it.
 
 Usage reads share the configured outbound proxy. Enabled accounts may use the existing synchronized
 OAuth refresh path when their access token is near expiry. Disabled accounts are read only while
 their current access token remains valid, preserving the rule that observation cannot take over a
 refresh-token chain.
+
+## 2026-08-26: five-hour capacity becomes a long-term event observation
+
+This supersedes the five-hour cumulative-snapshot estimator in the 2026-08-09 decision. The old
+format attached a response-header utilization reading to relay-wide cumulative totals captured only
+after a streaming body completed. Concurrent responses could therefore share counters, finish out
+of header order, or cross a reset boundary. Grouping by reset identity kept ordinary windows
+separate, but it could not make those counter deltas request-exact, so linear full-window
+extrapolation was more precise-looking than the evidence allowed.
+
+Each successful Messages response now produces one content-free event after its usage observer
+finishes. The event retains its request key for idempotence, serving account, normalized upstream
+reset identity, header and completion times, HTTP status, model, utilization reading, ordinary
+input, five-minute and one-hour cache creation, cache read, output, usage presence, and stream
+completeness. Events are batched with the existing five-second accounting worker. Missing usage or
+missing quota headers remain explicit quality facts instead of causing an event to disappear.
+
+A five-hour window is identified directly by `(account_id, resets_at)`. It is marked exhausted only
+from explicit upstream evidence: utilization at 100%, a rejected status, or a surpassed-threshold
+flag on the five-hour headers. This mark is recorded before bounded failover can hide the account
+that produced the `429`. Opening a new reset window does not imply that the previous window was
+exhausted. Manual OAuth refreshes add quota-reading events but no synthetic token totals.
+
+The console values the events actually observed in current windows and explicitly exhausted
+windows using versioned API prices. It does not extrapolate partially used windows and does not
+assume that API price ratios are subscription quota weights. Non-exhausted historical windows stay
+in the dataset but are excluded from exhausted-window analysis by default.
+
+Observation data has no automatic retention horizon. The operator can export a versioned ZIP with
+window, event, and model-price CSV files, then clear this dataset independently of hourly usage.
+Exports contain account aliases and billing metadata only, never account UUIDs, emails,
+credentials, prompts, or response content. Schema version 8 drops the obsolete snapshot table; its
+rows were live estimates and were explicitly declared disposable before this migration.
 
 ## 2026-08-09: response usage is observed and persisted as aggregates
 
@@ -294,32 +327,9 @@ are separate, versioned rules with effective timestamps; exact IDs take preceden
 prefix rules. Unknown models remain unpriced while their raw usage stays available. Default prices
 seed a fresh schema but UI-added versions are data, so new models and price changes need no build.
 
-Every Messages response carries the serving account's five-hour window in its unified rate limit
-headers, so sampling follows relayed traffic and issues no upstream request of its own. The console
-automatic poll never calls the private OAuth usage surface, and nothing on this path rotates a
-token. The headers are read and published to the live account view before the body is streamed, because a
-streaming body runs for minutes and a reading timestamped once it finished could be recorded as
-later than one taken after it. Persistence still waits for the body observer so the accompanying
-cumulative counters include that request. A reading is stored only when it differs from the last
-one written for that account, which is rate limit enough because utilization arrives rounded to
-whole percent. Each stored reading carries the
-five-hour percentage, the reset identity, and the cumulative per-model totals as of a flush. An
-explicit refresh still writes a comparable reading through the same table.
-
-The reset instant identifies a window. The OAuth surface recomputes that timestamp to the
-microsecond on every read and the headers report it a second early on some responses, so both are
-reduced to the epoch second and readings within a few seconds of each other are one window. A window
-is measured from its own earliest reading rather than from the reading before it: utilization moves
-in whole percent, so adjacent readings are the ones most likely to differ by nothing, while
-anchoring lets the denominator accumulate until the extrapolation is worth reading. The anchor need
-not be the true start of the window, because only the numerator and the denominator have to describe
-the same span. Relay cost across that span divided by the percentage it gained yields the
-full-window estimate. Readings are kept for thirty days.
-
-The console keeps that extrapolation at account scope because Anthropic reports only one
-utilization percentage for the account. It derives per-model token and API-price deltas from the
-same two snapshots and nests them beneath the account row as composition, without inventing a
-model-level share of subscription quota.
+The response observer also made five-hour analysis possible. Its original cumulative-snapshot
+estimator has since been removed; request-level attribution, explicit exhaustion criteria, export,
+and retention are defined by the 2026-08-26 decision above.
 
 ## 2026-08-01: CCH has no relay semantics
 

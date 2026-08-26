@@ -171,9 +171,20 @@
       </div>
       <div class="usage-dashboard">
         <div class="card usage-card">
-          <div class="usage-card-head"><div><h3>最新五小时窗口</h3><small>账号级额度外推；展开账号可查看同一观测区间内的模型构成</small></div></div>
-          <div id="usageEstimatesEmpty" class="usage-empty-note">还没有窗口积累到可测量的额度变化。中转流量经过时会自动取样，无需手动刷新。</div>
-          <div class="table-wrap"><table id="usageEstimatesTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th>观测区间</th><th class="col-number">额度增量</th><th class="col-number">区间价值</th><th class="col-number">完整窗口外推</th></tr></thead><tbody id="usageEstimatesBody"></tbody></table></div>
+          <div class="usage-card-head">
+            <div><h3>当前五小时窗口</h3><small id="fiveHourStats">逐请求归属上游窗口，只显示实际已发生的 API 标价等价值</small></div>
+            <div class="bar-actions">
+              <button id="exportFiveHourButton" class="btn btn-inline" type="button">导出观测</button>
+              <button id="clearFiveHourButton" class="btn btn-inline btn-danger" type="button">清空观测</button>
+            </div>
+          </div>
+          <div id="fiveHourCurrentEmpty" class="usage-empty-note">当前还没有经过 relay 的五小时窗口请求。</div>
+          <div class="table-wrap"><table id="fiveHourCurrentTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th class="col-number">已用额度</th><th>重置时间</th><th class="col-number">请求</th><th class="col-number">API 等价值</th></tr></thead><tbody id="fiveHourCurrentBody"></tbody></table></div>
+        </div>
+        <div class="card usage-card">
+          <div class="usage-card-head"><div><h3>已耗尽窗口</h3><small>只收录收到明确五小时耗尽信号的窗口；展开可查看模型和缓存构成</small></div></div>
+          <div id="fiveHourExhaustedEmpty" class="usage-empty-note">还没有观测到明确耗尽的五小时窗口。</div>
+          <div class="table-wrap"><table id="fiveHourExhaustedTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th>耗尽时间</th><th>重置时间</th><th class="col-number">请求</th><th class="col-number">API 等价值</th></tr></thead><tbody id="fiveHourExhaustedBody"></tbody></table></div>
         </div>
         <div class="usage-summary-grid">
           <article class="card"><small>API 标价等价值</small><strong id="usageCost">—</strong><span id="usageCostNote">按发生时价格估算</span></article>

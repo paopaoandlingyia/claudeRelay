@@ -74,7 +74,7 @@ type CooldownMatch struct {
 	Reason string
 }
 
-const schemaVersion = 7
+const schemaVersion = 8
 
 type Store struct {
 	db *sql.DB
@@ -82,9 +82,6 @@ type Store struct {
 	// Zero on startup so the first Bind cleans up whatever a previous process
 	// left behind.
 	lastBindingPrune atomic.Int64
-	// lastSnapshotPrune is the same for subscription usage snapshots, which are
-	// written continuously once sampling follows relayed traffic.
-	lastSnapshotPrune atomic.Int64
 }
 
 // sqliteDSNParams configures every connection the pool opens.
@@ -213,16 +210,40 @@ func (s *Store) initialize(ctx context.Context) error {
 			UNIQUE(model_pattern,effective_from)
 		)`,
 		`CREATE INDEX IF NOT EXISTS model_prices_effective_idx ON model_prices(effective_from)`,
-		`CREATE TABLE IF NOT EXISTS subscription_usage_snapshots (
-			id INTEGER PRIMARY KEY,
+		`CREATE TABLE IF NOT EXISTS five_hour_windows (
 			account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-			observed_at INTEGER NOT NULL,
-			resets_at TEXT NOT NULL DEFAULT '',
-			used_percent REAL NOT NULL,
-			totals_json TEXT NOT NULL,
-			UNIQUE(account_id,observed_at)
+			resets_at TEXT NOT NULL,
+			first_observed_at INTEGER NOT NULL,
+			last_observed_at INTEGER NOT NULL,
+			first_used_percent REAL NOT NULL,
+			last_used_percent REAL NOT NULL,
+			max_used_percent REAL NOT NULL,
+			exhausted_at INTEGER NOT NULL DEFAULT 0,
+			exhaustion_reason TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY(account_id,resets_at)
 		)`,
-		`CREATE INDEX IF NOT EXISTS subscription_usage_snapshots_account_time_idx ON subscription_usage_snapshots(account_id,observed_at)`,
+		`CREATE INDEX IF NOT EXISTS five_hour_windows_exhausted_idx ON five_hour_windows(exhausted_at,last_observed_at)`,
+		`CREATE TABLE IF NOT EXISTS five_hour_events (
+			id INTEGER PRIMARY KEY,
+			event_key TEXT NOT NULL UNIQUE,
+			account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+			resets_at TEXT NOT NULL DEFAULT '',
+			kind TEXT NOT NULL,
+			observed_at INTEGER NOT NULL,
+			completed_at INTEGER NOT NULL,
+			model TEXT NOT NULL DEFAULT '',
+			status INTEGER NOT NULL DEFAULT 0,
+			used_percent REAL NOT NULL DEFAULT -1,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_5m_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+			usage_seen INTEGER NOT NULL DEFAULT 0,
+			complete INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS five_hour_events_window_idx ON five_hour_events(account_id,resets_at,observed_at)`,
+		`CREATE INDEX IF NOT EXISTS five_hour_events_observed_idx ON five_hour_events(observed_at)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -290,6 +311,19 @@ func (s *Store) initialize(ctx context.Context) error {
 			return fmt.Errorf("remove obsolete Sonnet 5 price increase: %w", err)
 		}
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=7`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	if version < 8 {
+		// The old estimator paired utilization readings with cumulative totals
+		// captured after response completion. Concurrent or cross-reset streams
+		// made those historical rows unsuitable for exact window attribution.
+		// They were explicitly treated as disposable live estimates, so start the
+		// request-level observation format with a clean boundary.
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS subscription_usage_snapshots`); err != nil {
+			return fmt.Errorf("remove legacy five-hour estimates: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=8`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}

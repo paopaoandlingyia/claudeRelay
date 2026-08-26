@@ -18,26 +18,34 @@ type valuedUsage struct {
 	Unpriced bool                `json:"unpriced,omitempty"`
 }
 
-type fiveHourEstimate struct {
-	Account          string        `json:"account"`
-	From             int64         `json:"from"`
-	To               int64         `json:"to"`
-	ResetsAt         string        `json:"resets_at,omitempty"`
-	UsedPercentDelta float64       `json:"used_percent_delta"`
-	ObservedCostUSD  float64       `json:"observed_cost_usd"`
-	FullWindowUSD    float64       `json:"full_window_usd"`
-	ByModel          []valuedUsage `json:"by_model"`
-	Unpriced         bool          `json:"unpriced,omitempty"`
+type fiveHourWindowUsage struct {
+	Account           string        `json:"account"`
+	FirstObservedAt   int64         `json:"first_observed_at"`
+	LastObservedAt    int64         `json:"last_observed_at"`
+	ResetsAt          int64         `json:"resets_at"`
+	FirstUsedPercent  float64       `json:"first_used_percent"`
+	LastUsedPercent   float64       `json:"last_used_percent"`
+	MaxUsedPercent    float64       `json:"max_used_percent"`
+	ExhaustedAt       int64         `json:"exhausted_at,omitempty"`
+	ExhaustionReason  string        `json:"exhaustion_reason,omitempty"`
+	ObservedCostUSD   float64       `json:"observed_cost_usd"`
+	EventCount        int64         `json:"event_count"`
+	MissingUsageCount int64         `json:"missing_usage_count"`
+	IncompleteCount   int64         `json:"incomplete_count"`
+	ByModel           []valuedUsage `json:"by_model"`
+	Unpriced          bool          `json:"unpriced,omitempty"`
 }
 
 type usageDashboardResponse struct {
-	From              int64              `json:"from"`
-	To                int64              `json:"to"`
-	Totals            valuedUsage        `json:"totals"`
-	ByModel           []valuedUsage      `json:"by_model"`
-	ByAccount         []valuedUsage      `json:"by_account"`
-	UnpricedModels    []string           `json:"unpriced_models"`
-	FiveHourEstimates []fiveHourEstimate `json:"five_hour_estimates"`
+	From              int64                          `json:"from"`
+	To                int64                          `json:"to"`
+	Totals            valuedUsage                    `json:"totals"`
+	ByModel           []valuedUsage                  `json:"by_model"`
+	ByAccount         []valuedUsage                  `json:"by_account"`
+	UnpricedModels    []string                       `json:"unpriced_models"`
+	FiveHourCurrent   []fiveHourWindowUsage          `json:"five_hour_current"`
+	FiveHourExhausted []fiveHourWindowUsage          `json:"five_hour_exhausted"`
+	FiveHourStats     store.FiveHourObservationStats `json:"five_hour_stats"`
 }
 
 func (s *Server) usageDashboard(w http.ResponseWriter, r *http.Request) {
@@ -66,10 +74,24 @@ func (s *Server) usageDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := buildUsageDashboard(buckets, prices, from, now.Unix())
-	snapshots, err := s.store.SubscriptionUsageSnapshots(r.Context())
-	if err == nil {
-		response.FiveHourEstimates = latestFiveHourEstimatePerAccount(buildFiveHourEstimates(snapshots, prices))
+	current, err := s.store.FiveHourWindows(r.Context(), false, now.UnixMilli(), 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to query current five-hour windows")
+		return
 	}
+	exhausted, err := s.store.FiveHourWindows(r.Context(), true, now.UnixMilli(), 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to query exhausted five-hour windows")
+		return
+	}
+	stats, err := s.store.FiveHourObservationStats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to query five-hour observation statistics")
+		return
+	}
+	response.FiveHourCurrent = valueFiveHourWindows(current, prices)
+	response.FiveHourExhausted = valueFiveHourWindows(exhausted, prices)
+	response.FiveHourStats = stats
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -77,7 +99,7 @@ func buildUsageDashboard(buckets []store.UsageBucket, prices []store.ModelPrice,
 	byModel := make(map[string]*valuedUsage)
 	byAccount := make(map[string]*valuedUsage)
 	unpriced := make(map[string]bool)
-	response := usageDashboardResponse{From: from * 1000, To: to * 1000, ByModel: []valuedUsage{}, ByAccount: []valuedUsage{}, UnpricedModels: []string{}, FiveHourEstimates: []fiveHourEstimate{}}
+	response := usageDashboardResponse{From: from * 1000, To: to * 1000, ByModel: []valuedUsage{}, ByAccount: []valuedUsage{}, UnpricedModels: []string{}, FiveHourCurrent: []fiveHourWindowUsage{}, FiveHourExhausted: []fiveHourWindowUsage{}}
 	for _, bucket := range buckets {
 		price, priced := matchingPrice(prices, bucket.Model, bucket.BucketStart)
 		cost := 0.0
@@ -150,201 +172,41 @@ func usageCost(usage store.UsageCounters, price store.ModelPrice) float64 {
 		float64(usage.CacheReadTokens)*price.CacheReadUSDPerMTok) / 1_000_000
 }
 
-type windowKey struct {
-	accountID int64
-	resetsAt  string
-}
-
-type windowSpan struct {
-	first, last store.SubscriptionUsageSnapshot
-	resetsAt    string
-}
-
-// Five seconds leaves room beyond the observed one-second upstream drift while
-// staying negligible beside the five hours between genuine reset instants.
-const fiveHourResetMergeToleranceSeconds int64 = 5
-
-// minMeasurablePercentDelta discards a window whose utilization barely moved.
-// A reading carries up to half a point of rounding error, so anything below half
-// a point extrapolates to more error than answer.
-//
-// It also keeps a denominator too small to divide by out of the arithmetic.
-// Readings the sampler stored before it began rounding differ by around 1e-15
-// when they report the same whole percent, because multiplying the 0..1 fraction
-// out leaves a residue. The manual refresh path reaches the same floor from the
-// other direction: the OAuth surface reports its own 0..100 value in fractions
-// of a point, so two of those readings can differ by a quarter of a point and
-// mean nothing by it.
-const minMeasurablePercentDelta = 0.5
-
-func sameFiveHourReset(left, right string) bool {
-	if left == right {
-		return true
-	}
-	leftSeconds, err := strconv.ParseInt(left, 10, 64)
-	if err != nil {
-		return false
-	}
-	rightSeconds, err := strconv.ParseInt(right, 10, 64)
-	if err != nil {
-		return false
-	}
-	if leftSeconds < rightSeconds {
-		leftSeconds, rightSeconds = rightSeconds, leftSeconds
-	}
-	return leftSeconds-rightSeconds <= fiveHourResetMergeToleranceSeconds
-}
-
-// laterFiveHourReset chooses the identity a merged window reports. Upstream
-// states the instant early rather than late, and a genuine one falls on a ten
-// minute boundary, so the latest value the merged readings carried is the one
-// that was never rounded down. Which reading a window happens to be anchored on
-// is a property of the data, and the row is not free to name the drifted
-// identity when the anchor is the reading that drifted.
-func laterFiveHourReset(left, right string) string {
-	if left == right {
-		return left
-	}
-	leftSeconds, leftErr := strconv.ParseInt(left, 10, 64)
-	rightSeconds, rightErr := strconv.ParseInt(right, 10, 64)
-	// Only exactly equal identities merge when either fails to parse, so this
-	// guard is reached by nothing sameFiveHourReset would group.
-	if leftErr != nil || rightErr != nil || leftSeconds >= rightSeconds {
-		return left
-	}
-	return right
-}
-
-// buildFiveHourEstimates anchors every window to its own earliest reading rather
-// than pairing neighbouring ones. Utilization is reported in whole percent, so
-// the closer two readings sit the more certain their difference is zero, and
-// denser sampling would defeat itself. Anchoring lets the denominator accumulate
-// across the window, which is also what makes the figure more accurate as the
-// window fills.
-//
-// The anchor need not be the true start of the window. Only the numerator and
-// denominator have to describe the same span, so quota the account spent before
-// the relay first saw it is excluded from both.
-func buildFiveHourEstimates(snapshots []store.SubscriptionUsageSnapshot, prices []store.ModelPrice) []fiveHourEstimate {
-	windows := make(map[windowKey]*windowSpan)
-	var order []windowKey
-	for index := len(snapshots) - 1; index >= 0; index-- {
-		current := snapshots[index]
-		if current.ResetsAt == "" {
-			continue
-		}
-		key := windowKey{current.AccountID, current.ResetsAt}
-		span := windows[key]
-		if span == nil {
-			for _, candidate := range order {
-				if candidate.accountID == current.AccountID && sameFiveHourReset(candidate.resetsAt, current.ResetsAt) {
-					key = candidate
-					span = windows[key]
-					windows[windowKey{current.AccountID, current.ResetsAt}] = span
-					break
-				}
+func valueFiveHourWindows(windows []store.FiveHourWindow, prices []store.ModelPrice) []fiveHourWindowUsage {
+	result := make([]fiveHourWindowUsage, 0, len(windows))
+	for _, window := range windows {
+		values := make([]valuedUsage, 0, len(window.ByModel))
+		cost := 0.0
+		unpriced := false
+		for model, counters := range window.ByModel {
+			value := valuedUsage{Model: model, Usage: counters}
+			if price, ok := matchingPrice(prices, model, window.LastObservedAt/1000); ok {
+				value.CostUSD = usageCost(counters, price)
+				cost += value.CostUSD
+			} else {
+				value.Unpriced = true
+				unpriced = true
 			}
+			values = append(values, value)
 		}
-		if span == nil {
-			span = &windowSpan{first: current, last: current, resetsAt: current.ResetsAt}
-			windows[key] = span
-			order = append(order, key)
-			continue
-		}
-		span.resetsAt = laterFiveHourReset(span.resetsAt, current.ResetsAt)
-		if current.ObservedAt < span.first.ObservedAt {
-			span.first = current
-		}
-		if current.ObservedAt > span.last.ObservedAt {
-			span.last = current
-		}
+		sort.Slice(values, func(i, j int) bool {
+			if values[i].CostUSD == values[j].CostUSD {
+				return values[i].Model < values[j].Model
+			}
+			return values[i].CostUSD > values[j].CostUSD
+		})
+		reset, _ := strconv.ParseInt(window.ResetsAt, 10, 64)
+		result = append(result, fiveHourWindowUsage{
+			Account: window.Account, FirstObservedAt: window.FirstObservedAt,
+			LastObservedAt: window.LastObservedAt, ResetsAt: reset * 1000,
+			FirstUsedPercent: window.FirstUsedPercent, LastUsedPercent: window.LastUsedPercent,
+			MaxUsedPercent: window.MaxUsedPercent, ExhaustedAt: window.ExhaustedAt,
+			ExhaustionReason: window.ExhaustionReason, ObservedCostUSD: cost,
+			EventCount: window.EventCount, MissingUsageCount: window.MissingUsageCount,
+			IncompleteCount: window.IncompleteCount, ByModel: values, Unpriced: unpriced,
+		})
 	}
-	var estimates []fiveHourEstimate
-	for _, key := range order {
-		span := windows[key]
-		// A window holding one reading compares it against itself and falls out
-		// here along with a window whose utilization never moved.
-		deltaPercent := span.last.UsedPercent - span.first.UsedPercent
-		if deltaPercent < minMeasurablePercentDelta {
-			continue
-		}
-		byModel, cost, unpriced := snapshotDeltaByModel(span.first.Totals, span.last.Totals, prices, span.last.ObservedAt/1000)
-		if cost <= 0 {
-			continue
-		}
-		estimates = append(estimates, fiveHourEstimate{Account: span.last.Account, From: span.first.ObservedAt,
-			To: span.last.ObservedAt, ResetsAt: span.resetsAt, UsedPercentDelta: deltaPercent,
-			ObservedCostUSD: cost, FullWindowUSD: cost / deltaPercent * 100, ByModel: byModel, Unpriced: unpriced})
-	}
-	return estimates
-}
-
-// latestFiveHourEstimatePerAccount keeps the dashboard to one useful row per
-// account while the store continues retaining historical windows for accurate
-// anchoring and future analysis.
-func latestFiveHourEstimatePerAccount(estimates []fiveHourEstimate) []fiveHourEstimate {
-	latest := make(map[string]fiveHourEstimate)
-	for _, estimate := range estimates {
-		current, exists := latest[estimate.Account]
-		if !exists || estimate.To > current.To {
-			latest[estimate.Account] = estimate
-		}
-	}
-	result := make([]fiveHourEstimate, 0, len(latest))
-	for _, estimate := range latest {
-		result = append(result, estimate)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].To == result[j].To {
-			return result[i].Account < result[j].Account
-		}
-		return result[i].To < result[j].To
-	})
 	return result
-}
-
-func snapshotDeltaByModel(before, after map[string]store.UsageCounters, prices []store.ModelPrice, at int64) ([]valuedUsage, float64, bool) {
-	values := make([]valuedUsage, 0, len(after))
-	cost := 0.0
-	unpriced := false
-	for model, current := range after {
-		prior := before[model]
-		delta := store.UsageCounters{
-			InputTokens: max64(0, current.InputTokens-prior.InputTokens), OutputTokens: max64(0, current.OutputTokens-prior.OutputTokens),
-			CacheCreation5mTokens: max64(0, current.CacheCreation5mTokens-prior.CacheCreation5mTokens),
-			CacheCreation1hTokens: max64(0, current.CacheCreation1hTokens-prior.CacheCreation1hTokens),
-			CacheReadTokens:       max64(0, current.CacheReadTokens-prior.CacheReadTokens),
-			Requests:              max64(0, current.Requests-prior.Requests),
-			Incomplete:            max64(0, current.Incomplete-prior.Incomplete),
-		}
-		if delta.InputTokens == 0 && delta.OutputTokens == 0 && delta.CacheCreation5mTokens == 0 &&
-			delta.CacheCreation1hTokens == 0 && delta.CacheReadTokens == 0 && delta.Requests == 0 && delta.Incomplete == 0 {
-			continue
-		}
-		value := valuedUsage{Model: model, Usage: delta}
-		if price, ok := matchingPrice(prices, model, at); ok {
-			value.CostUSD = usageCost(delta, price)
-			cost += value.CostUSD
-		} else {
-			value.Unpriced = true
-			unpriced = true
-		}
-		values = append(values, value)
-	}
-	sort.Slice(values, func(i, j int) bool {
-		if values[i].CostUSD == values[j].CostUSD {
-			return values[i].Model < values[j].Model
-		}
-		return values[i].CostUSD > values[j].CostUSD
-	})
-	return values, cost, unpriced
-}
-
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func (s *Server) listModelPrices(w http.ResponseWriter, r *http.Request) {

@@ -952,12 +952,13 @@ func TestExplicitFiveHourExhaustionCoolsAccountAcrossModels(t *testing.T) {
 	t.Parallel()
 	var calls int
 	var firstAuthorization string
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
 			firstAuthorization = r.Header.Get("Authorization")
 			w.Header().Set("anthropic-ratelimit-unified-5h-status", "rejected")
-			w.Header().Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+			w.Header().Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(reset.Unix(), 10))
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -985,6 +986,13 @@ func TestExplicitFiveHourExhaustionCoolsAccountAcrossModels(t *testing.T) {
 	cooling, err := server.store.IsCooling(t.Context(), account.ID, "claude-other-model", time.Now())
 	if err != nil || !cooling {
 		t.Fatalf("cross-model cooling=%v err=%v", cooling, err)
+	}
+	windows, err := server.store.FiveHourWindows(t.Context(), true, time.Now().UnixMilli(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 1 || windows[0].Account != alias || windows[0].ResetsAt != strconv.FormatInt(reset.Unix(), 10) {
+		t.Fatalf("exhausted windows=%+v", windows)
 	}
 }
 

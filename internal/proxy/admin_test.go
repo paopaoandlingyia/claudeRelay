@@ -119,10 +119,6 @@ func TestListAccountsUpdatesFiveHourWindowFromResponseHeaders(t *testing.T) {
 	defer upstream.Close()
 	defer release()
 	server := newTestServer(t, upstream.URL, 4096)
-	account, found, err := server.store.AccountByAlias(t.Context(), "default")
-	if err != nil || !found {
-		t.Fatalf("account lookup failed: found=%v err=%v", found, err)
-	}
 
 	before := decodeAccounts(t, adminRequest(t, server, http.MethodGet, "/admin/v1/accounts", ""))
 	if len(before) != 1 || before[0].FiveHourWindow != nil {
@@ -163,13 +159,6 @@ func TestListAccountsUpdatesFiveHourWindowFromResponseHeaders(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("relay response did not finish after the upstream body was released")
-	}
-	deadline = time.Now().Add(time.Second)
-	for server.sampler.forAccount(account).stored.Load() == nil && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if server.sampler.forAccount(account).stored.Load() == nil {
-		t.Fatal("response-derived window was not persisted after the stream completed")
 	}
 }
 

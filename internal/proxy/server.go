@@ -166,6 +166,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /admin/v1/usage", s.usageDashboard)
 	mux.HandleFunc("GET /admin/v1/usage/prices", s.listModelPrices)
 	mux.HandleFunc("POST /admin/v1/usage/prices", s.saveModelPrice)
+	mux.HandleFunc("GET /admin/v1/usage/five-hour/export", s.exportFiveHourObservations)
+	mux.HandleFunc("DELETE /admin/v1/usage/five-hour", s.clearFiveHourObservations)
 	mux.HandleFunc("DELETE /admin/v1/usage", s.clearUsageAccounting)
 	return withRequestID(s.securityHeaders(s.authenticate(mux)))
 }
@@ -390,6 +392,10 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 						"model", decision.model, "reason", decision.reason, "until", decision.until, "error", cooldownErr)
 				}
 			}
+			if response.StatusCode == http.StatusTooManyRequests && anthropicWindowExhausted(response.Header, "5h") {
+				s.markFiveHourExhausted(incoming.Context(), requestID, selected.Account, route.Model,
+					response.StatusCode, response.Header, observedAt)
+			}
 		}
 		if selected.Pinned || strings.TrimSpace(forcedAlias) != "" || attempt == 1 {
 			break
@@ -440,8 +446,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	}
 	if incoming.URL.Path == "/v1/messages" && successful && sampled {
 		// Publish the response-derived balance before streaming the body. The
-		// persisted accounting snapshot still waits until usage observation has
-		// finished below.
+		// request-level observation still waits until usage parsing has finished.
 		s.sampler.observe(selected.Account, window)
 	}
 
@@ -456,10 +461,16 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		if !observedUsage.Seen && copyErr == nil {
 			s.warnMissingUsage(requestID, servedModel, response)
 		}
-		s.accounting.Record(selected.Account.ID, servedModel, started, observedUsage)
-		if sampled {
-			s.sampleFiveHourWindow(selected.Account, window)
+		fiveHour := accounting.FiveHourContext{
+			EventKey:   requestID + ":" + strconv.FormatInt(selected.Account.ID, 10) + ":" + strconv.FormatInt(observedAt.UnixNano(), 10),
+			ObservedAt: observedAt, CompletedAt: time.Now(),
+			Status: response.StatusCode, UsedPercent: -1,
 		}
+		if sampled {
+			fiveHour.ResetsAt = window.resetsAt
+			fiveHour.UsedPercent = window.usedPercent
+		}
+		s.accounting.Record(selected.Account.ID, servedModel, started, observedUsage, fiveHour)
 	}
 	if copyErr != nil {
 		slog.Warn("relay response interrupted", "request_id", requestID, "path", incoming.URL.Path, "status", response.StatusCode, "error", copyErr)
@@ -474,6 +485,33 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		}
 	}
 	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
+}
+
+func (s *Server) markFiveHourExhausted(ctx context.Context, requestID string, account store.Account,
+	model string, status int, headers http.Header, observedAt time.Time,
+) {
+	reset := normalizeResetIdentity(headers.Get(fiveHourResetHeader))
+	if reset == "" {
+		if aggregate, ok := anthropicAggregateReset(headers, observedAt, 6*time.Hour); ok {
+			reset = strconv.FormatInt(aggregate.Unix(), 10)
+		} else {
+			return
+		}
+	}
+	usedPercent := -1.0
+	if reading, ok := readFiveHourWindow(headers, observedAt); ok {
+		usedPercent = reading.usedPercent
+	}
+	event := store.FiveHourEvent{
+		EventKey: "exhaustion:" + requestID + ":" + strconv.FormatInt(account.ID, 10) + ":" +
+			strconv.FormatInt(observedAt.UnixNano(), 10),
+		AccountID: account.ID, ResetsAt: reset, ObservedAt: observedAt.UnixMilli(),
+		CompletedAt: observedAt.UnixMilli(), Model: model, Status: status,
+		UsedPercent: usedPercent,
+	}
+	if err := s.store.MarkFiveHourExhausted(ctx, event, cooldownReasonFiveHourExhausted); err != nil {
+		slog.Warn("persist five-hour exhaustion", "request_id", requestID, "account", account.Alias, "error", err)
+	}
 }
 
 func stickyTTLAtCompletion(route requestRoute, observedAt, completedAt time.Time) time.Duration {

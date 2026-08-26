@@ -107,7 +107,7 @@ receives the local `429` and should retry after backing off.
 ## Console
 
 Open `http://127.0.0.1:8567/` and sign in with the administration API key from the configuration.
-The console is a single dense screen with three sections:
+The console is a single dense screen with four sections:
 
 - **账号** — every account with its pool and real routing state: enabled, cooling down (with the reason and
   remaining time), token expiry, last successful refresh, traffic totals, and live sticky bindings.
@@ -116,6 +116,9 @@ The console is a single dense screen with three sections:
   OAuth usage windows and the plan label. Per-account actions cover usage refresh, enable/disable,
   connectivity check, forced token refresh, cooldown release, rename, and deletion.
 - **请求** — the recent request records described below, filterable by account and by failures only.
+- **用量** — hourly token/API-price totals plus current and explicitly exhausted five-hour windows.
+  Window rows expand into per-model input, 5m/1h cache creation, cache-read, output, and API-price
+  composition. The long-term observation data can be exported as ZIP/CSV or cleared independently.
 - **接入** — the relay endpoint, both ingress API keys, copy-ready Claude Code / PowerShell / curl
   snippets, and the effective runtime parameters.
 
@@ -153,6 +156,8 @@ GET    /admin/v1/usage?from={epoch_milliseconds}
 DELETE /admin/v1/usage
 GET    /admin/v1/usage/prices
 POST   /admin/v1/usage/prices
+GET    /admin/v1/usage/five-hour/export
+DELETE /admin/v1/usage/five-hour
 ```
 
 `import` accepts a pasted CLIProxyAPI credential document and leaves the account disabled. It
@@ -169,25 +174,31 @@ present in the upstream response. A missing weekly or model-specific limit is om
 invented as zero or unlimited. Successful readings are cached in memory for two minutes; the
 refresh endpoint bypasses that cache. Profile lookup is optional, so an unavailable plan label does
 not hide valid quota windows. Enabled accounts follow the normal token-refresh ownership rules,
-while viewing a disabled account never rotates its refresh token. A forced refresh also saves the
-five-hour percentage and the relay's cumulative token counters at that instant.
+while viewing a disabled account never rotates its refresh token. A forced refresh saves one quota
+reading in the same long-term observation dataset as response-derived readings.
 
-The five-hour window estimate does not depend on that refresh. Anthropic reports the serving
-account's window in the rate limit headers of every Messages response, so the relay samples it from
-traffic it was already carrying and never asks for it. The latest active reading also updates the
-account table while the console performs its normal five-second local poll. A window is measured
-from the earliest reading the relay holds for it to the latest: the relay value accrued over that
-span, divided by the percentage the window gained, extrapolated to a whole window. The figure sharpens as the window
-fills, because utilization is reported in whole percent and a wider span carries proportionally less
-rounding error. It covers relayed traffic only, so an account also used elsewhere reports low.
+Anthropic reports the serving account's five-hour window in the rate-limit headers of Messages
+responses. Each completed successful request is stored as a content-free event tied directly to
+that reset identity, with its account, model, response timing, utilization reading, ordinary input,
+5m/1h cache creation, cache read, output, and completeness. A `429` is marked exhausted only when
+the headers explicitly identify the five-hour window as exhausted; a new reset alone is not treated
+as proof. The console shows actual observed API-price-equivalent value and never extrapolates a
+partially used window. Non-exhausted windows remain available for export but are not presented as
+complete-window calibration samples.
+
+The export is a ZIP containing `manifest.json`, `windows.csv`, `events.csv`, and
+`model_prices.csv`. Times are included as epoch values and UTC text. It contains account aliases and
+billing metadata but no UUIDs, email addresses, credentials, prompts, or response content. Five-hour
+events are retained until explicitly cleared; the console exposes export and clear as separate
+actions so an operator can periodically archive a dataset for local model/cache-weight analysis.
 
 Successful Messages responses are observed after transport-level compression is decoded. The
 relay records only Anthropic's response `usage`, the serving account, model, and hour; it never
 stores prompts or response content. Streaming `message_start` and cumulative `message_delta`
 usage are combined, while incomplete streams remain visible as incomplete samples. Request
 goroutines update an in-memory aggregate only. A background worker writes all pending account/model
-hour buckets in one short SQLite transaction every five seconds and retries failed batches, so
-SQLite work does not block model streaming.
+hour buckets and request-level five-hour events in short SQLite transactions every five seconds and
+retries failed batches, so SQLite work does not block model streaming.
 
 The usage console values raw input, output, five-minute/one-hour cache creation, and cache reads
 against versioned per-model prices. Built-in prices are only defaults. Add an exact model ID or a
