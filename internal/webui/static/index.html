@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <title>Claude Relay 控制台</title>
   <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/five-hour-chart.js" defer></script>
 </head>
 <body>
   <main id="loginView" class="signin">
@@ -182,9 +183,40 @@
           <div class="table-wrap"><table id="fiveHourCurrentTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th class="col-number">已用额度</th><th>重置时间</th><th class="col-number">请求</th><th class="col-number">API 等价值</th></tr></thead><tbody id="fiveHourCurrentBody"></tbody></table></div>
         </div>
         <div class="card usage-card">
-          <div class="usage-card-head"><div><h3>已耗尽窗口</h3><small>只收录收到明确五小时耗尽信号的窗口；展开可查看模型和缓存构成</small></div></div>
+          <div class="usage-card-head"><div><h3>已耗尽窗口</h3><small>每个点是一段完整窗口的 API 等价值；按账号、实际窗口结束时间独立连线</small></div></div>
           <div id="fiveHourExhaustedEmpty" class="usage-empty-note">还没有观测到明确耗尽的五小时窗口。</div>
-          <div class="table-wrap"><table id="fiveHourExhaustedTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th>耗尽时间</th><th>重置时间</th><th class="col-number">请求</th><th class="col-number">API 等价值</th></tr></thead><tbody id="fiveHourExhaustedBody"></tbody></table></div>
+          <div id="fiveHourExhaustedChart" class="five-hour-chart hidden">
+            <div class="five-hour-chart-toolbar">
+              <div>
+                <strong>完整窗口价值走势</strong>
+                <small>横轴按各账号自己的重置时间定位；默认比较最近活跃的 6 个账号</small>
+              </div>
+              <div class="five-hour-chart-controls">
+                <details id="fiveHourAccountPicker" class="five-hour-account-picker">
+                  <summary>选择账号 <span id="fiveHourAccountPickerCount"></span></summary>
+                  <div class="five-hour-account-picker-panel">
+                    <label class="sr-only" for="fiveHourAccountSearch">搜索账号</label>
+                    <input id="fiveHourAccountSearch" type="search" autocomplete="off" placeholder="搜索账号">
+                    <div id="fiveHourAccountList" class="five-hour-account-list" role="group" aria-label="选择要比较的账号"></div>
+                    <small id="fiveHourAccountPickerNote"></small>
+                  </div>
+                </details>
+                <div id="fiveHourExhaustedLegend" class="five-hour-chart-legend" aria-label="当前图表账号"></div>
+              </div>
+            </div>
+            <div class="five-hour-chart-frame">
+              <svg id="fiveHourExhaustedPlot" class="five-hour-chart-plot" viewBox="0 0 960 330" width="960" height="330" role="img" aria-labelledby="fiveHourExhaustedPlotTitle fiveHourExhaustedPlotDescription">
+                <title id="fiveHourExhaustedPlotTitle">已耗尽五小时窗口 API 等价值走势</title>
+                <desc id="fiveHourExhaustedPlotDescription">横轴为各窗口实际重置时间，纵轴为窗口内观测到的 API 标价等价值。每个账号使用独立颜色和线型。</desc>
+              </svg>
+              <div id="fiveHourExhaustedTooltip" class="five-hour-chart-tooltip hidden" role="status"></div>
+            </div>
+            <p class="five-hour-chart-note">最多同时比较 6 个账号；线只连接同一账号的已观测窗口，横向间距保留真实时间差。</p>
+          </div>
+          <details id="fiveHourExhaustedDetails" class="five-hour-window-details hidden">
+            <summary>查看窗口明细 <span id="fiveHourExhaustedCount"></span></summary>
+            <div class="table-wrap"><table id="fiveHourExhaustedTable" class="grid usage-table hidden"><thead><tr><th>账号</th><th>耗尽时间</th><th>重置时间</th><th class="col-number">请求</th><th class="col-number">API 等价值</th></tr></thead><tbody id="fiveHourExhaustedBody"></tbody></table></div>
+          </details>
         </div>
         <div class="usage-summary-grid">
           <article class="card"><small>API 标价等价值</small><strong id="usageCost">—</strong><span id="usageCostNote">按发生时价格估算</span></article>

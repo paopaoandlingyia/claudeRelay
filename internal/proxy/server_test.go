@@ -581,8 +581,13 @@ func TestWebUIIsPublicButManagementAPIStillRequiresAuthentication(t *testing.T) 
 
 	asset := httptest.NewRecorder()
 	server.routes().ServeHTTP(asset, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
-	if asset.Code != http.StatusOK || !strings.Contains(asset.Body.String(), "claudeRelayAdminKey") {
+	if asset.Code != http.StatusOK || !strings.Contains(asset.Body.String(), "claudeRelayAdminKey") || !strings.Contains(asset.Body.String(), "renderExhaustedWindowChart") {
 		t.Fatalf("Web UI asset status = %d", asset.Code)
+	}
+	chartAsset := httptest.NewRecorder()
+	server.routes().ServeHTTP(chartAsset, httptest.NewRequest(http.MethodGet, "/assets/five-hour-chart.js", nil))
+	if chartAsset.Code != http.StatusOK || !strings.Contains(chartAsset.Body.String(), "buildSeries") {
+		t.Fatalf("five-hour chart asset status = %d", chartAsset.Code)
 	}
 
 	admin := httptest.NewRecorder()

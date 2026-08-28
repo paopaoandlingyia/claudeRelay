@@ -14,6 +14,8 @@ const state = {
   usage: null,
   prices: [],
   expandedFiveHourAccounts: new Set(),
+  selectedFiveHourChartAccounts: new Set(),
+  fiveHourChartSelectionInitialized: false,
   autoRefreshEnabled: true,
   panel: "accounts",
   pendingOAuth: readJSON(sessionStorage, "claudeRelayPendingOAuth"),
@@ -407,6 +409,7 @@ function renderUsage() {
   $("fiveHourStats").textContent = `逐请求归属上游窗口 · 已积累 ${formatTokens(stats.windows || 0)} 个窗口、${formatTokens(stats.events || 0)} 条事件、${formatTokens(stats.exhausted || 0)} 个耗尽窗口`;
   renderFiveHourWindows(currentWindows, "current");
   renderFiveHourWindows(exhaustedWindows, "exhausted");
+  renderExhaustedWindowChart(exhaustedWindows);
 
   const pricesBody = $("pricesBody");
   pricesBody.replaceChildren();
@@ -486,6 +489,287 @@ function renderFiveHourWindows(windows, kind) {
     body.appendChild(row);
     if (detailRow) body.appendChild(detailRow);
   }
+}
+
+const FIVE_HOUR_CHART_COLORS = [
+  "var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)",
+  "var(--chart-5)", "var(--chart-6)", "var(--chart-7)", "var(--chart-8)",
+];
+const FIVE_HOUR_CHART_DASHES = ["", "8 4", "2 3", "10 3 2 3"];
+const FIVE_HOUR_CHART_MAX_SERIES = 6;
+const FIVE_HOUR_ACCOUNT_CHOICE_LIMIT = 50;
+
+function renderExhaustedWindowChart(windows) {
+  const chart = $("fiveHourExhaustedChart");
+  const details = $("fiveHourExhaustedDetails");
+  const count = $("fiveHourExhaustedCount");
+  const hasWindows = windows.length > 0;
+  chart.classList.toggle("hidden", !hasWindows);
+  details.classList.toggle("hidden", !hasWindows);
+  count.textContent = hasWindows ? `(${formatTokens(windows.length)})` : "";
+  if (!hasWindows) return;
+
+  const helper = globalThis.ClaudeRelayFiveHourChart;
+  const series = helper?.buildSeries(windows) || [];
+  const accounts = new Set(series.map((value) => value.account));
+  for (const account of state.selectedFiveHourChartAccounts) {
+    if (!accounts.has(account)) state.selectedFiveHourChartAccounts.delete(account);
+  }
+  if (!state.fiveHourChartSelectionInitialized || state.selectedFiveHourChartAccounts.size === 0) {
+    state.selectedFiveHourChartAccounts.clear();
+    for (const account of helper?.recentAccounts(series, FIVE_HOUR_CHART_MAX_SERIES) || []) {
+      state.selectedFiveHourChartAccounts.add(account);
+    }
+    state.fiveHourChartSelectionInitialized = true;
+  }
+  const visibleSeries = series.filter((value) => state.selectedFiveHourChartAccounts.has(value.account));
+  const domain = helper?.chartDomain(visibleSeries);
+
+  renderFiveHourChartAccountPicker(series, windows);
+  renderFiveHourChartLegend(visibleSeries, windows);
+  const svg = $("fiveHourExhaustedPlot");
+  const title = svg.querySelector("title")?.cloneNode(true);
+  const description = svg.querySelector("desc")?.cloneNode(true);
+  svg.replaceChildren();
+  if (title) svg.appendChild(title);
+  if (description) svg.appendChild(description);
+  $("fiveHourExhaustedTooltip").classList.add("hidden");
+  if (!domain) {
+    const empty = chartSVG("text", { x: 480, y: 165, class: "five-hour-chart-empty", "text-anchor": "middle" });
+    empty.textContent = "请选择至少一个有完整窗口的账号";
+    svg.appendChild(empty);
+    return;
+  }
+
+  const width = 960;
+  const height = 330;
+  const margin = { top: 22, right: 24, bottom: 52, left: 72 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const x = (value) => margin.left + (value - domain.minTime) / (domain.maxTime - domain.minTime) * plotWidth;
+  const y = (value) => margin.top + plotHeight - value / domain.maxValue * plotHeight;
+
+  for (let index = 0; index <= 4; index += 1) {
+    const value = domain.maxValue * index / 4;
+    const position = y(value);
+    svg.appendChild(chartSVG("line", {
+      x1: margin.left, x2: width - margin.right, y1: position, y2: position, class: "five-hour-chart-grid",
+    }));
+    const label = chartSVG("text", {
+      x: margin.left - 12, y: position + 4, class: "five-hour-chart-axis-label", "text-anchor": "end",
+    });
+    label.textContent = formatChartUSD(value);
+    svg.appendChild(label);
+  }
+
+  const timeSpan = domain.maxTime - domain.minTime;
+  for (let index = 0; index <= 4; index += 1) {
+    const value = domain.minTime + timeSpan * index / 4;
+    const position = x(value);
+    svg.appendChild(chartSVG("line", {
+      x1: position, x2: position, y1: margin.top, y2: height - margin.bottom, class: "five-hour-chart-grid five-hour-chart-grid-vertical",
+    }));
+    const label = chartSVG("text", {
+      x: position, y: height - 24, class: "five-hour-chart-axis-label", "text-anchor": "middle",
+    });
+    label.textContent = formatChartTimeTick(value, timeSpan);
+    svg.appendChild(label);
+  }
+
+  const yTitle = chartSVG("text", {
+    x: 17, y: margin.top + plotHeight / 2, class: "five-hour-chart-axis-title", "text-anchor": "middle",
+    transform: `rotate(-90 17 ${margin.top + plotHeight / 2})`,
+  });
+  yTitle.textContent = "API 等价值";
+  svg.appendChild(yTitle);
+
+  visibleSeries.forEach((value, seriesIndex) => {
+    const color = FIVE_HOUR_CHART_COLORS[seriesIndex % FIVE_HOUR_CHART_COLORS.length];
+    const dash = FIVE_HOUR_CHART_DASHES[seriesIndex % FIVE_HOUR_CHART_DASHES.length];
+    if (value.points.length > 1) {
+      const path = chartSVG("path", {
+        d: value.points.map((point, index) => `${index ? "L" : "M"} ${x(point.resetsAt).toFixed(2)} ${y(point.value).toFixed(2)}`).join(" "),
+        class: "five-hour-chart-line",
+      });
+      path.style.setProperty("--series-color", color);
+      if (dash) path.setAttribute("stroke-dasharray", dash);
+      svg.appendChild(path);
+    }
+    value.points.forEach((point) => {
+      svg.appendChild(buildFiveHourChartPoint(point, x(point.resetsAt), y(point.value), color));
+    });
+  });
+}
+
+function renderFiveHourChartLegend(series, windows) {
+  const legend = $("fiveHourExhaustedLegend");
+  legend.replaceChildren();
+  series.forEach((value, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "five-hour-chart-legend-item";
+    button.title = `从图表移除 ${value.account}`;
+    button.setAttribute("aria-label", `从图表移除 ${value.account}`);
+    const swatch = chartSVG("svg", { viewBox: "0 0 24 8", width: 24, height: 8, "aria-hidden": "true" });
+    const line = chartSVG("line", { x1: 1, x2: 23, y1: 4, y2: 4, class: "five-hour-chart-legend-line" });
+    line.style.setProperty("--series-color", FIVE_HOUR_CHART_COLORS[index % FIVE_HOUR_CHART_COLORS.length]);
+    const dash = FIVE_HOUR_CHART_DASHES[index % FIVE_HOUR_CHART_DASHES.length];
+    if (dash) line.setAttribute("stroke-dasharray", dash);
+    swatch.appendChild(line);
+    const label = document.createElement("span");
+    label.textContent = value.account;
+    button.append(swatch, label);
+    button.addEventListener("click", () => {
+      if (state.selectedFiveHourChartAccounts.size <= 1) {
+        showToast("图表至少保留一个账号", true);
+        return;
+      }
+      state.selectedFiveHourChartAccounts.delete(value.account);
+      renderExhaustedWindowChart(windows);
+    });
+    legend.appendChild(button);
+  });
+}
+
+function renderFiveHourChartAccountPicker(series, windows) {
+  const helper = globalThis.ClaudeRelayFiveHourChart;
+  const search = $("fiveHourAccountSearch");
+  const count = $("fiveHourAccountPickerCount");
+  count.textContent = `${state.selectedFiveHourChartAccounts.size}/${formatTokens(series.length)}`;
+
+  const renderOptions = () => {
+    const result = helper?.accountChoices(series, search.value, FIVE_HOUR_ACCOUNT_CHOICE_LIMIT) || { choices: [], matchCount: 0 };
+    const list = $("fiveHourAccountList");
+    list.replaceChildren();
+    for (const value of result.choices) {
+      const selected = state.selectedFiveHourChartAccounts.has(value.account);
+      const option = document.createElement("label");
+      option.className = "five-hour-account-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = selected;
+      checkbox.disabled = !selected && state.selectedFiveHourChartAccounts.size >= FIVE_HOUR_CHART_MAX_SERIES;
+      const copy = document.createElement("span");
+      const name = document.createElement("strong");
+      name.textContent = value.account;
+      const latest = value.points[value.points.length - 1];
+      const meta = document.createElement("small");
+      meta.textContent = `${formatTokens(value.points.length)} 个窗口 · 最近 ${formatChartDate(latest.resetsAt)}`;
+      copy.append(name, meta);
+      option.append(checkbox, copy);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          if (state.selectedFiveHourChartAccounts.size >= FIVE_HOUR_CHART_MAX_SERIES) {
+            checkbox.checked = false;
+            showToast(`最多同时比较 ${FIVE_HOUR_CHART_MAX_SERIES} 个账号`, true);
+            return;
+          }
+          state.selectedFiveHourChartAccounts.add(value.account);
+        } else {
+          if (state.selectedFiveHourChartAccounts.size <= 1) {
+            checkbox.checked = true;
+            showToast("图表至少保留一个账号", true);
+            return;
+          }
+          state.selectedFiveHourChartAccounts.delete(value.account);
+        }
+        renderExhaustedWindowChart(windows);
+      });
+      list.appendChild(option);
+    }
+
+    const note = $("fiveHourAccountPickerNote");
+    if (result.matchCount > FIVE_HOUR_ACCOUNT_CHOICE_LIMIT) {
+      note.textContent = `匹配 ${formatTokens(result.matchCount)} 个，仅显示最近 ${FIVE_HOUR_ACCOUNT_CHOICE_LIMIT} 个；继续输入可缩小范围。`;
+    } else {
+      note.textContent = `匹配 ${formatTokens(result.matchCount)} 个 · 最多同时选择 ${FIVE_HOUR_CHART_MAX_SERIES} 个`;
+    }
+  };
+  search.oninput = renderOptions;
+  renderOptions();
+}
+
+function buildFiveHourChartPoint(point, cx, cy, color) {
+  const group = chartSVG("g", { class: "five-hour-chart-point-group" });
+  group.style.setProperty("--series-color", color);
+  const visible = chartSVG("circle", { cx, cy, r: 4.5, class: "five-hour-chart-point" });
+  if (point.window.unpriced) visible.classList.add("is-unpriced");
+  const hit = chartSVG("circle", {
+    cx, cy, r: 14, class: "five-hour-chart-point-hit", tabindex: 0,
+    "aria-label": fiveHourChartPointLabel(point),
+  });
+  const nativeTitle = chartSVG("title");
+  nativeTitle.textContent = fiveHourChartPointLabel(point);
+  hit.appendChild(nativeTitle);
+  const show = () => {
+    group.classList.add("is-active");
+    showFiveHourChartTooltip(point);
+  };
+  const hide = () => {
+    if (document.activeElement === hit) return;
+    group.classList.remove("is-active");
+    $("fiveHourExhaustedTooltip").classList.add("hidden");
+  };
+  hit.addEventListener("mouseenter", show);
+  hit.addEventListener("mouseleave", hide);
+  hit.addEventListener("focus", show);
+  hit.addEventListener("blur", hide);
+  hit.addEventListener("click", show);
+  group.append(visible, hit);
+  return group;
+}
+
+function showFiveHourChartTooltip(point) {
+  const tooltip = $("fiveHourExhaustedTooltip");
+  const title = document.createElement("strong");
+  title.textContent = point.account;
+  const interval = document.createElement("span");
+  interval.textContent = `${formatChartDate(point.startsAt)} – ${formatChartDate(point.resetsAt)}`;
+  const metrics = document.createElement("span");
+  metrics.textContent = `${formatUSD(point.value)} · ${formatTokens(point.window.event_count || 0)} 个请求`;
+  const exhausted = document.createElement("span");
+  exhausted.textContent = point.window.exhausted_at ? `耗尽于 ${formatChartDate(point.window.exhausted_at)}` : "耗尽时间未知";
+  tooltip.replaceChildren(title, interval, metrics, exhausted);
+  if (point.window.unpriced) {
+    const note = document.createElement("span");
+    note.className = "five-hour-chart-tooltip-warn";
+    note.textContent = "价值不含未定价模型";
+    tooltip.appendChild(note);
+  }
+  tooltip.classList.remove("hidden");
+}
+
+function fiveHourChartPointLabel(point) {
+  const unpriced = point.window.unpriced ? "，不含未定价模型" : "";
+  return `${point.account}，窗口 ${formatChartDate(point.startsAt)} 至 ${formatChartDate(point.resetsAt)}，API 等价值 ${formatUSD(point.value)}，${formatTokens(point.window.event_count || 0)} 个请求${unpriced}`;
+}
+
+function chartSVG(tag, attributes = {}) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, String(value));
+  return element;
+}
+
+function formatChartUSD(value) {
+  const number = Number(value || 0);
+  if (number >= 1000) return `$${(number / 1000).toFixed(number >= 10000 ? 0 : 1)}K`;
+  if (number >= 10) return `$${number.toFixed(0)}`;
+  if (number >= 1) return `$${number.toFixed(1)}`;
+  return `$${number.toFixed(2)}`;
+}
+
+function formatChartTimeTick(value, span) {
+  const date = new Date(value);
+  const options = span <= 2 * 24 * 60 * 60 * 1000
+    ? { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }
+    : { month: "numeric", day: "numeric" };
+  return date.toLocaleString([], options);
+}
+
+function formatChartDate(value) {
+  return new Date(Number(value)).toLocaleString([], {
+    month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
 }
 
 function buildFiveHourModelDetails(window, models) {
