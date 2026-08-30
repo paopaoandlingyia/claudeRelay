@@ -225,9 +225,8 @@ Supersedes the 2026-07-31 decision that made the two pools mutually isolated.
 The deployment serves two traffic policies without turning account selection into a general group
 scheduler. Format admission belongs to the key: the compatible ingress accepts ordinary native
 Anthropic requests, and the optional official ingress accepts only requests classified as
-`cc_candidate` that also declare a supported five-minute or one-hour Anthropic cache. The combined
-shape is a policy signal, not authentication of the Claude Code executable; possession of either
-API key remains the actual authentication boundary.
+`cc_candidate`. The classification is a policy signal, not authentication of the Claude Code
+executable; possession of either API key remains the actual authentication boundary.
 
 Account placement is a separate axis, and the two traffic shapes carry asymmetric risk.
 Claude Code-shaped traffic is the shape a subscription is expected to produce, so the official

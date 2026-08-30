@@ -69,10 +69,8 @@ does not by itself prove how Anthropic classified subscription usage.
 - **Capture:** a small Haiku helper request contained a JSON-string `metadata.user_id` with
   `device_id` and `session_id`, but an empty `account_uuid`, and no billing block.
 - **Current classification policy:** only the complete three-header combination above is a
-  `cc_candidate`. Official ingress additionally requires a request-level or block-level
-  `cache_control` with `type: "ephemeral"` and an omitted/`5m`/`1h` TTL. Billing and metadata body
-  evidence is `ambiguous` and has no admission or routing authority. These are observable,
-  spoofable request-shape signals, not client authentication.
+  `cc_candidate`. Billing and metadata body evidence is `ambiguous` and has no admission or routing
+  authority. These are observable, spoofable request-shape signals, not client authentication.
 - **Capture:** the tested New API deployment returned 404 for
   `/v1/messages/count_tokens?beta=true`. Claude Code continued, but native count-token
   compatibility through that gateway remains unresolved.

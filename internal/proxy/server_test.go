@@ -158,69 +158,6 @@ func TestOfficialIngressRejectsNonClaudeCodeShape(t *testing.T) {
 	}
 }
 
-func TestOfficialIngressRejectsMissingOrUnsupportedCache(t *testing.T) {
-	t.Parallel()
-	upstreamCalls := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamCalls++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-	server := newTestServer(t, upstream.URL, 1024)
-	for _, body := range []string{
-		`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`,
-		`{"model":"claude-test","cache_control":{"type":"persistent"},"messages":[{"role":"user","content":"hi"}]}`,
-		`{"model":"claude-test","cache_control":{"type":"ephemeral","ttl":"2h"},"messages":[{"role":"user","content":"hi"}]}`,
-	} {
-		request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
-		request.Header.Set("x-api-key", "official-downstream-key")
-		request.Header.Set("User-Agent", "claude-cli/2.1.219")
-		request.Header.Set(claudeCodeSessionHeader, "official-session")
-		request.Header.Set("X-App", "cli")
-		recorder := httptest.NewRecorder()
-		server.routes().ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusForbidden ||
-			!strings.Contains(recorder.Body.String(), "supported cache declaration") {
-			t.Fatalf("body=%s status=%d response=%s", body, recorder.Code, recorder.Body.String())
-		}
-	}
-	if upstreamCalls != 0 {
-		t.Fatalf("official cache gate allowed %d upstream calls", upstreamCalls)
-	}
-}
-
-func TestOfficialIngressAcceptsSupportedCacheLifetimes(t *testing.T) {
-	t.Parallel()
-	upstreamCalls := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamCalls++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-	server := newTestServer(t, upstream.URL, 4096)
-
-	for _, cacheControl := range []string{
-		`{"type":"ephemeral"}`,
-		`{"type":"ephemeral","ttl":"5m"}`,
-		`{"type":"ephemeral","ttl":"1h"}`,
-	} {
-		body := `{"model":"claude-test","system":[{"type":"text","text":"stable","cache_control":` + cacheControl + `}],"messages":[{"role":"user","content":"hi"}]}`
-		request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
-		request.Header.Set("x-api-key", "official-downstream-key")
-		request.Header.Set("User-Agent", "claude-cli/2.1.219")
-		request.Header.Set(claudeCodeSessionHeader, "official-session")
-		request.Header.Set("X-App", "cli")
-		recorder := httptest.NewRecorder()
-		server.routes().ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("cache_control=%s status=%d body=%s", cacheControl, recorder.Code, recorder.Body.String())
-		}
-	}
-	if upstreamCalls != 3 {
-		t.Fatalf("upstream calls = %d, want 3", upstreamCalls)
-	}
-}
-
 // The compatible ingress is fenced: an official-pool account must never serve a
 // request that did not come through the official key.
 func TestCompatibleIngressNeverSelectsOfficialPoolAccounts(t *testing.T) {
@@ -275,7 +212,7 @@ func TestOfficialIngressDrawsFromTheCompatiblePool(t *testing.T) {
 	// The only account keeps its default compatible placement.
 	server := newTestServer(t, upstream.URL, 4096)
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
-		strings.NewReader(`{"model":"claude-test","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hi"}]}`))
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
 	request.Header.Set("x-api-key", "official-downstream-key")
 	request.Header.Set("User-Agent", "claude-cli/2.1.219")
 	request.Header.Set(claudeCodeSessionHeader, "official-session")
@@ -334,7 +271,7 @@ func TestForcedAccountFromOfficialIngressReachesTheCompatiblePool(t *testing.T) 
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
-		strings.NewReader(`{"model":"claude-test","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":"hi"}]}`))
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
 	request.Header.Set("x-api-key", "official-downstream-key")
 	request.Header.Set("User-Agent", "claude-cli/2.1.219")
 	request.Header.Set(claudeCodeSessionHeader, "official-session")
