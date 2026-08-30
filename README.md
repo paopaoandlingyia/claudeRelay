@@ -247,9 +247,14 @@ whenever its endpoints or client behavior change.
 
 Two things are marked separately. The **key** decides which request format is admitted: requests
 authenticated by `official_api_key` must have a recognized Claude Code shape or are rejected with
-`403`, while `relay_api_key` places no restriction on shape. The accepted shape is
-`User-Agent: claude-cli/...` together with `X-Claude-Code-Session-Id` and `X-App: cli`. This is a
-traffic policy, not proof that the caller is an authentic Anthropic binary.
+`403`, while `relay_api_key` places no restriction on shape. Every accepted official request has a
+versioned `claude-cli/...` User-Agent, `X-Claude-Code-Session-Id`, `X-App: cli`, `anthropic-beta`,
+and `anthropic-version`. Ordinary Messages additionally require structured Claude Code metadata and
+either a billing attribution block or a recognized official system prompt. Native `count_tokens`,
+the one-token Messages fallback used after a missing count endpoint, and the one-token Haiku probe
+have narrower body requirements because the real client omits ordinary attribution there. The live
+request view records the resulting request kind and presence booleans, never the identifying values.
+This is a traffic policy, not proof that the caller is an authentic Anthropic binary.
 
 The **account** carries a pool that decides which traffic may reach it, and permeability is one way:
 

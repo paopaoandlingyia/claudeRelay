@@ -186,7 +186,7 @@ func TestSuccessfulSessionBecomesConfirmedAdmission(t *testing.T) {
 		t.Fatalf("first session status=%d body=%s", first.Code, first.Body.String())
 	}
 	headers := http.Header{"X-Claude-Session-Id": []string{"session-a"}}
-	route, err := deriveRequestRoute([]byte(body), headers, store.AccountPoolCompatible)
+	route, err := deriveRequestRoute([]byte(body), headers, store.AccountPoolCompatible, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}

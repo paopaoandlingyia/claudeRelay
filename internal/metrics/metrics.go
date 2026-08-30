@@ -27,6 +27,7 @@ type Event struct {
 	Failover              *Failover
 	Client                *ClientEvidence
 	ClientClass           string
+	ClientKind            string
 	ClassificationVersion int
 	RelayAction           string
 }
@@ -37,10 +38,13 @@ type ClientEvidence struct {
 	BillingBlock       bool `json:"billing_block"`
 	CCVersion          bool `json:"cc_version"`
 	KnownEntrypoint    bool `json:"known_entrypoint"`
+	OfficialPrompt     bool `json:"official_prompt"`
 	StructuredMetadata bool `json:"structured_metadata"`
 	ClaudeUserAgent    bool `json:"claude_user_agent"`
 	ClaudeCodeSession  bool `json:"claude_code_session"`
 	XAppCLI            bool `json:"x_app_cli"`
+	AnthropicBeta      bool `json:"anthropic_beta"`
+	AnthropicVersion   bool `json:"anthropic_version"`
 }
 
 // Failover names the account a request was moved away from. The relay permits at
@@ -66,6 +70,7 @@ type Record struct {
 	Error                 string          `json:"error,omitempty"`
 	Failover              *Failover       `json:"failover,omitempty"`
 	ClientClass           string          `json:"client_class,omitempty"`
+	ClientKind            string          `json:"client_kind,omitempty"`
 	ClassificationVersion int             `json:"classification_version,omitempty"`
 	ClientEvidence        *ClientEvidence `json:"client_evidence,omitempty"`
 	RelayAction           string          `json:"relay_action,omitempty"`
@@ -144,6 +149,7 @@ func (r *Recorder) Record(event Event) {
 		Error:                 event.Error,
 		Failover:              event.Failover,
 		ClientClass:           event.ClientClass,
+		ClientKind:            event.ClientKind,
 		ClassificationVersion: event.ClassificationVersion,
 		ClientEvidence:        event.Client,
 		RelayAction:           event.RelayAction,

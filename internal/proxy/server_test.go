@@ -158,6 +158,74 @@ func TestOfficialIngressRejectsNonClaudeCodeShape(t *testing.T) {
 	}
 }
 
+func TestOfficialIngressClassifiesClaudeCodeRequestKinds(t *testing.T) {
+	t.Parallel()
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		mutate     func(*http.Request)
+		wantStatus int
+		wantKind   string
+	}{
+		{
+			name: "ordinary messages", path: "/v1/messages", body: officialClaudeCodeTestBody(),
+			wantStatus: http.StatusOK, wantKind: clientKindMessages,
+		},
+		{
+			name: "count tokens without attribution", path: "/v1/messages/count_tokens",
+			body:       `{"model":"claude-sonnet-5","messages":[],"tools":[]}`,
+			wantStatus: http.StatusOK, wantKind: clientKindCountTokens,
+		},
+		{
+			name: "messages token-count fallback", path: "/v1/messages",
+			body:       `{"model":"claude-sonnet-5","max_tokens":1,"messages":[],"metadata":{"user_id":` + strconv.Quote(testClaudeCodeMetadata) + `}}`,
+			wantStatus: http.StatusOK, wantKind: clientKindTokenCountFallback,
+		},
+		{
+			name: "count tokens missing beta", path: "/v1/messages/count_tokens",
+			body:       `{"model":"claude-sonnet-5","messages":[]}`,
+			mutate:     func(request *http.Request) { request.Header.Del("anthropic-beta") },
+			wantStatus: http.StatusForbidden, wantKind: clientKindAmbiguous,
+		},
+	}
+
+	accepted := 0
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			request.Header.Set("x-api-key", "official-downstream-key")
+			setOfficialClaudeCodeTestHeaders(request)
+			if test.mutate != nil {
+				test.mutate(request)
+			}
+			recorder := httptest.NewRecorder()
+			server.routes().ServeHTTP(recorder, request)
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d, body = %s", recorder.Code, test.wantStatus, recorder.Body.String())
+			}
+			records := server.metrics.Recent(1)
+			if len(records) != 1 || records[0].ClientKind != test.wantKind {
+				t.Fatalf("request record = %#v, want kind %q", records, test.wantKind)
+			}
+			if test.wantStatus == http.StatusOK {
+				accepted++
+			}
+		})
+	}
+	if upstreamCalls != accepted {
+		t.Fatalf("upstream calls = %d, want %d", upstreamCalls, accepted)
+	}
+}
+
 // The compatible ingress is fenced: an official-pool account must never serve a
 // request that did not come through the official key.
 func TestCompatibleIngressNeverSelectsOfficialPoolAccounts(t *testing.T) {
@@ -211,12 +279,9 @@ func TestOfficialIngressDrawsFromTheCompatiblePool(t *testing.T) {
 	defer upstream.Close()
 	// The only account keeps its default compatible placement.
 	server := newTestServer(t, upstream.URL, 4096)
-	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
-		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(officialClaudeCodeTestBody()))
 	request.Header.Set("x-api-key", "official-downstream-key")
-	request.Header.Set("User-Agent", "claude-cli/2.1.219")
-	request.Header.Set(claudeCodeSessionHeader, "official-session")
-	request.Header.Set("X-App", "cli")
+	setOfficialClaudeCodeTestHeaders(request)
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -270,12 +335,9 @@ func TestForcedAccountFromOfficialIngressReachesTheCompatiblePool(t *testing.T) 
 	}))
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
-	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
-		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(officialClaudeCodeTestBody()))
 	request.Header.Set("x-api-key", "official-downstream-key")
-	request.Header.Set("User-Agent", "claude-cli/2.1.219")
-	request.Header.Set(claudeCodeSessionHeader, "official-session")
-	request.Header.Set("X-App", "cli")
+	setOfficialClaudeCodeTestHeaders(request)
 	request.Header.Set(accountHeader, "default")
 	recorder := httptest.NewRecorder()
 	server.routes().ServeHTTP(recorder, request)
@@ -515,6 +577,19 @@ func decodeBody(t *testing.T, raw []byte) map[string]any {
 	return value
 }
 
+func officialClaudeCodeTestBody() string {
+	return `{"model":"claude-test","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.247.abc; cc_entrypoint=cli;"}],"metadata":{"user_id":` +
+		strconv.Quote(testClaudeCodeMetadata) + `},"messages":[{"role":"user","content":"hi"}]}`
+}
+
+func setOfficialClaudeCodeTestHeaders(request *http.Request) {
+	request.Header.Set("User-Agent", "claude-cli/2.1.247 (external, cli)")
+	request.Header.Set(claudeCodeSessionHeader, "official-session")
+	request.Header.Set("X-App", "cli")
+	request.Header.Set("anthropic-beta", "claude-code-20250219")
+	request.Header.Set("anthropic-version", "2023-06-01")
+}
+
 func decodeUserID(t *testing.T, body map[string]any) attributionUserID {
 	t.Helper()
 	metadata := body["metadata"].(map[string]any)
@@ -724,7 +799,7 @@ func TestStickyOverloadReturns429WithoutSwitchingAccount(t *testing.T) {
 	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
 	body := `{"model":"claude-test","messages":[{"role":"user","content":"sticky overload"}]}`
 	headers := http.Header{"X-Claude-Session-Id": []string{"sticky-overload"}}
-	route, err := deriveRequestRoute([]byte(body), headers, store.AccountPoolCompatible)
+	route, err := deriveRequestRoute([]byte(body), headers, store.AccountPoolCompatible, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1026,11 +1101,11 @@ func TestUnknownBillingFieldsDoNotOverrideForcedAccount(t *testing.T) {
 func TestRoutingPrefixIgnoresContentAfterCacheBreakpoint(t *testing.T) {
 	t.Parallel()
 	headers := http.Header{}
-	first, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"one"}]}`), headers, store.AccountPoolCompatible)
+	first, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"one"}]}`), headers, store.AccountPoolCompatible, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`), headers, store.AccountPoolCompatible)
+	second, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`), headers, store.AccountPoolCompatible, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1085,7 +1160,7 @@ func TestRoutingStickyTTLSeparatesSessionsCachesAndFallbacks(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			route, err := deriveRequestRoute([]byte(test.body), test.headers, store.AccountPoolCompatible)
+			route, err := deriveRequestRoute([]byte(test.body), test.headers, store.AccountPoolCompatible, "/v1/messages")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1151,7 +1226,7 @@ func TestOnlyDeclaredAffinityPersistsAfterSuccess(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			route, err := deriveRequestRoute([]byte(test.body), nil, store.AccountPoolCompatible)
+			route, err := deriveRequestRoute([]byte(test.body), nil, store.AccountPoolCompatible, "/v1/messages")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1181,7 +1256,7 @@ func TestOnlyDeclaredAffinityPersistsAfterSuccess(t *testing.T) {
 func TestOrdinaryFallbackIgnoresLegacyPrefixBinding(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t, "http://127.0.0.1:1", 4096)
-	route, err := deriveRequestRoute([]byte(`{"model":"m","messages":[{"role":"user","content":"legacy"}]}`), nil, store.AccountPoolCompatible)
+	route, err := deriveRequestRoute([]byte(`{"model":"m","messages":[{"role":"user","content":"legacy"}]}`), nil, store.AccountPoolCompatible, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}

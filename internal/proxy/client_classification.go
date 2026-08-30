@@ -3,51 +3,126 @@ package proxy
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
-const clientClassificationVersion = 3
+const clientClassificationVersion = 4
 
 const (
 	clientClassCompatible  = "compatible"
 	clientClassCCCandidate = "cc_candidate"
 	clientClassAmbiguous   = "ambiguous"
+
+	clientKindCompatible         = "compatible"
+	clientKindMessages           = "messages"
+	clientKindCountTokens        = "count_tokens"
+	clientKindTokenCountFallback = "token_count_fallback"
+	clientKindHaikuProbe         = "haiku_probe"
+	clientKindAmbiguous          = "ambiguous"
 )
+
+var (
+	claudeCodeUserAgentPattern  = regexp.MustCompile(`(?i)^claude-cli/\d+\.\d+\.\d+`)
+	legacyMetadataUserIDPattern = regexp.MustCompile(`^user_[a-fA-F0-9]{64}_account_[a-fA-F0-9-]*_session_[a-fA-F0-9-]{36}$`)
+)
+
+var claudeCodeSystemPromptMarkers = []string{
+	"You are Claude Code, Anthropic's official CLI for Claude.",
+	"You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+	"You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+	"You are a file search specialist for Claude Code, Anthropic's official CLI for Claude.",
+	"You are a helpful AI assistant tasked with summarizing conversations.",
+	"You are an interactive CLI tool that helps users",
+}
+
+const (
+	claudeCodeSecurityMonitorPromptPrefix = "You are a security monitor for autonomous AI coding agents."
+	claudeCodeSecurityMonitorPromptMinLen = 10_000
+)
+
+var claudeCodeSecurityMonitorMarkers = []string{
+	"## Threat Model",
+	"- `<transcript>`:",
+	"## HARD BLOCK",
+	"## SOFT BLOCK",
+	"## Classification Process",
+	"## Output Format",
+	"<block>yes</block>",
+	"<block>no</block>",
+}
 
 type clientEvidence struct {
 	BillingBlock       bool
 	CCVersion          bool
 	KnownEntrypoint    bool
+	OfficialPrompt     bool
 	StructuredMetadata bool
 	ClaudeUserAgent    bool
 	ClaudeCodeSession  bool
 	XAppCLI            bool
+	AnthropicBeta      bool
+	AnthropicVersion   bool
 }
 
 type clientObservation struct {
 	Class    string
+	Kind     string
 	Version  int
 	Evidence clientEvidence
 }
 
-func classifyClient(root map[string]any, headers http.Header) clientObservation {
+func classifyClient(root map[string]any, headers http.Header, path string) clientObservation {
 	evidence := billingEvidence(root["system"])
+	evidence.OfficialPrompt = hasClaudeCodeSystemPrompt(root["system"])
 	evidence.StructuredMetadata = hasStructuredMetadata(root["metadata"])
-	userAgent := strings.ToLower(strings.TrimSpace(headers.Get("User-Agent")))
-	evidence.ClaudeUserAgent = strings.Contains(userAgent, "claude-cli/")
+	evidence.ClaudeUserAgent = claudeCodeUserAgentPattern.MatchString(strings.TrimSpace(headers.Get("User-Agent")))
 	evidence.ClaudeCodeSession = strings.TrimSpace(headers.Get(claudeCodeSessionHeader)) != ""
 	evidence.XAppCLI = strings.EqualFold(strings.TrimSpace(headers.Get("X-App")), "cli")
+	evidence.AnthropicBeta = strings.TrimSpace(headers.Get("anthropic-beta")) != ""
+	evidence.AnthropicVersion = strings.TrimSpace(headers.Get("anthropic-version")) != ""
 
-	class := clientClassCompatible
-	completeHeaders := evidence.ClaudeUserAgent && evidence.ClaudeCodeSession && evidence.XAppCLI
-	if completeHeaders {
-		class = clientClassCCCandidate
-	} else if evidence.BillingBlock || evidence.CCVersion || evidence.KnownEntrypoint ||
-		evidence.StructuredMetadata || evidence.ClaudeUserAgent ||
-		evidence.ClaudeCodeSession || evidence.XAppCLI {
-		class = clientClassAmbiguous
+	observation := clientObservation{
+		Class:    clientClassCompatible,
+		Kind:     clientKindCompatible,
+		Version:  clientClassificationVersion,
+		Evidence: evidence,
 	}
-	return clientObservation{Class: class, Version: clientClassificationVersion, Evidence: evidence}
+	completeHeaders := evidence.ClaudeUserAgent && evidence.ClaudeCodeSession && evidence.XAppCLI &&
+		evidence.AnthropicBeta && evidence.AnthropicVersion
+	if completeHeaders {
+		switch {
+		case path == "/v1/messages/count_tokens":
+			observation.Class = clientClassCCCandidate
+			observation.Kind = clientKindCountTokens
+			return observation
+		case isHaikuProbe(root):
+			observation.Class = clientClassCCCandidate
+			observation.Kind = clientKindHaikuProbe
+			return observation
+		case isTokenCountFallback(root):
+			observation.Class = clientClassCCCandidate
+			observation.Kind = clientKindTokenCountFallback
+			return observation
+		case path == "/v1/messages" && evidence.StructuredMetadata &&
+			((evidence.BillingBlock && evidence.CCVersion && evidence.KnownEntrypoint) || evidence.OfficialPrompt):
+			observation.Class = clientClassCCCandidate
+			observation.Kind = clientKindMessages
+			return observation
+		}
+	}
+
+	if hasAnyClientEvidence(evidence) {
+		observation.Class = clientClassAmbiguous
+		observation.Kind = clientKindAmbiguous
+	}
+	return observation
+}
+
+func hasAnyClientEvidence(evidence clientEvidence) bool {
+	return evidence.BillingBlock || evidence.CCVersion || evidence.KnownEntrypoint || evidence.OfficialPrompt ||
+		evidence.StructuredMetadata || evidence.ClaudeUserAgent || evidence.ClaudeCodeSession || evidence.XAppCLI ||
+		evidence.AnthropicBeta || evidence.AnthropicVersion
 }
 
 func billingEvidence(value any) clientEvidence {
@@ -59,11 +134,10 @@ func billingEvidence(value any) clientEvidence {
 		}
 		evidence.BillingBlock = true
 		fields := parseBillingFields(strings.TrimSpace(strings.TrimPrefix(trimmed, billingAttributionPrefix)))
-		hasVersion := strings.TrimSpace(fields["cc_version"]) != ""
-		entrypoint := strings.ToLower(strings.TrimSpace(fields["cc_entrypoint"]))
-		knownEntrypoint := entrypoint == "cli" || entrypoint == "claude-desktop" || entrypoint == "claude-desktop-3p"
-		evidence.CCVersion = evidence.CCVersion || hasVersion
-		evidence.KnownEntrypoint = evidence.KnownEntrypoint || knownEntrypoint
+		evidence.CCVersion = evidence.CCVersion || strings.TrimSpace(fields["cc_version"]) != ""
+		// Entrypoint values legitimately vary between CLI, IDE, Desktop, and Agent SDK releases.
+		// Presence is useful as a request-shape signal; the authenticated ingress key remains the trust boundary.
+		evidence.KnownEntrypoint = evidence.KnownEntrypoint || strings.TrimSpace(fields["cc_entrypoint"]) != ""
 	}
 	return evidence
 }
@@ -105,14 +179,46 @@ func parseBillingFields(value string) map[string]string {
 	return fields
 }
 
+func hasClaudeCodeSystemPrompt(value any) bool {
+	for _, text := range systemTexts(value) {
+		for _, marker := range claudeCodeSystemPromptMarkers {
+			if strings.Contains(text, marker) {
+				return true
+			}
+		}
+		if len(text) < claudeCodeSecurityMonitorPromptMinLen ||
+			!strings.HasPrefix(text, claudeCodeSecurityMonitorPromptPrefix) {
+			continue
+		}
+		matched := true
+		for _, marker := range claudeCodeSecurityMonitorMarkers {
+			if !strings.Contains(text, marker) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 func hasStructuredMetadata(value any) bool {
 	metadata, ok := value.(map[string]any)
 	if !ok {
 		return false
 	}
 	userID, ok := metadata["user_id"].(string)
-	if !ok || strings.TrimSpace(userID) == "" {
+	if !ok {
 		return false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	if legacyMetadataUserIDPattern.MatchString(userID) {
+		return true
 	}
 	var identity struct {
 		DeviceID    string `json:"device_id"`
@@ -122,7 +228,40 @@ func hasStructuredMetadata(value any) bool {
 	if err := json.Unmarshal([]byte(userID), &identity); err != nil {
 		return false
 	}
-	return strings.TrimSpace(identity.DeviceID) != "" &&
-		strings.TrimSpace(identity.AccountUUID) != "" &&
-		strings.TrimSpace(identity.SessionID) != ""
+	// API-key mode legitimately sends an empty account_uuid. Device and session are the stable fields.
+	return strings.TrimSpace(identity.DeviceID) != "" && strings.TrimSpace(identity.SessionID) != ""
+}
+
+func isTokenCountFallback(root map[string]any) bool {
+	if !maxTokensEqualsOne(root["max_tokens"]) || streamEnabled(root["stream"]) || len(systemTexts(root["system"])) != 0 {
+		return false
+	}
+	model, _ := root["model"].(string)
+	return strings.TrimSpace(model) != "" && hasStructuredMetadata(root["metadata"])
+}
+
+func isHaikuProbe(root map[string]any) bool {
+	if !maxTokensEqualsOne(root["max_tokens"]) || streamEnabled(root["stream"]) || len(systemTexts(root["system"])) != 0 {
+		return false
+	}
+	model, _ := root["model"].(string)
+	return strings.Contains(strings.ToLower(model), "haiku")
+}
+
+func maxTokensEqualsOne(value any) bool {
+	switch typed := value.(type) {
+	case json.Number:
+		return typed.String() == "1"
+	case float64:
+		return typed == 1
+	case int:
+		return typed == 1
+	default:
+		return false
+	}
+}
+
+func streamEnabled(value any) bool {
+	stream, _ := value.(bool)
+	return stream
 }

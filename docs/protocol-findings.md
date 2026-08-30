@@ -68,12 +68,18 @@ does not by itself prove how Anthropic classified subscription usage.
   requests and used `cc_entrypoint=claude-desktop-3p`; none of the 26 bodies contained `cch=`.
 - **Capture:** a small Haiku helper request contained a JSON-string `metadata.user_id` with
   `device_id` and `session_id`, but an empty `account_uuid`, and no billing block.
-- **Current classification policy:** only the complete three-header combination above is a
-  `cc_candidate`. Billing and metadata body evidence is `ambiguous` and has no admission or routing
-  authority. These are observable, spoofable request-shape signals, not client authentication.
+- **Current classification policy:** classifier v4 requires the three headers above plus non-empty
+  `anthropic-beta` and `anthropic-version`, then applies request-type-specific body checks. Ordinary
+  Messages require structured metadata and a billing block or recognized official system prompt.
+  Native `count_tokens`, the observed one-token Messages count fallback, and the one-token Haiku
+  probe have deliberately narrower body checks. These are observable, spoofable request-shape
+  signals, not client authentication.
 - **Capture:** the tested New API deployment returned 404 for
   `/v1/messages/count_tokens?beta=true`. Claude Code continued, but native count-token
   compatibility through that gateway remains unresolved.
+- **Capture:** Claude Code 2.1.247 followed those 404 responses with non-streaming Sonnet Messages
+  requests carrying `max_tokens: 1`, structured metadata, the complete official header set, and no
+  system or cache declaration. Classifier v4 records these separately as `token_count_fallback`.
 
 ## `metadata.user_id`
 

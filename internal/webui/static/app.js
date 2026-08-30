@@ -986,7 +986,7 @@ function requestRow(record) {
   const client = clientClassView(record.client_class);
   const clientCell = cell(stack(
     badge(client.label, client.css),
-    small(`${evidenceSummary(record.client_evidence)} · ${relayActionLabel(record.relay_action)}`),
+    small(`${clientKindLabel(record.client_kind)} · ${evidenceSummary(record.client_evidence)} · ${relayActionLabel(record.relay_action)}`),
   ));
   clientCell.title = `分类器 v${record.classification_version || "?"}`;
   row.appendChild(clientCell);
@@ -1030,6 +1030,18 @@ function clientClassView(value) {
   if (value === "compatible") return { label: "普通兼容", css: "badge-off" };
   if (value === "ambiguous") return { label: "特征不完整", css: "badge-warn" };
   return { label: "未分类", css: "badge-off" };
+}
+
+function clientKindLabel(value) {
+  const labels = {
+    messages: "普通推理",
+    count_tokens: "令牌计数",
+    token_count_fallback: "计数回退",
+    haiku_probe: "Haiku 探测",
+    compatible: "兼容请求",
+    ambiguous: "特征不完整",
+  };
+  return labels[value] || "类型未知";
 }
 
 function endpointLabel(path) {
@@ -1189,10 +1201,13 @@ function evidenceSummary(evidence) {
     ["billing", evidence.billing_block],
     ["version", evidence.cc_version],
     ["entrypoint", evidence.known_entrypoint],
+    ["prompt", evidence.official_prompt],
     ["metadata", evidence.structured_metadata],
     ["ua", evidence.claude_user_agent],
     ["session", evidence.claude_code_session],
     ["x-app", evidence.x_app_cli],
+    ["beta", evidence.anthropic_beta],
+    ["api-version", evidence.anthropic_version],
   ];
   return checks.map(([label, present]) => `${label} ${present ? "✓" : "·"}`).join(" ");
 }

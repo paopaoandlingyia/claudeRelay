@@ -283,25 +283,29 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	includeMetadata := incoming.URL.Path == "/v1/messages"
 	ingress := requestIngress(incoming.Context())
 	event.Ingress = ingress
-	route, routeErr := deriveRequestRoute(body, incoming.Header, ingress)
+	route, routeErr := deriveRequestRoute(body, incoming.Header, ingress, incoming.URL.Path)
 	if routeErr != nil {
 		fail(http.StatusBadRequest, "invalid_request_error", routeErr.Error())
 		return
 	}
 	event.Model = route.Model
 	event.ClientClass = route.Client.Class
+	event.ClientKind = route.Client.Kind
 	event.ClassificationVersion = route.Client.Version
 	event.Client = &metrics.ClientEvidence{
 		BillingBlock:       route.Client.Evidence.BillingBlock,
 		CCVersion:          route.Client.Evidence.CCVersion,
 		KnownEntrypoint:    route.Client.Evidence.KnownEntrypoint,
+		OfficialPrompt:     route.Client.Evidence.OfficialPrompt,
 		StructuredMetadata: route.Client.Evidence.StructuredMetadata,
 		ClaudeUserAgent:    route.Client.Evidence.ClaudeUserAgent,
 		ClaudeCodeSession:  route.Client.Evidence.ClaudeCodeSession,
 		XAppCLI:            route.Client.Evidence.XAppCLI,
+		AnthropicBeta:      route.Client.Evidence.AnthropicBeta,
+		AnthropicVersion:   route.Client.Evidence.AnthropicVersion,
 	}
 	if ingress == store.AccountPoolOfficial && route.Client.Class != clientClassCCCandidate {
-		slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "client_class", route.Client.Class)
+		slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "client_class", route.Client.Class, "client_kind", route.Client.Kind)
 		fail(http.StatusForbidden, "permission_error", "official ingress requires a Claude Code-shaped request")
 		return
 	}

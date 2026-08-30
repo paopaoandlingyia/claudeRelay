@@ -205,13 +205,17 @@ while a healthy account absorbed its traffic.
 
 ## 2026-07-31: client-shape classification is observable and policy-scoped
 
-The relay classifies the raw incoming request before transforming it. Version 3 reports
-`cc_candidate` only for a `claude-cli` User-Agent together with `X-Claude-Code-Session-Id` and
-`X-App: cli`. Billing, structured metadata, or a partial header set is `ambiguous`; no evidence is
-`compatible`.
+The relay classifies the raw incoming request before transforming it. Version 4 first requires a
+versioned `claude-cli` User-Agent together with `X-Claude-Code-Session-Id`, `X-App: cli`,
+`anthropic-beta`, and `anthropic-version`. It then distinguishes ordinary Messages, native
+`count_tokens`, the non-streaming `max_tokens: 1` Messages fallback observed after a missing count
+endpoint, and the one-token Haiku connectivity probe. Ordinary Messages additionally require valid
+Claude Code metadata and either a complete billing attribution block or a recognized official
+system prompt. Partial evidence is `ambiguous`; no evidence is `compatible`.
 
-The in-memory request record stores presence booleans and the relay action only. It never stores the
-raw billing values, User-Agent, account/device/session identities, prompts, or response content.
+The in-memory request record stores the request kind, presence booleans, and the relay action only.
+It never stores the raw billing values, User-Agent, account/device/session identities, prompts, or
+response content.
 Classification does not authenticate an official client. It is enforced only as the admission
 policy for the official ingress; compatible ingress forwarding remains independent of the result.
 

@@ -42,7 +42,7 @@ type metadataIdentity struct {
 	SessionID   string `json:"session_id"`
 }
 
-func deriveRequestRoute(body []byte, headers http.Header, ingress string) (requestRoute, error) {
+func deriveRequestRoute(body []byte, headers http.Header, ingress, path string) (requestRoute, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -54,7 +54,7 @@ func deriveRequestRoute(body []byte, headers http.Header, ingress string) (reque
 	}
 	route := requestRoute{Ingress: ingress}
 	route.Model, _ = root["model"].(string)
-	route.Client = classifyClient(root, headers)
+	route.Client = classifyClient(root, headers, path)
 
 	identity := parseMetadataIdentity(root["metadata"])
 	route.AccountUUID = identity.AccountUUID
