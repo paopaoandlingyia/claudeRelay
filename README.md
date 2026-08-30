@@ -248,8 +248,9 @@ whenever its endpoints or client behavior change.
 Two things are marked separately. The **key** decides which request format is admitted: requests
 authenticated by `official_api_key` must have a recognized Claude Code shape or are rejected with
 `403`, while `relay_api_key` places no restriction on shape. The accepted shape is
-`User-Agent: claude-cli/...` together with `X-Claude-Code-Session-Id` and `X-App: cli`. This is a
-traffic policy, not proof that the caller is an authentic Anthropic binary.
+`User-Agent: claude-cli/...` together with `X-Claude-Code-Session-Id`, `X-App: cli`, and at least
+one supported Anthropic cache declaration. Cache TTL may be omitted (the five-minute default),
+`5m`, or `1h`. This is a traffic policy, not proof that the caller is an authentic Anthropic binary.
 
 The **account** carries a pool that decides which traffic may reach it, and permeability is one way:
 
@@ -369,7 +370,8 @@ official group. On the official channel, preserve the three client identificatio
 override shown above. Request-body pass-through alone does not preserve them.
 
 The official New API group should be issued only to Claude Code users. The relay rejects a request
-that reaches the official key without the required shape before selecting an account, and does not
-fall back to the compatible behaviour — assigning callers to the right group is the operator's job.
+that reaches the official key without the required headers and cache declaration before selecting
+an account, and does not fall back to the compatible behaviour — assigning callers to the right
+group is the operator's job.
 Conversely, compatible traffic never consumes an `official` account even when it supplies an account
 alias.

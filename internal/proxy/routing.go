@@ -35,6 +35,9 @@ type requestRoute struct {
 	// scopes routing keys and decides which account pools may be selected.
 	Ingress string
 	Client  clientObservation
+	// HasDeclaredCache is true only for a supported Anthropic cache declaration:
+	// type=ephemeral with an omitted/5m TTL or an explicit 1h TTL.
+	HasDeclaredCache bool
 }
 
 type metadataIdentity struct {
@@ -79,6 +82,7 @@ func deriveRequestRoute(body []byte, headers http.Header, ingress string) (reque
 	if topLevelTTL := declaredCacheStickyTTL(root); topLevelTTL > cacheTTL {
 		cacheTTL = topLevelTTL
 	}
+	route.HasDeclaredCache = cacheTTL > 0
 	raw, err := json.Marshal(prefix)
 	if err != nil {
 		return requestRoute{}, fmt.Errorf("encode routing prefix: %w", err)
@@ -175,12 +179,23 @@ func declaredCacheStickyTTL(value any) time.Duration {
 	if !exists {
 		return 0
 	}
-	cacheControl, _ := raw.(map[string]any)
-	ttl, _ := cacheControl["ttl"].(string)
-	if strings.EqualFold(strings.TrimSpace(ttl), "1h") {
-		return time.Hour
+	cacheControl, ok := raw.(map[string]any)
+	if !ok {
+		return 0
 	}
-	return defaultCacheStickyTTL
+	cacheType, _ := cacheControl["type"].(string)
+	if !strings.EqualFold(strings.TrimSpace(cacheType), "ephemeral") {
+		return 0
+	}
+	ttl, _ := cacheControl["ttl"].(string)
+	switch strings.ToLower(strings.TrimSpace(ttl)) {
+	case "1h":
+		return time.Hour
+	case "", "5m":
+		return defaultCacheStickyTTL
+	default:
+		return 0
+	}
 }
 
 func ordinaryAnchor(root map[string]any) any {

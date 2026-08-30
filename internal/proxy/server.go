@@ -300,10 +300,17 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		ClaudeCodeSession:  route.Client.Evidence.ClaudeCodeSession,
 		XAppCLI:            route.Client.Evidence.XAppCLI,
 	}
-	if ingress == store.AccountPoolOfficial && route.Client.Class != clientClassCCCandidate {
-		slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "client_class", route.Client.Class)
-		fail(http.StatusForbidden, "permission_error", "official ingress requires a Claude Code-shaped request")
-		return
+	if ingress == store.AccountPoolOfficial {
+		if route.Client.Class != clientClassCCCandidate {
+			slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "client_class", route.Client.Class)
+			fail(http.StatusForbidden, "permission_error", "official ingress requires a Claude Code-shaped request")
+			return
+		}
+		if !route.HasDeclaredCache {
+			slog.Warn("rejected cacheless request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "client_class", route.Client.Class)
+			fail(http.StatusForbidden, "permission_error", "official ingress requires a supported cache declaration")
+			return
+		}
 	}
 	forcedAlias := incoming.Header.Get(accountHeader)
 	excluded := make(map[int64]bool)
