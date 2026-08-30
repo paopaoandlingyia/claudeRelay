@@ -37,21 +37,22 @@ type cooldownView struct {
 }
 
 type accountView struct {
-	Alias           string              `json:"alias"`
-	Enabled         bool                `json:"enabled"`
-	Pool            string              `json:"pool"`
-	Email           string              `json:"email,omitempty"`
-	AccountUUID     string              `json:"account_uuid"`
-	ExpiresAt       string              `json:"expires_at,omitempty"`
-	HasRefreshToken bool                `json:"has_refresh_token"`
-	CreatedAt       int64               `json:"created_at,omitempty"`
-	LastRefreshAt   int64               `json:"last_refresh_at,omitempty"`
-	Cooldown        *cooldownView       `json:"cooldown,omitempty"`
-	StickySessions  int                 `json:"sticky_sessions"`
-	ActiveSessions  int                 `json:"active_sessions"`
-	InFlight        int                 `json:"in_flight"`
-	Stats           metrics.AccountStat `json:"stats"`
-	FiveHourWindow  *accountUsageWindow `json:"five_hour_window,omitempty"`
+	Alias               string              `json:"alias"`
+	Enabled             bool                `json:"enabled"`
+	Pool                string              `json:"pool"`
+	Email               string              `json:"email,omitempty"`
+	AccountUUID         string              `json:"account_uuid"`
+	ExpiresAt           string              `json:"expires_at,omitempty"`
+	HasRefreshToken     bool                `json:"has_refresh_token"`
+	CreatedAt           int64               `json:"created_at,omitempty"`
+	LastRefreshAt       int64               `json:"last_refresh_at,omitempty"`
+	Cooldown            *cooldownView       `json:"cooldown,omitempty"`
+	StickySessions      int                 `json:"sticky_sessions"`
+	ActiveSessions      int                 `json:"active_sessions"`
+	InFlight            int                 `json:"in_flight"`
+	CountTokensInFlight int                 `json:"count_tokens_in_flight"`
+	Stats               metrics.AccountStat `json:"stats"`
+	FiveHourWindow      *accountUsageWindow `json:"five_hour_window,omitempty"`
 }
 
 func accountResponse(account store.Account) accountView {
@@ -96,6 +97,7 @@ func (s *Server) accountViews(r *http.Request, accounts []store.Account) ([]acco
 		return nil, err
 	}
 	inFlight := s.load.snapshot()
+	countTokensInFlight := s.countTokensLoad.snapshot()
 	stats := s.metrics.AccountStats()
 
 	views := make([]accountView, 0, len(accounts))
@@ -107,6 +109,7 @@ func (s *Server) accountViews(r *http.Request, accounts []store.Account) ([]acco
 		view.StickySessions = bindings[account.ID]
 		view.ActiveSessions = active[account.ID]
 		view.InFlight = inFlight[account.ID]
+		view.CountTokensInFlight = countTokensInFlight[account.ID]
 		view.Stats = stats[account.Alias]
 		if s.sampler != nil {
 			if reading, ok := s.sampler.current(account, now); ok {

@@ -83,6 +83,12 @@ func TestListAccountsReportsCooldownAndRoutingActivity(t *testing.T) {
 	if got := decodeAccounts(t, recorder)[0].InFlight; got != 1 {
 		t.Errorf("in_flight = %d, want 1", got)
 	}
+	releaseCount := server.countTokensLoad.reserve(account.ID)
+	recorder = adminRequest(t, server, http.MethodGet, "/admin/v1/accounts", "")
+	releaseCount()
+	if got := decodeAccounts(t, recorder)[0].CountTokensInFlight; got != 1 {
+		t.Errorf("count_tokens_in_flight = %d, want 1", got)
+	}
 	if view.CreatedAt == 0 {
 		t.Error("created_at was not reported")
 	}

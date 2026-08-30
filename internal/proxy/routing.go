@@ -35,6 +35,9 @@ type requestRoute struct {
 	// scopes routing keys and decides which account pools may be selected.
 	Ingress string
 	Client  clientObservation
+	// CountTokens selects the independent short-request admission pool and
+	// never consumes an active client-session slot.
+	CountTokens bool
 }
 
 type metadataIdentity struct {
@@ -52,7 +55,7 @@ func deriveRequestRoute(body []byte, headers http.Header, ingress, path string) 
 	if root == nil {
 		return requestRoute{}, fmt.Errorf("request body must be a JSON object")
 	}
-	route := requestRoute{Ingress: ingress}
+	route := requestRoute{Ingress: ingress, CountTokens: path == "/v1/messages/count_tokens"}
 	route.Model, _ = root["model"].(string)
 	route.Client = classifyClient(root, headers, path)
 
@@ -284,10 +287,12 @@ type selection struct {
 }
 
 type accountSelector struct {
-	store              *store.Store
-	load               *accountLoadTracker
-	maxInflightPerAcct int
-	sessions           *sessionAdmissionTracker
+	store                         *store.Store
+	load                          *accountLoadTracker
+	countTokensLoad               *accountLoadTracker
+	maxInflightPerAcct            int
+	maxCountTokensInflightPerAcct int
+	sessions                      *sessionAdmissionTracker
 }
 
 type selectionClientError interface {
@@ -313,10 +318,18 @@ func selectionFailed(clientMessage, format string, args ...any) error {
 	return safeSelectionError{diagnostic: fmt.Sprintf(format, args...), clientMessage: clientMessage}
 }
 
-func (s accountSelector) makeSelection(account store.Account, source string, pinned bool) selection {
+func (s accountSelector) loadPolicy(route requestRoute) (*accountLoadTracker, int) {
+	if route.CountTokens {
+		return s.countTokensLoad, s.maxCountTokensInflightPerAcct
+	}
+	return s.load, s.maxInflightPerAcct
+}
+
+func (s accountSelector) makeSelection(route requestRoute, account store.Account, source string, pinned bool) selection {
 	release := func() {}
-	if s.load != nil {
-		release = s.load.reserve(account.ID)
+	load, _ := s.loadPolicy(route)
+	if load != nil {
+		release = load.reserve(account.ID)
 	}
 	return selection{
 		Account: account,
@@ -326,11 +339,12 @@ func (s accountSelector) makeSelection(account store.Account, source string, pin
 	}
 }
 
-func (s accountSelector) makeLimitedSelection(account store.Account, source string, pinned bool) (selection, bool) {
-	if s.load == nil {
-		return s.makeSelection(account, source, pinned), true
+func (s accountSelector) makeLimitedSelection(route requestRoute, account store.Account, source string, pinned bool) (selection, bool) {
+	load, limit := s.loadPolicy(route)
+	if load == nil {
+		return s.makeSelection(route, account, source, pinned), true
 	}
-	release, _, ok := s.load.reserveBelow(account.ID, s.maxInflightPerAcct)
+	release, _, ok := load.reserveBelow(account.ID, limit)
 	if !ok {
 		return selection{}, false
 	}
@@ -349,7 +363,7 @@ func (s accountSelector) wasBoundTo(ctx context.Context, route requestRoute, acc
 }
 
 func (s accountSelector) admitSession(ctx context.Context, route requestRoute, selected selection, existing bool) (selection, bool, error) {
-	if s.sessions == nil {
+	if route.CountTokens || s.sessions == nil {
 		selected.releaseSession = func() {}
 		return selected, true, nil
 	}
@@ -394,7 +408,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			return selection{}, selectionFailed("requested account is temporarily cooling down",
 				"requested account %q is temporarily cooling down", forcedAlias)
 		}
-		selected, ok := s.makeLimitedSelection(account, "header", true)
+		selected, ok := s.makeLimitedSelection(route, account, "header", true)
 		if !ok {
 			return selection{}, locallyRateLimited("requested account reached its in-flight limit",
 				"requested account %q reached its in-flight limit", forcedAlias)
@@ -428,7 +442,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			selected, ok := s.makeLimitedSelection(account, "account_uuid", false)
+			selected, ok := s.makeLimitedSelection(route, account, "account_uuid", false)
 			if !ok {
 				found = false
 			} else {
@@ -461,7 +475,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 					return selection{}, coolingErr
 				}
 				if !cooling {
-					selected, ok := s.makeLimitedSelection(account, "session_pending", false)
+					selected, ok := s.makeLimitedSelection(route, account, "session_pending", false)
 					if !ok {
 						return selection{}, locallyRateLimited(relayCapacityClientMessage,
 							"account %q reached its in-flight limit", account.Alias)
@@ -491,7 +505,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			selected, ok := s.makeLimitedSelection(account, "sticky", false)
+			selected, ok := s.makeLimitedSelection(route, account, "sticky", false)
 			if !ok {
 				return selection{}, locallyRateLimited(relayCapacityClientMessage,
 					"account %q reached its in-flight limit", account.Alias)
@@ -514,9 +528,10 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	for id, skip := range excluded {
 		localExcluded[id] = skip
 	}
-	if s.load != nil {
+	load, limit := s.loadPolicy(route)
+	if load != nil {
 		for {
-			account, release, found := s.load.reserveLeastLoaded(accounts, route.SelectionKey, localExcluded, s.maxInflightPerAcct)
+			account, release, found := load.reserveLeastLoaded(accounts, route.SelectionKey, localExcluded, limit)
 			if !found {
 				break
 			}
@@ -535,7 +550,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		}
 	}
 
-	if s.load == nil {
+	if load == nil {
 		for {
 			var chosen *store.Account
 			var chosenScore [32]byte
@@ -552,7 +567,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			if chosen == nil {
 				break
 			}
-			selected, admitted, admissionErr := s.admitSession(ctx, route, s.makeSelection(*chosen, "cache_affinity", false), false)
+			selected, admitted, admissionErr := s.admitSession(ctx, route, s.makeSelection(route, *chosen, "cache_affinity", false), false)
 			if admissionErr != nil {
 				return selection{}, admissionErr
 			}

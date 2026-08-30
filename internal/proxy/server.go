@@ -32,19 +32,20 @@ var allowedPaths = map[string]struct{}{
 const missingUsageWarningInterval = 5 * time.Minute
 
 type Server struct {
-	cfg        config.Config
-	store      *store.Store
-	selector   accountSelector
-	load       *accountLoadTracker
-	upstream   *url.URL
-	httpServer *http.Server
-	client     *http.Client
-	oauth      *claudeoauth.Client
-	tokens     *tokenManager
-	metrics    *metrics.Recorder
-	usage      *accountUsageManager
-	accounting *accounting.Manager
-	sampler    *subscriptionSampler
+	cfg             config.Config
+	store           *store.Store
+	selector        accountSelector
+	load            *accountLoadTracker
+	countTokensLoad *accountLoadTracker
+	upstream        *url.URL
+	httpServer      *http.Server
+	client          *http.Client
+	oauth           *claudeoauth.Client
+	tokens          *tokenManager
+	metrics         *metrics.Recorder
+	usage           *accountUsageManager
+	accounting      *accounting.Manager
+	sampler         *subscriptionSampler
 	// missingUsageWarningAt rate-limits diagnostics for successful Messages
 	// responses whose decoded body did not contain Anthropic usage metadata.
 	missingUsageWarningAt atomic.Int64
@@ -60,6 +61,12 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	}
 	if cfg.MaxInflightPerAccount < 1 {
 		return nil, fmt.Errorf("config max_inflight_per_account must be positive")
+	}
+	if cfg.MaxCountTokensInflightPerAccount == 0 {
+		cfg.MaxCountTokensInflightPerAccount = config.DefaultMaxCountTokensInflightPerAccount
+	}
+	if cfg.MaxCountTokensInflightPerAccount < 1 {
+		return nil, fmt.Errorf("config max_count_tokens_inflight_per_account must be positive")
 	}
 	if cfg.MaxActiveSessionsPerAccount == 0 {
 		cfg.MaxActiveSessionsPerAccount = config.DefaultMaxActiveSessionsPerAccount
@@ -81,12 +88,19 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	}
 	oauthClient := claudeoauth.New(&http.Client{Transport: transport, Timeout: 60 * time.Second})
 	load := newAccountLoadTracker()
+	countTokensLoad := newAccountLoadTracker()
 	sessions := newSessionAdmissionTracker(database, cfg.MaxActiveSessionsPerAccount)
 	server := &Server{
-		cfg:       cfg,
-		store:     database,
-		load:      load,
-		selector:  accountSelector{store: database, load: load, maxInflightPerAcct: cfg.MaxInflightPerAccount, sessions: sessions},
+		cfg:             cfg,
+		store:           database,
+		load:            load,
+		countTokensLoad: countTokensLoad,
+		selector: accountSelector{
+			store: database, load: load, countTokensLoad: countTokensLoad,
+			maxInflightPerAcct:            cfg.MaxInflightPerAccount,
+			maxCountTokensInflightPerAcct: cfg.MaxCountTokensInflightPerAccount,
+			sessions:                      sessions,
+		},
 		upstream:  upstream,
 		client:    &http.Client{Transport: transport},
 		oauth:     oauthClient,
@@ -490,7 +504,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		event.Error = "response interrupted"
 		return
 	}
-	if response.StatusCode < 400 {
+	if response.StatusCode < 400 && !route.CountTokens {
 		if ttl := stickyTTLAtCompletion(route, observedAt, time.Now()); ttl > 0 {
 			if bindErr := s.store.Bind(incoming.Context(), route.ConversationKey, selected.Account.ID, ttl); bindErr != nil {
 				slog.Warn("persist routing affinity", "request_id", requestID, "ttl", ttl, "error", bindErr)

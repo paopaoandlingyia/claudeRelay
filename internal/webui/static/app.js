@@ -299,7 +299,8 @@ function accountRow(account) {
     accountMetric("请求", stats.requests ? `${stats.requests}` : "—", stats.requests ? `${stats.failures || 0} 次失败` : ""),
     accountMetric("活跃会话", `${account.active_sessions || 0}`, "近 5 分钟"),
     accountMetric("粘性绑定", `${account.sticky_sessions || 0}`, "近 1 小时"),
-    accountMetric("并发", `${account.in_flight || 0}`, "当前请求"),
+    accountMetric("生成并发", `${account.in_flight || 0}`, "当前 Messages"),
+    accountMetric("计数并发", `${account.count_tokens_in_flight || 0}`, "当前 count_tokens"),
   );
 
   const actions = document.createElement("div");

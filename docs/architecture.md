@@ -63,15 +63,18 @@ the declared upstream cache merely because generation was slow.
 
 ## 2026-08-24: strict session admission without five-hour pacing
 
-The relay applies two independent per-account controls. New explicitly identified sessions are
+The relay applies independent per-account controls. New explicitly identified sessions are
 admitted while the account has fewer than five active sessions. A process-local provisional
 reservation covers the first upstream request until its successful SQLite binding, so simultaneous
 new sessions cannot all pass a stale count. Concurrent first requests for one route share its
 reservation and account affinity. Existing bindings remain usable even when the account is at the
 session limit; prefix-only cache affinities never enter session admission.
 
-In-process upstream requests have a hard configurable limit (`max_inflight_per_account`, eight by
-default). New sessions may try another eligible account, but an existing sticky session never
+In-process Messages requests have a hard configurable limit (`max_inflight_per_account`, eight by
+default). Native `count_tokens` calls use a separate per-account short-request limit
+(`max_count_tokens_inflight_per_account`, 32 by default) and do not consume Messages or
+active-session slots or create session bindings. New sessions may try another eligible account, but
+an existing sticky session never
 switches accounts because of either local control. A local limit returns `429`; `503` is reserved
 for unavailable account capacity such as disabled or cooling accounts.
 

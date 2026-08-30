@@ -61,6 +61,7 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 	t.Setenv("CLAUDE_RELAY_UPSTREAM_PROXY", "http://proxy:7890")
 	t.Setenv("CLAUDE_RELAY_MAX_REQUEST_BYTES", "1048576")
 	t.Setenv("CLAUDE_RELAY_MAX_INFLIGHT_PER_ACCOUNT", "6")
+	t.Setenv("CLAUDE_RELAY_MAX_COUNT_TOKENS_INFLIGHT_PER_ACCOUNT", "24")
 	t.Setenv("CLAUDE_RELAY_MAX_ACTIVE_SESSIONS_PER_ACCOUNT", "4")
 
 	cfg, err := Load(path)
@@ -82,6 +83,9 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 	if cfg.MaxInflightPerAccount != 6 {
 		t.Fatalf("max inflight per account = %d", cfg.MaxInflightPerAccount)
 	}
+	if cfg.MaxCountTokensInflightPerAccount != 24 {
+		t.Fatalf("max count_tokens inflight per account = %d", cfg.MaxCountTokensInflightPerAccount)
+	}
 	if cfg.MaxActiveSessionsPerAccount != 4 {
 		t.Fatalf("max active sessions per account = %d", cfg.MaxActiveSessionsPerAccount)
 	}
@@ -100,6 +104,22 @@ func TestMaxInflightPerAccountDefaults(t *testing.T) {
 	}
 	if cfg.MaxInflightPerAccount != DefaultMaxInflightPerAccount {
 		t.Fatalf("max inflight per account = %d, want %d", cfg.MaxInflightPerAccount, DefaultMaxInflightPerAccount)
+	}
+}
+
+func TestMaxCountTokensInflightPerAccountDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"listen":"127.0.0.1:8567","relay_api_key":"relay-key","admin_api_key":"admin-key","database_file":"relay.db","upstream_base_url":"https://api.anthropic.com"}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_RELAY_MAX_COUNT_TOKENS_INFLIGHT_PER_ACCOUNT", "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxCountTokensInflightPerAccount != DefaultMaxCountTokensInflightPerAccount {
+		t.Fatalf("max count_tokens inflight per account = %d, want %d", cfg.MaxCountTokensInflightPerAccount, DefaultMaxCountTokensInflightPerAccount)
 	}
 }
 

@@ -9,6 +9,7 @@
   "upstream_proxy": "",
   "max_request_bytes": 33554432,
   "max_inflight_per_account": 8,
+  "max_count_tokens_inflight_per_account": 32,
   "max_active_sessions_per_account": 5,
   "auto_refresh_enabled": true,
   "request_log_size": 500

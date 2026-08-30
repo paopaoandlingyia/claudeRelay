@@ -10,28 +10,30 @@ import (
 )
 
 const (
-	defaultMaxRequestBytes             int64 = 32 << 20
-	DefaultMaxInflightPerAccount             = 8
-	DefaultMaxActiveSessionsPerAccount       = 5
-	defaultRequestLogSize                    = 500
-	maxRequestLogSize                        = 10000
+	defaultMaxRequestBytes                  int64 = 32 << 20
+	DefaultMaxInflightPerAccount                  = 8
+	DefaultMaxCountTokensInflightPerAccount       = 32
+	DefaultMaxActiveSessionsPerAccount            = 5
+	defaultRequestLogSize                         = 500
+	maxRequestLogSize                             = 10000
 )
 
 type Config struct {
-	Listen                      string `json:"listen"`
-	RelayAPIKey                 string `json:"relay_api_key"`
-	OfficialAPIKey              string `json:"official_api_key"`
-	AdminAPIKey                 string `json:"admin_api_key"`
-	AvailabilityAPIKey          string `json:"availability_api_key"`
-	DatabaseFile                string `json:"database_file"`
-	CredentialsFile             string `json:"credentials_file"`
-	UpstreamBaseURL             string `json:"upstream_base_url"`
-	UpstreamProxy               string `json:"upstream_proxy"`
-	MaxRequestBytes             int64  `json:"max_request_bytes"`
-	MaxInflightPerAccount       int    `json:"max_inflight_per_account"`
-	MaxActiveSessionsPerAccount int    `json:"max_active_sessions_per_account"`
-	AutoRefresh                 bool   `json:"auto_refresh_enabled"`
-	RequestLogSize              int    `json:"request_log_size"`
+	Listen                           string `json:"listen"`
+	RelayAPIKey                      string `json:"relay_api_key"`
+	OfficialAPIKey                   string `json:"official_api_key"`
+	AdminAPIKey                      string `json:"admin_api_key"`
+	AvailabilityAPIKey               string `json:"availability_api_key"`
+	DatabaseFile                     string `json:"database_file"`
+	CredentialsFile                  string `json:"credentials_file"`
+	UpstreamBaseURL                  string `json:"upstream_base_url"`
+	UpstreamProxy                    string `json:"upstream_proxy"`
+	MaxRequestBytes                  int64  `json:"max_request_bytes"`
+	MaxInflightPerAccount            int    `json:"max_inflight_per_account"`
+	MaxCountTokensInflightPerAccount int    `json:"max_count_tokens_inflight_per_account"`
+	MaxActiveSessionsPerAccount      int    `json:"max_active_sessions_per_account"`
+	AutoRefresh                      bool   `json:"auto_refresh_enabled"`
+	RequestLogSize                   int    `json:"request_log_size"`
 }
 
 func Load(path string) (Config, error) {
@@ -41,10 +43,11 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Config{
-		AutoRefresh:                 true,
-		MaxInflightPerAccount:       DefaultMaxInflightPerAccount,
-		MaxActiveSessionsPerAccount: DefaultMaxActiveSessionsPerAccount,
-		RequestLogSize:              defaultRequestLogSize,
+		AutoRefresh:                      true,
+		MaxInflightPerAccount:            DefaultMaxInflightPerAccount,
+		MaxCountTokensInflightPerAccount: DefaultMaxCountTokensInflightPerAccount,
+		MaxActiveSessionsPerAccount:      DefaultMaxActiveSessionsPerAccount,
+		RequestLogSize:                   defaultRequestLogSize,
 	}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
@@ -100,6 +103,13 @@ func applyEnvironment(cfg *Config) error {
 		}
 		cfg.MaxInflightPerAccount = parsed
 	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_MAX_COUNT_TOKENS_INFLIGHT_PER_ACCOUNT")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("parse CLAUDE_RELAY_MAX_COUNT_TOKENS_INFLIGHT_PER_ACCOUNT: %w", err)
+		}
+		cfg.MaxCountTokensInflightPerAccount = parsed
+	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_MAX_ACTIVE_SESSIONS_PER_ACCOUNT")); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil {
@@ -136,6 +146,9 @@ func (cfg *Config) validate() error {
 	if cfg.MaxInflightPerAccount == 0 {
 		cfg.MaxInflightPerAccount = DefaultMaxInflightPerAccount
 	}
+	if cfg.MaxCountTokensInflightPerAccount == 0 {
+		cfg.MaxCountTokensInflightPerAccount = DefaultMaxCountTokensInflightPerAccount
+	}
 
 	if cfg.Listen == "" {
 		return fmt.Errorf("config listen is required")
@@ -163,6 +176,9 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.MaxInflightPerAccount < 1 {
 		return fmt.Errorf("config max_inflight_per_account must be positive")
+	}
+	if cfg.MaxCountTokensInflightPerAccount < 1 {
+		return fmt.Errorf("config max_count_tokens_inflight_per_account must be positive")
 	}
 	if cfg.MaxActiveSessionsPerAccount < 1 {
 		return fmt.Errorf("config max_active_sessions_per_account must be positive")
