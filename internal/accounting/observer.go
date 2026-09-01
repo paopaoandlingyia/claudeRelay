@@ -17,6 +17,11 @@ type Usage struct {
 	CacheReadTokens       int64
 	Seen                  bool
 	Complete              bool
+
+	cacheCreationTotalSeen bool
+	cacheCreationTotal     int64
+	cacheCreation5mSeen    bool
+	cacheCreation1hSeen    bool
 }
 
 type Observer struct {
@@ -97,20 +102,40 @@ func (u *Usage) apply(raw wireUsage) {
 		u.CacheReadTokens = *raw.CacheReadInput
 		u.Seen = true
 	}
+	if raw.CacheCreationInput != nil {
+		u.cacheCreationTotal = *raw.CacheCreationInput
+		u.cacheCreationTotalSeen = true
+		u.Seen = true
+	}
 	if raw.CacheCreation != nil {
 		if raw.CacheCreation.Ephemeral5mInput != nil {
 			u.CacheCreation5mTokens = *raw.CacheCreation.Ephemeral5mInput
+			u.cacheCreation5mSeen = true
 			u.Seen = true
 		}
 		if raw.CacheCreation.Ephemeral1hInput != nil {
 			u.CacheCreation1hTokens = *raw.CacheCreation.Ephemeral1hInput
+			u.cacheCreation1hSeen = true
 			u.Seen = true
 		}
-	} else if raw.CacheCreationInput != nil {
-		// The legacy flat field predates TTL detail. Five minutes is Anthropic's
-		// default cache duration, so it is the least surprising valuation bucket.
-		u.CacheCreation5mTokens = *raw.CacheCreationInput
-		u.Seen = true
+	}
+
+	if !u.cacheCreationTotalSeen {
+		return
+	}
+	// Some streaming responses expose the aggregate cache-creation count in
+	// message_start, then add TTL detail in message_delta. Keep the aggregate as
+	// the legacy 5m value only until detail arrives; otherwise the same 1h tokens
+	// are counted in both buckets.
+	switch {
+	case u.cacheCreation5mSeen && u.cacheCreation1hSeen:
+		return
+	case u.cacheCreation5mSeen:
+		u.CacheCreation1hTokens = max(0, u.cacheCreationTotal-u.CacheCreation5mTokens)
+	case u.cacheCreation1hSeen:
+		u.CacheCreation5mTokens = max(0, u.cacheCreationTotal-u.CacheCreation1hTokens)
+	default:
+		u.CacheCreation5mTokens = u.cacheCreationTotal
 	}
 }
 

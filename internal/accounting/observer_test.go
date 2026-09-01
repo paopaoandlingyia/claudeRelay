@@ -28,6 +28,22 @@ func TestStreamingObserverPreservesBytesAndCollectsCumulativeUsage(t *testing.T)
 	}
 }
 
+func TestStreamingObserverReconcilesAggregateCacheCreationWithLaterTTLDetail(t *testing.T) {
+	raw := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"model":"claude-opus-5","usage":{"input_tokens":1,"cache_creation_input_tokens":30}}}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","usage":{"output_tokens":2,"cache_creation":{"ephemeral_1h_input_tokens":20}}}` + "\n\n" +
+		"event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"
+	observer := NewObserver(strings.NewReader(raw), "text/event-stream")
+	if _, err := io.ReadAll(observer); err != nil {
+		t.Fatal(err)
+	}
+	usage, model := observer.Result(nil, "fallback")
+	if model != "claude-opus-5" || !usage.Complete || usage.CacheCreation5mTokens != 10 || usage.CacheCreation1hTokens != 20 {
+		t.Fatalf("observed model=%q usage=%+v", model, usage)
+	}
+}
+
 func TestNonStreamingObserverReadsLegacyCacheUsage(t *testing.T) {
 	raw := `{"id":"m","model":"claude-haiku-4-5","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":30,"output_tokens":4,"cache_creation_input_tokens":8,"cache_read_input_tokens":6}}`
 	observer := NewObserver(strings.NewReader(raw), "application/json")
