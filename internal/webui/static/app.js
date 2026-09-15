@@ -497,7 +497,7 @@ const FIVE_HOUR_CHART_COLORS = [
   "var(--chart-5)", "var(--chart-6)", "var(--chart-7)", "var(--chart-8)",
 ];
 const FIVE_HOUR_CHART_DASHES = ["", "8 4", "2 3", "10 3 2 3"];
-const FIVE_HOUR_CHART_MAX_SERIES = 6;
+const FIVE_HOUR_CHART_DEFAULT_SERIES = 6;
 const FIVE_HOUR_ACCOUNT_CHOICE_LIMIT = 50;
 
 function renderExhaustedWindowChart(windows) {
@@ -518,7 +518,7 @@ function renderExhaustedWindowChart(windows) {
   }
   if (!state.fiveHourChartSelectionInitialized || state.selectedFiveHourChartAccounts.size === 0) {
     state.selectedFiveHourChartAccounts.clear();
-    for (const account of helper?.recentAccounts(series, FIVE_HOUR_CHART_MAX_SERIES) || []) {
+    for (const account of helper?.recentAccounts(series, FIVE_HOUR_CHART_DEFAULT_SERIES) || []) {
       state.selectedFiveHourChartAccounts.add(account);
     }
     state.fiveHourChartSelectionInitialized = true;
@@ -586,7 +586,7 @@ function renderExhaustedWindowChart(windows) {
 
   visibleSeries.forEach((value, seriesIndex) => {
     const color = FIVE_HOUR_CHART_COLORS[seriesIndex % FIVE_HOUR_CHART_COLORS.length];
-    const dash = FIVE_HOUR_CHART_DASHES[seriesIndex % FIVE_HOUR_CHART_DASHES.length];
+    const dash = FIVE_HOUR_CHART_DASHES[Math.floor(seriesIndex / FIVE_HOUR_CHART_COLORS.length) % FIVE_HOUR_CHART_DASHES.length];
     if (value.points.length > 1) {
       const path = chartSVG("path", {
         d: value.points.map((point, index) => `${index ? "L" : "M"} ${x(point.resetsAt).toFixed(2)} ${y(point.value).toFixed(2)}`).join(" "),
@@ -614,7 +614,7 @@ function renderFiveHourChartLegend(series, windows) {
     const swatch = chartSVG("svg", { viewBox: "0 0 24 8", width: 24, height: 8, "aria-hidden": "true" });
     const line = chartSVG("line", { x1: 1, x2: 23, y1: 4, y2: 4, class: "five-hour-chart-legend-line" });
     line.style.setProperty("--series-color", FIVE_HOUR_CHART_COLORS[index % FIVE_HOUR_CHART_COLORS.length]);
-    const dash = FIVE_HOUR_CHART_DASHES[index % FIVE_HOUR_CHART_DASHES.length];
+    const dash = FIVE_HOUR_CHART_DASHES[Math.floor(index / FIVE_HOUR_CHART_COLORS.length) % FIVE_HOUR_CHART_DASHES.length];
     if (dash) line.setAttribute("stroke-dasharray", dash);
     swatch.appendChild(line);
     const label = document.createElement("span");
@@ -649,7 +649,6 @@ function renderFiveHourChartAccountPicker(series, windows) {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.checked = selected;
-      checkbox.disabled = !selected && state.selectedFiveHourChartAccounts.size >= FIVE_HOUR_CHART_MAX_SERIES;
       const copy = document.createElement("span");
       const name = document.createElement("strong");
       name.textContent = value.account;
@@ -660,11 +659,6 @@ function renderFiveHourChartAccountPicker(series, windows) {
       option.append(checkbox, copy);
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) {
-          if (state.selectedFiveHourChartAccounts.size >= FIVE_HOUR_CHART_MAX_SERIES) {
-            checkbox.checked = false;
-            showToast(`最多同时比较 ${FIVE_HOUR_CHART_MAX_SERIES} 个账号`, true);
-            return;
-          }
           state.selectedFiveHourChartAccounts.add(value.account);
         } else {
           if (state.selectedFiveHourChartAccounts.size <= 1) {
@@ -683,7 +677,7 @@ function renderFiveHourChartAccountPicker(series, windows) {
     if (result.matchCount > FIVE_HOUR_ACCOUNT_CHOICE_LIMIT) {
       note.textContent = `匹配 ${formatTokens(result.matchCount)} 个，仅显示最近 ${FIVE_HOUR_ACCOUNT_CHOICE_LIMIT} 个；继续输入可缩小范围。`;
     } else {
-      note.textContent = `匹配 ${formatTokens(result.matchCount)} 个 · 最多同时选择 ${FIVE_HOUR_CHART_MAX_SERIES} 个`;
+      note.textContent = `匹配 ${formatTokens(result.matchCount)} 个 · 可继续勾选账号加入比较`;
     }
   };
   search.oninput = renderOptions;
