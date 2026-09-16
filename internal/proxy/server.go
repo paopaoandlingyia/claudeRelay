@@ -46,6 +46,7 @@ type Server struct {
 	usage           *accountUsageManager
 	accounting      *accounting.Manager
 	sampler         *subscriptionSampler
+	routingPolicy   *routingPolicyState
 	// missingUsageWarningAt rate-limits diagnostics for successful Messages
 	// responses whose decoded body did not contain Anthropic usage metadata.
 	missingUsageWarningAt atomic.Int64
@@ -90,6 +91,8 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	load := newAccountLoadTracker()
 	countTokensLoad := newAccountLoadTracker()
 	sessions := newSessionAdmissionTracker(database, cfg.MaxActiveSessionsPerAccount)
+	sampler := newSubscriptionSampler(cfg.MaxInflightPerAccount)
+	routingPolicy := &routingPolicyState{}
 	server := &Server{
 		cfg:             cfg,
 		store:           database,
@@ -100,17 +103,20 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 			maxInflightPerAcct:            cfg.MaxInflightPerAccount,
 			maxCountTokensInflightPerAcct: cfg.MaxCountTokensInflightPerAccount,
 			sessions:                      sessions,
+			sampler:                       sampler,
+			policy:                        routingPolicy,
 		},
-		upstream:  upstream,
-		client:    &http.Client{Transport: transport},
-		oauth:     oauthClient,
-		metrics:   metrics.New(cfg.RequestLogSize),
-		startedAt: time.Now(),
+		upstream:      upstream,
+		client:        &http.Client{Transport: transport},
+		oauth:         oauthClient,
+		metrics:       metrics.New(cfg.RequestLogSize),
+		sampler:       sampler,
+		routingPolicy: routingPolicy,
+		startedAt:     time.Now(),
 	}
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
 	server.usage = newAccountUsageManager(database, server.tokens, server.client, upstream)
 	server.accounting = accounting.NewManager(database)
-	server.sampler = newSubscriptionSampler(cfg.MaxInflightPerAccount)
 	server.httpServer = &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           server.routes(),
@@ -163,6 +169,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/messages", s.forward)
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.forward)
 	mux.HandleFunc("GET /admin/v1/overview", s.overview)
+	mux.HandleFunc("POST /admin/v1/routing/policy", s.setRoutingPolicy)
 	mux.HandleFunc("GET /admin/v1/requests", s.listRequests)
 	mux.HandleFunc("GET /admin/v1/accounts", s.listAccounts)
 	mux.HandleFunc("POST /admin/v1/accounts/import", s.importAccount)
@@ -370,6 +377,16 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		releaseSession = selected.releaseSession
 		event.Account = selected.Account.Alias
 		event.Selection = selected.Source
+		if selected.RoutingPolicy == routingPolicyQuotaAware {
+			if selected.QuotaPriority.known {
+				slog.Info("quota-aware account selected", "request_id", requestID, "account", selected.Account.Alias,
+					"remaining_percent", selected.QuotaPriority.remaining,
+					"resets_at", selected.QuotaPriority.resetUnix,
+					"urgency_per_second", selected.QuotaPriority.urgency)
+			} else if !route.CountTokens {
+				slog.Info("quota-aware account selected for sampling", "request_id", requestID, "account", selected.Account.Alias)
+			}
+		}
 		freshAccount, refreshErr := s.tokens.ensureFresh(incoming.Context(), selected.Account)
 		if refreshErr != nil {
 			slog.Warn("account authentication failed", "request_id", requestID, "path", incoming.URL.Path,
@@ -504,7 +521,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		event.Error = "response interrupted"
 		return
 	}
-	if response.StatusCode < 400 && !route.CountTokens {
+	if response.StatusCode < 400 && !route.CountTokens && selected.RoutingPolicy == routingPolicyLegacy {
 		if ttl := stickyTTLAtCompletion(route, observedAt, time.Now()); ttl > 0 {
 			if bindErr := s.store.Bind(incoming.Context(), route.ConversationKey, selected.Account.ID, ttl); bindErr != nil {
 				slog.Warn("persist routing affinity", "request_id", requestID, "ttl", ttl, "error", bindErr)

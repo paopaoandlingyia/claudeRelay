@@ -637,6 +637,12 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .runtime > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; }
 .runtime dt { color: var(--muted); white-space: nowrap; }
 .runtime dd { margin: 0; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.routing-policy-card { grid-column: 1 / -1; }
+.routing-policy-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.routing-policy-head > div { display: flex; align-items: center; gap: 9px; }
+.routing-policy-head h3 { margin: 0; }
+.routing-policy-card .note { margin: 13px 0 6px; }
+.routing-policy-warning { margin: 0; color: var(--warn); font-size: 11px; }
 
 /* ---------- dialogs ---------- */
 
@@ -707,6 +713,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
   .field { flex: 1; }
   .field select { width: 100%; min-width: 0; }
   .connect-grid { grid-template-columns: 1fr; padding: 10px; }
+  .routing-policy-head { align-items: flex-start; flex-direction: column; }
   .usage-summary-grid, .usage-grid { grid-template-columns: 1fr; }
   .usage-dashboard { padding: 10px; }
   .five-hour-chart-toolbar { align-items: stretch; flex-direction: column; }

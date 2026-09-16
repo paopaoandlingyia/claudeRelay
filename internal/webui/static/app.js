@@ -1244,6 +1244,48 @@ function renderConnect() {
   $("runtimeMaxBytes").textContent = formatBytes(overview.max_request_bytes || 0);
   $("runtimeLogSize").textContent = `${overview.requests?.capacity ?? 0} 条`;
   $("runtimeStarted").textContent = overview.started_at ? new Date(overview.started_at).toLocaleString() : "—";
+
+  const quotaAware = overview.routing_policy === "quota_aware";
+  const badge = $("routingPolicyBadge");
+  badge.textContent = quotaAware ? "额度优先" : "现有策略";
+  badge.className = `badge ${quotaAware ? "badge-ok" : "badge-off"}`;
+  $("routingPolicyDescription").textContent = quotaAware
+    ? "忽略账号 UUID、会话和缓存前缀的硬绑定，优先消耗即将重置的五小时剩余额度；前缀只用于同分裁决。"
+    : "按会话与缓存前缀保持账号亲和，新会话优先选择当前负载较低的账号。";
+  const policyButton = $("routingPolicyButton");
+  policyButton.textContent = quotaAware ? "恢复现有策略" : "启用额度优先";
+  policyButton.className = quotaAware ? "btn" : "btn btn-primary";
+}
+
+async function toggleRoutingPolicy(element) {
+  const quotaAware = state.overview?.routing_policy === "quota_aware";
+  if (!quotaAware) {
+    const accepted = await confirmDialog({
+      title: "启用额度优先调度",
+      lead: "启用后，新请求会优先消耗即将重置的五小时额度。",
+      items: [
+        "账号 UUID、会话和缓存前缀不再形成硬绑定",
+        "活跃会话上限不参与准入，账号瞬时并发上限仍然有效",
+        "设置不会保存，服务重启后恢复现有策略",
+      ],
+      accept: "确认启用",
+    });
+    if (!accepted) return;
+  }
+  setBusy(element, true, quotaAware ? "恢复中" : "启用中");
+  try {
+    const result = await api("/admin/v1/routing/policy", {
+      method: "POST",
+      body: JSON.stringify({ policy: quotaAware ? "legacy" : "quota_aware" }),
+    });
+    state.overview.routing_policy = result.routing_policy;
+    showToast(result.routing_policy === "quota_aware" ? "已启用额度优先调度" : "已恢复现有调度策略");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    setBusy(element, false);
+    renderConnect();
+  }
 }
 
 /* ---------------- account actions ---------------- */
@@ -1997,6 +2039,7 @@ $("toggleRelayKey").addEventListener("click", () => {
   state.relayKeyVisible = !state.relayKeyVisible;
   renderConnect();
 });
+$("routingPolicyButton").addEventListener("click", (event) => toggleRoutingPolicy(event.currentTarget));
 $("copyRelayKey").addEventListener("click", () => copyText(state.overview?.relay_api_key, "中转密钥已复制"));
 $("copyOfficialKey").addEventListener("click", () => copyText(state.overview?.official_api_key, "Official 入口密钥已复制"));
 for (const element of document.querySelectorAll(".copy-endpoint")) {

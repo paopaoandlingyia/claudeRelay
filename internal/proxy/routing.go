@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -282,6 +284,8 @@ type selection struct {
 	Account        store.Account
 	Pinned         bool
 	Source         string
+	RoutingPolicy  string
+	QuotaPriority  quotaPriority
 	release        func()
 	releaseSession func()
 }
@@ -293,6 +297,8 @@ type accountSelector struct {
 	maxInflightPerAcct            int
 	maxCountTokensInflightPerAcct int
 	sessions                      *sessionAdmissionTracker
+	sampler                       *subscriptionSampler
+	policy                        *routingPolicyState
 }
 
 type selectionClientError interface {
@@ -325,30 +331,38 @@ func (s accountSelector) loadPolicy(route requestRoute) (*accountLoadTracker, in
 	return s.load, s.maxInflightPerAcct
 }
 
-func (s accountSelector) makeSelection(route requestRoute, account store.Account, source string, pinned bool) selection {
+func (s accountSelector) makeSelection(route requestRoute, account store.Account, source string, pinned bool, policy string) selection {
 	release := func() {}
 	load, _ := s.loadPolicy(route)
 	if load != nil {
 		release = load.reserve(account.ID)
 	}
 	return selection{
-		Account: account,
-		Pinned:  pinned,
-		Source:  source,
-		release: release,
+		Account:       account,
+		Pinned:        pinned,
+		Source:        source,
+		RoutingPolicy: policy,
+		release:       release,
 	}
 }
 
-func (s accountSelector) makeLimitedSelection(route requestRoute, account store.Account, source string, pinned bool) (selection, bool) {
+func (s accountSelector) makeLimitedSelection(route requestRoute, account store.Account, source string, pinned bool, policy string) (selection, bool) {
 	load, limit := s.loadPolicy(route)
 	if load == nil {
-		return s.makeSelection(route, account, source, pinned), true
+		return s.makeSelection(route, account, source, pinned, policy), true
 	}
 	release, _, ok := load.reserveBelow(account.ID, limit)
 	if !ok {
 		return selection{}, false
 	}
-	return selection{Account: account, Pinned: pinned, Source: source, release: release}, true
+	return selection{Account: account, Pinned: pinned, Source: source, RoutingPolicy: policy, release: release}, true
+}
+
+func (s accountSelector) routingPolicy() string {
+	if s.policy == nil {
+		return routingPolicyLegacy
+	}
+	return s.policy.current()
 }
 
 func (s accountSelector) wasBoundTo(ctx context.Context, route requestRoute, accountID int64) (bool, error) {
@@ -386,6 +400,7 @@ func locallyRateLimited(clientMessage, format string, args ...any) error {
 }
 
 func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, forcedAlias string, excluded map[int64]bool) (selection, error) {
+	policy := s.routingPolicy()
 	forcedAlias = strings.TrimSpace(forcedAlias)
 	if forcedAlias != "" {
 		account, found, err := s.store.AccountByAlias(ctx, forcedAlias)
@@ -408,25 +423,34 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			return selection{}, selectionFailed("requested account is temporarily cooling down",
 				"requested account %q is temporarily cooling down", forcedAlias)
 		}
-		selected, ok := s.makeLimitedSelection(route, account, "header", true)
+		selected, ok := s.makeLimitedSelection(route, account, "header", true, policy)
 		if !ok {
 			return selection{}, locallyRateLimited("requested account reached its in-flight limit",
 				"requested account %q reached its in-flight limit", forcedAlias)
 		}
-		existing, err := s.wasBoundTo(ctx, route, account.ID)
-		if err != nil {
-			selected.release()
-			return selection{}, err
-		}
-		selected, admitted, err := s.admitSession(ctx, route, selected, existing)
-		if err != nil {
-			return selection{}, err
-		}
-		if !admitted {
-			return selection{}, locallyRateLimited("requested account reached its active-session limit",
-				"requested account %q reached its active-session limit", forcedAlias)
+		if policy == routingPolicyLegacy {
+			existing, err := s.wasBoundTo(ctx, route, account.ID)
+			if err != nil {
+				selected.release()
+				return selection{}, err
+			}
+			var admitted bool
+			selected, admitted, err = s.admitSession(ctx, route, selected, existing)
+			if err != nil {
+				return selection{}, err
+			}
+			if !admitted {
+				return selection{}, locallyRateLimited("requested account reached its active-session limit",
+					"requested account %q reached its active-session limit", forcedAlias)
+			}
+		} else {
+			selected.releaseSession = func() {}
 		}
 		return selected, nil
+	}
+
+	if policy == routingPolicyQuotaAware {
+		return s.selectQuotaAware(ctx, route, excluded)
 	}
 
 	if route.AccountUUID != "" {
@@ -442,7 +466,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			selected, ok := s.makeLimitedSelection(route, account, "account_uuid", false)
+			selected, ok := s.makeLimitedSelection(route, account, "account_uuid", false, routingPolicyLegacy)
 			if !ok {
 				found = false
 			} else {
@@ -475,7 +499,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 					return selection{}, coolingErr
 				}
 				if !cooling {
-					selected, ok := s.makeLimitedSelection(route, account, "session_pending", false)
+					selected, ok := s.makeLimitedSelection(route, account, "session_pending", false, routingPolicyLegacy)
 					if !ok {
 						return selection{}, locallyRateLimited(relayCapacityClientMessage,
 							"account %q reached its in-flight limit", account.Alias)
@@ -505,7 +529,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			}
 		}
 		if found && !cooling && !excluded[account.ID] {
-			selected, ok := s.makeLimitedSelection(route, account, "sticky", false)
+			selected, ok := s.makeLimitedSelection(route, account, "sticky", false, routingPolicyLegacy)
 			if !ok {
 				return selection{}, locallyRateLimited(relayCapacityClientMessage,
 					"account %q reached its in-flight limit", account.Alias)
@@ -536,9 +560,10 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 				break
 			}
 			selected, admitted, admissionErr := s.admitSession(ctx, route, selection{
-				Account: account,
-				Source:  "load_balance",
-				release: release,
+				Account:       account,
+				Source:        "load_balance",
+				RoutingPolicy: routingPolicyLegacy,
+				release:       release,
 			}, false)
 			if admissionErr != nil {
 				return selection{}, admissionErr
@@ -567,7 +592,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			if chosen == nil {
 				break
 			}
-			selected, admitted, admissionErr := s.admitSession(ctx, route, s.makeSelection(route, *chosen, "cache_affinity", false), false)
+			selected, admitted, admissionErr := s.admitSession(ctx, route, s.makeSelection(route, *chosen, "cache_affinity", false, routingPolicyLegacy), false)
 			if admissionErr != nil {
 				return selection{}, admissionErr
 			}
@@ -581,6 +606,82 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if !excluded[account.ID] {
 			return selection{}, locallyRateLimited(relayCapacityClientMessage,
 				"all eligible accounts reached a local session or in-flight limit")
+		}
+	}
+	return selection{}, selectionFailed(accountUnavailableMessage,
+		"no healthy Claude subscription account is available for the %s ingress", route.Ingress)
+}
+
+func (s accountSelector) selectQuotaAware(ctx context.Context, route requestRoute, excluded map[int64]bool) (selection, error) {
+	accounts, err := s.store.Accounts(ctx, route.Ingress, route.Model, time.Now())
+	if err != nil {
+		return selection{}, err
+	}
+	localExcluded := make(map[int64]bool, len(excluded))
+	for id, skip := range excluded {
+		localExcluded[id] = skip
+	}
+
+	load, limit := s.loadPolicy(route)
+	if load == nil {
+		return selection{}, selectionFailed(accountUnavailableMessage,
+			"quota-aware routing requires an account load tracker")
+	}
+	if route.CountTokens {
+		account, release, found := load.reserveLeastLoaded(accounts, route.SelectionKey, localExcluded, limit)
+		if found {
+			return selection{Account: account, Source: "quota_count_tokens", RoutingPolicy: routingPolicyQuotaAware,
+				release: release, releaseSession: func() {}}, nil
+		}
+		return s.quotaSelectionFailure(accounts, excluded, route)
+	}
+	if s.sampler == nil {
+		return selection{}, selectionFailed(accountUnavailableMessage,
+			"quota-aware routing requires a five-hour usage sampler")
+	}
+
+	now := time.Now()
+	priorities := make(map[int64]quotaPriority, len(accounts))
+	quotaCandidates := make([]store.Account, 0, len(accounts))
+	for _, account := range accounts {
+		reading, ok := s.sampler.current(account, now)
+		if !ok {
+			priorities[account.ID] = quotaPriority{}
+			quotaCandidates = append(quotaCandidates, account)
+			continue
+		}
+		reset, parseErr := strconv.ParseInt(reading.resetsAt, 10, 64)
+		if parseErr != nil || reset <= now.Unix() {
+			priorities[account.ID] = quotaPriority{}
+			quotaCandidates = append(quotaCandidates, account)
+			continue
+		}
+		remaining := math.Max(0, math.Min(100, 100-reading.usedPercent))
+		priorities[account.ID] = quotaPriority{
+			known: true, remaining: remaining, resetUnix: reset,
+			urgency: remaining / float64(reset-now.Unix()),
+		}
+		if remaining > 0 {
+			quotaCandidates = append(quotaCandidates, account)
+		}
+	}
+	account, priority, release, found := load.reserveQuotaAware(quotaCandidates, priorities, route.SelectionKey, localExcluded, limit)
+	if found {
+		source := "quota_aware"
+		if !priority.known {
+			source = "quota_probe"
+		}
+		return selection{Account: account, Source: source, RoutingPolicy: routingPolicyQuotaAware,
+			QuotaPriority: priority, release: release, releaseSession: func() {}}, nil
+	}
+	return s.quotaSelectionFailure(quotaCandidates, excluded, route)
+}
+
+func (s accountSelector) quotaSelectionFailure(accounts []store.Account, excluded map[int64]bool, route requestRoute) (selection, error) {
+	for _, account := range accounts {
+		if !excluded[account.ID] {
+			return selection{}, locallyRateLimited(relayCapacityClientMessage,
+				"all eligible accounts reached a local in-flight limit")
 		}
 	}
 	return selection{}, selectionFailed(accountUnavailableMessage,

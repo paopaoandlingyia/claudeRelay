@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -157,6 +158,7 @@ type overviewResponse struct {
 	Accounts        accountTotals   `json:"accounts"`
 	StickySessions  int             `json:"sticky_sessions"`
 	Requests        metrics.Summary `json:"requests"`
+	RoutingPolicy   string          `json:"routing_policy"`
 }
 
 type accountTotals struct {
@@ -225,6 +227,33 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		Accounts:        totals,
 		StickySessions:  sticky,
 		Requests:        s.metrics.Summary(now),
+		RoutingPolicy:   s.routingPolicy.current(),
+	})
+}
+
+type routingPolicyRequest struct {
+	Policy string `json:"policy"`
+}
+
+func (s *Server) setRoutingPolicy(w http.ResponseWriter, r *http.Request) {
+	var request routingPolicyRequest
+	if err := decodeAdminJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	previous := s.routingPolicy.current()
+	policy, err := s.routingPolicy.set(request.Policy)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if policy != previous {
+		slog.Info("routing policy changed", "from", previous, "to", policy,
+			"remote_addr", r.RemoteAddr)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"routing_policy": policy,
+		"persistent":     false,
 	})
 }
 

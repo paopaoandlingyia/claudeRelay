@@ -78,8 +78,9 @@ session slot. Explicit client sessions retain sliding one-hour affinity; declare
 retain affinity for their five-minute default or explicit one-hour lifetime. A new session may
 select another eligible account when either limit is full; an
 existing sticky session never switches accounts because of local pressure. If its account is full,
-or no account can admit a new session, the relay returns `429`. Anthropic's five-hour utilization is
-sampled for the console and usage estimates only; it is not a routing or admission input. Both
+or no account can admit a new session, the relay returns `429`. Under the default `legacy` policy,
+Anthropic's five-hour utilization is sampled for the console and usage estimates only; the optional
+quota-aware policy described below also uses it for routing. Both
 limits can be overridden with the matching `CLAUDE_RELAY_*` environment variables.
 
 ## Downstream errors
@@ -143,6 +144,7 @@ Every timestamp in an administration response is epoch milliseconds.
 
 ```http
 GET    /admin/v1/overview
+POST   /admin/v1/routing/policy
 GET    /admin/v1/accounts
 POST   /admin/v1/accounts/import
 DELETE /admin/v1/accounts/{alias}
@@ -171,6 +173,11 @@ without this relay taking ownership of its refresh-token chain. `refresh` obeys 
 rules as automatic refresh and is rejected for a disabled account or while the global emergency
 stop is set. `delete` removes the account with its cooldowns and sticky bindings but does not
 revoke the authorization at Anthropic.
+
+`POST /admin/v1/routing/policy` accepts `{"policy":"legacy"}` or
+`{"policy":"quota_aware"}`. The selection is process-local by design and always returns to
+`legacy` after a restart. The console exposes the same switch under the connection panel; no
+configuration file, environment variable, or database migration is involved.
 
 The usage endpoint reads Anthropic's private OAuth usage surface and returns only windows actually
 present in the upstream response. A missing weekly or model-specific limit is omitted rather than
@@ -287,6 +294,18 @@ included `cache_control` lifetime: five minutes when `ttl` is omitted and one ho
 `ttl: "1h"`. A content-only fallback is not
 persisted, so it remains deterministic when account loads tie but can rebalance when capacity
 differs. Cache-prefix affinity is never treated as proof of a distinct client session.
+
+The console can temporarily enable **quota-aware** routing for deployments whose Anthropic prompt
+cache is shared by every account in the same workspace. An explicit `X-Claude-Relay-Account`
+continues to win, but automatic account UUID, session, and cache-prefix affinities are bypassed.
+The selector ranks live five-hour readings by `remaining percentage / seconds until reset`, so
+unused quota that will expire soon receives traffic first. An account without a current reading is
+sampled before known accounts; successful Messages response headers then supply its real balance.
+The prefix hash only breaks equal-priority ties. Per-account in-flight limits, account pools,
+cooldowns, and bounded failover remain active, while active-session admission and affinity writes
+are skipped. Native `count_tokens` requests continue to use their independent least-loaded pool.
+Switching back to `legacy` immediately restores the behavior above, and a process restart always
+does the same.
 
 An overloaded sticky request returns `429` without deleting, migrating, or temporarily bypassing
 its binding. The in-flight counter and provisional new-session admissions are process-local because

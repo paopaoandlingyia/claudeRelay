@@ -2,6 +2,35 @@
 
 This file records decisions that shape the service beyond the dated Anthropic protocol findings.
 
+## 2026-09-16: optional quota-aware routing for workspace-shared caches
+
+Some enterprise workspaces have been observed to share prompt-cache entries across their member
+accounts. Those deployments gain no cache-locality benefit from binding a prefix to one account;
+the binding can instead strand most of an account's five-hour allowance just before its reset.
+This is a deployment property, not a universal Anthropic contract, so quota-aware routing is a
+runtime policy rather than a replacement for the default behavior.
+
+The administration console switches between `legacy` and `quota_aware`. The value lives only in
+process memory and starts as `legacy` after every restart. This deliberately avoids a schema
+migration and guarantees that an operator can recover the established policy by restarting an
+unhealthy rollout.
+
+Quota-aware Messages selection keeps an explicit `X-Claude-Relay-Account`, pool fences, cooldowns,
+per-account in-flight limits, and bounded failover. Automatic account UUIDs, pending sessions,
+persisted session/cache bindings, active-session admission, and new affinity writes are bypassed.
+The existing prefix hash remains only a deterministic tie-breaker. Native `count_tokens` uses its
+separate least-loaded admission pool because it does not consume a Messages slot or create quota
+affinity.
+
+For every account with a live five-hour reading, the selector calculates
+`remaining_percent / seconds_until_reset` and chooses the greatest value. This represents unused
+allowance expiring per second rather than equal request counts. Accounts without a current reading
+are selected before known accounts until a successful Messages response supplies their actual
+window; missing data is never invented as zero or full allowance. In-flight load breaks equal
+quota priorities and the hard limit prevents one urgent account from accepting unbounded
+concurrency. Selection logs retain the remaining percentage, reset epoch, and calculated urgency
+needed to explain routing decisions.
+
 ## 2026-07-30: multi-account without round robin
 
 The service is server-first and supports multiple Claude subscription accounts from the storage
@@ -84,10 +113,10 @@ whether an in-flight slot, a session slot, or all eligible accounts caused it re
 diagnostics. This avoids exposing account identity and prevents clients from depending on routing
 implementation details.
 
-Anthropic's unified five-hour utilization remains sampled from successful response headers for the
-console and usage estimates. It is deliberately not a routing input: a time-envelope estimate can
-reject otherwise healthy cache-affine work and duplicates the simpler controls that directly bound
-multi-user-like fan-out.
+Under the default legacy policy, Anthropic's unified five-hour utilization remains sampled from
+successful response headers for the console and usage estimates rather than used as a routing
+input. The optional workspace-specific policy in the 2026-09-16 decision supersedes that choice
+only while an operator explicitly enables it.
 
 Failover eligibility and persisted account health are deliberately separate. A `529` or generic
 `5xx` may be request-scoped or service-wide, so it can cause the single bounded failover but never
@@ -270,7 +299,8 @@ Successful results live in a two-minute in-memory cache, but the console never r
 them automatically. Only an explicit per-account action calls the cache-bypassing refresh endpoint,
 so opening the console and its five-second operations poll generate no Anthropic usage requests.
 Ordinary cached reads are not persisted. An explicit refresh writes one quota observation as
-described in the 2026-08-26 decision; no scheduling decision is derived from it.
+described in the 2026-08-26 decision. Legacy routing does not consume it; the optional quota-aware
+policy may use the live sampler reading populated by that explicit refresh.
 
 Usage reads share the configured outbound proxy. Enabled accounts may use the existing synchronized
 OAuth refresh path when their access token is near expiry. Disabled accounts are read only while

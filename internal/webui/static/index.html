@@ -296,6 +296,18 @@
             <div><dt>启动时间</dt><dd id="runtimeStarted">—</dd></div>
           </dl>
         </div>
+
+        <div class="card routing-policy-card">
+          <div class="routing-policy-head">
+            <div>
+              <h3>账号调度</h3>
+              <span id="routingPolicyBadge" class="badge badge-off">现有策略</span>
+            </div>
+            <button id="routingPolicyButton" class="btn btn-primary" type="button">启用额度优先</button>
+          </div>
+          <p id="routingPolicyDescription" class="note">按会话与缓存前缀保持账号亲和，新会话优先选择当前负载较低的账号。</p>
+          <p class="routing-policy-warning">此开关只在当前进程内有效；服务重启后自动恢复现有策略。</p>
+        </div>
       </div>
     </section>
   </div>

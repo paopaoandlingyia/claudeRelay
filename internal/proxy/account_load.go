@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"crypto/sha256"
+	"math"
 	"strings"
 	"sync"
 
@@ -16,6 +17,74 @@ import (
 type accountLoadTracker struct {
 	mu       sync.Mutex
 	inFlight map[int64]int
+}
+
+type quotaPriority struct {
+	known     bool
+	remaining float64
+	urgency   float64
+	resetUnix int64
+}
+
+// reserveQuotaAware atomically chooses and reserves the account whose unused
+// five-hour quota is expiring fastest. Accounts without a live reading are
+// sampled before known accounts so cold starts cannot strand an account
+// forever. In-flight load and the prefix hash only break equal-priority ties;
+// the hard maxLoad remains the instantaneous overload guard.
+func (t *accountLoadTracker) reserveQuotaAware(candidates []store.Account, priorities map[int64]quotaPriority, selectionKey string, excluded map[int64]bool, maxLoad int) (store.Account, quotaPriority, func(), bool) {
+	if len(candidates) == 0 || t == nil {
+		return store.Account{}, quotaPriority{}, nil, false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	chosen := -1
+	chosenLoad := 0
+	var chosenPriority quotaPriority
+	var chosenHash [32]byte
+	for i := range candidates {
+		candidate := candidates[i]
+		if excluded[candidate.ID] {
+			continue
+		}
+		load := t.inFlight[candidate.ID]
+		if maxLoad > 0 && load >= maxLoad {
+			continue
+		}
+		priority := priorities[candidate.ID]
+		hash := accountSelectionScore(selectionKey, candidate.Alias)
+		if chosen < 0 || betterQuotaCandidate(priority, load, hash, chosenPriority, chosenLoad, chosenHash) {
+			chosen = i
+			chosenLoad = load
+			chosenPriority = priority
+			chosenHash = hash
+		}
+	}
+	if chosen < 0 {
+		return store.Account{}, quotaPriority{}, nil, false
+	}
+
+	account := candidates[chosen]
+	t.inFlight[account.ID] = chosenLoad + 1
+	return account, chosenPriority, t.releaseFuncLocked(account.ID), true
+}
+
+func betterQuotaCandidate(candidate quotaPriority, candidateLoad int, candidateHash [32]byte, chosen quotaPriority, chosenLoad int, chosenHash [32]byte) bool {
+	if candidate.known != chosen.known {
+		return !candidate.known
+	}
+	if candidate.known && !floatEqual(candidate.urgency, chosen.urgency) {
+		return candidate.urgency > chosen.urgency
+	}
+	if candidateLoad != chosenLoad {
+		return candidateLoad < chosenLoad
+	}
+	return bytes.Compare(candidateHash[:], chosenHash[:]) > 0
+}
+
+func floatEqual(left, right float64) bool {
+	return math.Abs(left-right) <= 1e-12
 }
 
 // snapshot returns the current per-account request load for administration
