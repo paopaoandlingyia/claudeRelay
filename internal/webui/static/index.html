@@ -7,6 +7,7 @@
   <title>Claude Relay 控制台</title>
   <link rel="stylesheet" href="/assets/app.css">
   <script src="/assets/five-hour-chart.js" defer></script>
+  <script src="/assets/usage-metrics.js" defer></script>
 </head>
 <body>
   <main id="loginView" class="signin">
@@ -221,18 +222,22 @@
         <div class="usage-summary-grid">
           <article class="card"><small>API 标价等价值</small><strong id="usageCost">—</strong><span id="usageCostNote">按发生时价格估算</span></article>
           <article class="card"><small>普通输入</small><strong id="usageInput">—</strong><span>tokens</span></article>
+          <article class="card"><small>缓存写入</small><strong id="usageCacheWrite">—</strong><span id="usageCacheWriteNote">5m — · 1h —</span></article>
           <article class="card"><small>缓存读取</small><strong id="usageCacheRead">—</strong><span>tokens</span></article>
+          <article class="card"><small>Token 缓存覆盖率</small><strong id="usageCacheCoverage">—</strong><span>读取 ÷ 全部输入</span></article>
+          <article class="card"><small>缓存复用倍数</small><strong id="usageCacheReuse">—</strong><span>读取 ÷ 写入</span></article>
           <article class="card"><small>模型输出</small><strong id="usageOutput">—</strong><span>tokens</span></article>
         </div>
+        <p class="cache-stats-note">缓存覆盖率按缓存读取 ÷（普通输入＋缓存写入＋缓存读取）计算。复用倍数受所选时间范围边界影响：读取可能来自范围开始前创建的缓存，写入也可能在范围结束后才被复用。</p>
         <div id="usageUnpriced" class="usage-warning hidden"></div>
         <div class="usage-grid">
           <div class="card usage-card">
             <div class="usage-card-head"><div><h3>按模型</h3><small>原始 usage 与 API 标价估值</small></div></div>
-            <div class="table-wrap"><table class="grid usage-table"><thead><tr><th>模型</th><th class="col-number">请求</th><th class="col-number">输入</th><th class="col-number">缓存写入</th><th class="col-number">缓存读取</th><th class="col-number">输出</th><th class="col-number">价值</th></tr></thead><tbody id="usageModelsBody"></tbody></table></div>
+            <div class="table-wrap"><table class="grid usage-table"><thead><tr><th>模型</th><th class="col-number">请求</th><th class="col-number">输入</th><th class="col-number">缓存写入</th><th class="col-number">缓存读取</th><th class="col-number">覆盖率</th><th class="col-number">复用</th><th class="col-number">输出</th><th class="col-number">价值</th></tr></thead><tbody id="usageModelsBody"></tbody></table></div>
           </div>
           <div class="card usage-card">
             <div class="usage-card-head"><div><h3>按账号</h3><small>所有流量都经过 relay 时才完整</small></div></div>
-            <div class="table-wrap"><table class="grid usage-table"><thead><tr><th>账号</th><th class="col-number">请求</th><th class="col-number">输入</th><th class="col-number">缓存读取</th><th class="col-number">输出</th><th class="col-number">价值</th></tr></thead><tbody id="usageAccountsBody"></tbody></table></div>
+            <div class="table-wrap"><table class="grid usage-table"><thead><tr><th>账号</th><th class="col-number">请求</th><th class="col-number">输入</th><th class="col-number">缓存写入</th><th class="col-number">缓存读取</th><th class="col-number">覆盖率</th><th class="col-number">复用</th><th class="col-number">输出</th><th class="col-number">价值</th></tr></thead><tbody id="usageAccountsBody"></tbody></table></div>
           </div>
         </div>
         <div class="card usage-card">

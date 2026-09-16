@@ -211,7 +211,11 @@ hour buckets and request-level five-hour events in short SQLite transactions eve
 retries failed batches, so SQLite work does not block model streaming.
 
 The usage console values raw input, output, five-minute/one-hour cache creation, and cache reads
-against versioned per-model prices. Built-in prices are only defaults. Add an exact model ID or a
+against versioned per-model prices. It derives token cache coverage as cache reads divided by all
+reported input categories, and cache reuse as reads divided by cache creation for the selected time
+range. Reuse is range-sensitive because a read may refer to a cache created before the range, or a
+creation may be reused after it. These are traffic-flow metrics, not a live inventory of upstream
+cache objects. Built-in prices are only defaults. Add an exact model ID or a
 prefix ending in `*` through the console or `POST /admin/v1/usage/prices`; exact matches win, and a
 new effective version preserves historical valuation. Unknown models keep their raw usage and are
 reported as unpriced instead of silently contributing zero dollars. API value is an estimate at

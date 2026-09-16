@@ -535,7 +535,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 
 /* ---------- connection workspace ---------- */
 .usage-dashboard { display: grid; gap: 14px; padding: 16px; }
-.usage-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.usage-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
 .usage-summary-grid .card { display: flex; min-height: 108px; flex-direction: column; }
 .usage-summary-grid small { color: var(--muted); font-size: 11px; }
 .usage-summary-grid strong { margin: 9px 0 3px; font-size: 25px; font-variant-numeric: tabular-nums; }
@@ -546,7 +546,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .usage-card-head > div:first-child { min-width: 0; }
 .usage-card-head h3 { margin: 0 0 2px; }
 .usage-card-head small { color: var(--muted); font-size: 10px; }
-.usage-table { min-width: 660px; font-size: 11px; }
+.usage-table { min-width: 860px; font-size: 11px; }
 .usage-table th, .usage-table td { padding: 9px 11px; }
 .usage-estimate-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; color: inherit; background: none; font: inherit; font-weight: 600; cursor: pointer; }
 .usage-estimate-indicator { display: inline-block; color: var(--muted); font-size: 16px; line-height: 1; transition: transform 120ms ease; }
@@ -619,6 +619,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .five-hour-window-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .five-hour-window-details summary span { color: var(--faint); font-weight: 500; }
 .usage-warning { padding: 10px 13px; border: 1px solid var(--warn); border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--warn); font-size: 11px; }
+.cache-stats-note { margin: -2px 1px 12px; color: var(--faint); font-size: 10px; line-height: 1.6; }
 .usage-empty-note { padding: 12px 17px 17px; color: var(--faint); font-size: 11px; }
 .price-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
 

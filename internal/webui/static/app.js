@@ -393,7 +393,12 @@ function renderUsage() {
   $("usageCost").textContent = formatUSD(totals.cost_usd || 0);
   $("usageCostNote").textContent = totals.unpriced ? "不含尚未定价模型" : "按发生时价格估算";
   $("usageInput").textContent = formatTokens(usage.input_tokens || 0);
-  $("usageCacheRead").textContent = formatTokens(usage.cache_read_tokens || 0);
+  const cache = globalThis.ClaudeRelayUsageMetrics.cacheStats(usage);
+  $("usageCacheWrite").textContent = formatTokens(cache.write);
+  $("usageCacheWriteNote").textContent = `5m ${formatTokens(cache.write5m)} · 1h ${formatTokens(cache.write1h)}`;
+  $("usageCacheRead").textContent = formatTokens(cache.read);
+  $("usageCacheCoverage").textContent = globalThis.ClaudeRelayUsageMetrics.formatRatio(cache.coverage, "%");
+  $("usageCacheReuse").textContent = globalThis.ClaudeRelayUsageMetrics.formatRatio(cache.reuse, "×");
   $("usageOutput").textContent = formatTokens(usage.output_tokens || 0);
 
   const unpriced = Array.isArray(dashboard.unpriced_models) ? dashboard.unpriced_models : [];
@@ -401,8 +406,8 @@ function renderUsage() {
   warning.classList.toggle("hidden", unpriced.length === 0);
   warning.textContent = unpriced.length ? `尚未定价：${unpriced.join("、")}。原始 usage 已保存，添加价格后即可估值。` : "";
 
-  renderUsageRows($("usageModelsBody"), dashboard.by_model || [], "model", true);
-  renderUsageRows($("usageAccountsBody"), dashboard.by_account || [], "account", false);
+  renderUsageRows($("usageModelsBody"), dashboard.by_model || [], "model");
+  renderUsageRows($("usageAccountsBody"), dashboard.by_account || [], "account");
 
   const currentWindows = Array.isArray(dashboard.five_hour_current) ? dashboard.five_hour_current : [];
   const exhaustedWindows = Array.isArray(dashboard.five_hour_exhausted) ? dashboard.five_hour_exhausted : [];
@@ -810,22 +815,20 @@ function buildFiveHourModelDetails(window, models) {
   return row;
 }
 
-function renderUsageRows(body, values, key, includeCacheWrite) {
+function renderUsageRows(body, values, key) {
   body.replaceChildren();
   for (const value of values) {
     const usage = value.usage || {};
+    const cache = globalThis.ClaudeRelayUsageMetrics.cacheStats(usage);
     const row = document.createElement("tr");
     row.append(
       cell(stack(strong(value[key] || "—"), value.unpriced ? small("未定价") : null)),
       numberCell(formatTokens(usage.requests || 0)),
       numberCell(formatTokens(usage.input_tokens || 0)),
-    );
-    if (includeCacheWrite) {
-      const writes = (usage.cache_creation_5m_tokens || 0) + (usage.cache_creation_1h_tokens || 0);
-      row.appendChild(numberCell(formatTokens(writes)));
-    }
-    row.append(
-      numberCell(formatTokens(usage.cache_read_tokens || 0)),
+      numberCell(formatTokens(cache.write)),
+      numberCell(formatTokens(cache.read)),
+      numberCell(globalThis.ClaudeRelayUsageMetrics.formatRatio(cache.coverage, "%")),
+      numberCell(globalThis.ClaudeRelayUsageMetrics.formatRatio(cache.reuse, "×")),
       numberCell(formatTokens(usage.output_tokens || 0)),
       numberCell(value.unpriced ? "—" : formatUSD(value.cost_usd || 0)),
     );
