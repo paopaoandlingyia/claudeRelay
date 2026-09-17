@@ -304,6 +304,18 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	includeMetadata := incoming.URL.Path == "/v1/messages"
 	ingress := requestIngress(incoming.Context())
 	event.Ingress = ingress
+	normalizedToolNames := 0
+	if ingress == store.AccountPoolCompatible {
+		body, normalizedToolNames, err = normalizeCompatibleToolNames(body)
+		if err != nil {
+			fail(http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		if normalizedToolNames > 0 {
+			slog.Info("normalized compatible tool names", "request_id", requestID, "path", incoming.URL.Path,
+				"ingress", ingress, "names_changed", normalizedToolNames)
+		}
+	}
 	route, routeErr := deriveRequestRoute(body, incoming.Header, ingress, incoming.URL.Path)
 	if routeErr != nil {
 		fail(http.StatusBadRequest, "invalid_request_error", routeErr.Error())
@@ -416,9 +428,14 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			fail(http.StatusBadRequest, "invalid_request_error", transformErr.Error())
 			return
 		}
-		if changed {
+		switch {
+		case changed && normalizedToolNames > 0:
+			event.RelayAction = "minimal_attribution_and_tool_name_normalization"
+		case changed:
 			event.RelayAction = "minimal_attribution"
-		} else {
+		case normalizedToolNames > 0:
+			event.RelayAction = "tool_name_normalization"
+		default:
 			event.RelayAction = "unchanged"
 		}
 		if changed {

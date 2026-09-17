@@ -1213,6 +1213,8 @@ function evidenceSummary(evidence) {
 function relayActionLabel(action) {
   if (action === "passthrough") return "原样透传";
   if (action === "minimal_attribution") return "最小归因";
+  if (action === "tool_name_normalization") return "工具名兼容";
+  if (action === "minimal_attribution_and_tool_name_normalization") return "最小归因 + 工具名兼容";
   if (action === "unchanged") return "无需修改";
   return "未转发";
 }

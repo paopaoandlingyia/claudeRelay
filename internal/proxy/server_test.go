@@ -131,6 +131,61 @@ func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	}
 }
 
+func TestForwardNormalizesToolNamesOnlyForCompatibleIngress(t *testing.T) {
+	t.Parallel()
+	var upstreamBodies []map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		upstreamBodies = append(upstreamBodies, decodeBody(t, body))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+
+	compatibleBody := `{"model":"claude-test","system":[{"type":"text","text":"` + observedBillingAttribution + `"}],` +
+		`"metadata":{"user_id":"caller-owned"},"tools":[{"name":"web_search","input_schema":{"type":"object"}}],` +
+		`"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"web_search","input":{}}]}]}`
+	compatibleRequest := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(compatibleBody))
+	compatibleRequest.Header.Set("x-api-key", "downstream-key")
+	compatibleRecorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(compatibleRecorder, compatibleRequest)
+	if compatibleRecorder.Code != http.StatusOK {
+		t.Fatalf("compatible status = %d, body = %s", compatibleRecorder.Code, compatibleRecorder.Body.String())
+	}
+
+	officialBody := `{"model":"claude-test","system":[{"type":"text","text":"` + observedBillingAttribution + `"}],` +
+		`"metadata":{"user_id":` + strconv.Quote(testClaudeCodeMetadata) + `},` +
+		`"tools":[{"name":"web_search","input_schema":{"type":"object"}}],"messages":[]}`
+	officialRequest := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(officialBody))
+	officialRequest.Header.Set("x-api-key", "official-downstream-key")
+	setOfficialClaudeCodeTestHeaders(officialRequest)
+	officialRecorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(officialRecorder, officialRequest)
+	if officialRecorder.Code != http.StatusOK {
+		t.Fatalf("official status = %d, body = %s", officialRecorder.Code, officialRecorder.Body.String())
+	}
+
+	if len(upstreamBodies) != 2 {
+		t.Fatalf("upstream requests = %d, want 2", len(upstreamBodies))
+	}
+	compatibleTools := upstreamBodies[0]["tools"].([]any)
+	if got := compatibleTools[0].(map[string]any)["name"]; got != "mcp__web_search" {
+		t.Fatalf("compatible tool name = %q", got)
+	}
+	compatibleMessages := upstreamBodies[0]["messages"].([]any)
+	compatibleToolUse := compatibleMessages[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if got := compatibleToolUse["name"]; got != "mcp__web_search" {
+		t.Fatalf("compatible tool use name = %q", got)
+	}
+	officialTools := upstreamBodies[1]["tools"].([]any)
+	if got := officialTools[0].(map[string]any)["name"]; got != "web_search" {
+		t.Fatalf("official tool name = %q, want unchanged", got)
+	}
+}
+
 func TestOfficialIngressRejectsNonClaudeCodeShape(t *testing.T) {
 	t.Parallel()
 	upstreamCalls := 0
