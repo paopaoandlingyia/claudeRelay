@@ -283,9 +283,10 @@ off it. Claude Code-shaped traffic is what a subscription is expected to produce
 every account costs nothing while the fence still keeps chosen accounts clean, and the official
 ingress keeps the full account set for load spreading and failover.
 
-For compatible-ingress requests, tool names without the subscription upstream's `mcp__` prefix are
-normalized before forwarding. The relay updates tool declarations, an explicit `tool_choice`, and
-prior `tool_use` blocks together; already-prefixed names and official-ingress requests are unchanged.
+For compatible-ingress requests, third-party custom tool names without the subscription upstream's
+`mcp__` prefix are normalized before forwarding. The relay updates the matching declaration, an
+explicit `tool_choice`, and prior `tool_use` blocks together. Typed Anthropic server tools (such as
+`web_search_20250305`), already-prefixed names, and official-ingress requests are unchanged.
 
 Changing an account's pool immediately clears its sticky bindings. Cooldowns and OAuth ownership
 state remain with the account. The fence applies to every selection path, so `X-Claude-Relay-Account`

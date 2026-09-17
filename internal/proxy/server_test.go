@@ -146,8 +146,10 @@ func TestForwardNormalizesToolNamesOnlyForCompatibleIngress(t *testing.T) {
 	server := newTestServer(t, upstream.URL, 4096)
 
 	compatibleBody := `{"model":"claude-test","system":[{"type":"text","text":"` + observedBillingAttribution + `"}],` +
-		`"metadata":{"user_id":"caller-owned"},"tools":[{"name":"web_search","input_schema":{"type":"object"}}],` +
-		`"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"web_search","input":{}}]}]}`
+		`"metadata":{"user_id":"caller-owned"},"tools":[` +
+		`{"name":"get_weather","input_schema":{"type":"object"}},` +
+		`{"type":"web_search_20250305","name":"web_search"}],` +
+		`"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}]}]}`
 	compatibleRequest := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(compatibleBody))
 	compatibleRequest.Header.Set("x-api-key", "downstream-key")
 	compatibleRecorder := httptest.NewRecorder()
@@ -172,12 +174,15 @@ func TestForwardNormalizesToolNamesOnlyForCompatibleIngress(t *testing.T) {
 		t.Fatalf("upstream requests = %d, want 2", len(upstreamBodies))
 	}
 	compatibleTools := upstreamBodies[0]["tools"].([]any)
-	if got := compatibleTools[0].(map[string]any)["name"]; got != "mcp__web_search" {
+	if got := compatibleTools[0].(map[string]any)["name"]; got != "mcp__get_weather" {
 		t.Fatalf("compatible tool name = %q", got)
+	}
+	if got := compatibleTools[1].(map[string]any)["name"]; got != "web_search" {
+		t.Fatalf("compatible built-in tool name = %q, want unchanged", got)
 	}
 	compatibleMessages := upstreamBodies[0]["messages"].([]any)
 	compatibleToolUse := compatibleMessages[0].(map[string]any)["content"].([]any)[0].(map[string]any)
-	if got := compatibleToolUse["name"]; got != "mcp__web_search" {
+	if got := compatibleToolUse["name"]; got != "mcp__get_weather" {
 		t.Fatalf("compatible tool use name = %q", got)
 	}
 	officialTools := upstreamBodies[1]["tools"].([]any)

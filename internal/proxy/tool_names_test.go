@@ -51,6 +51,24 @@ func TestNormalizeCompatibleToolNamesUpdatesDeclarationsAndReferences(t *testing
 	}
 }
 
+func TestNormalizeCompatibleToolNamesLeavesBuiltInToolAndReferencesUnchanged(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{
+		"tools":[{"type":"web_search_20250305","name":"web_search"}],
+		"tool_choice":{"type":"tool","name":"web_search"},
+		"messages":[{"role":"assistant","content":[
+			{"type":"tool_use","id":"toolu_1","name":"web_search","input":{}}
+		]}]
+	}`)
+	transformed, changed, err := normalizeCompatibleToolNames(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 0 || string(transformed) != string(body) {
+		t.Fatalf("changed=%d body=%s", changed, transformed)
+	}
+}
+
 func TestNormalizeCompatibleToolNamesLeavesAlreadyCompatibleBodyByteExact(t *testing.T) {
 	t.Parallel()
 	body := []byte("{\n  \"tools\": [{\"name\":\"mcp__web_search\"}], \"messages\": []\n}")
