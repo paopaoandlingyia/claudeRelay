@@ -15,12 +15,14 @@ import (
 
 const (
 	billingAttributionPrefix = "x-anthropic-billing-header:"
-	// Captured from Claude Code 2.1.219 using a third-party API URL on 2026-07-31.
+	// Opus 5.5 requires Claude Code 2.1.280 or newer. Keep relay-generated
+	// attribution and account-check headers on the same minimum version.
+	defaultClaudeCodeVersion = "2.1.280"
 	// This is a compatibility identifier, not a claim that claude-relay is Claude Desktop.
-	observedBillingAttribution = "x-anthropic-billing-header: cc_version=2.1.219.0a7; cc_entrypoint=claude-desktop-3p;"
+	defaultBillingAttribution = "x-anthropic-billing-header: cc_version=" + defaultClaudeCodeVersion + "; cc_entrypoint=claude-desktop-3p;"
 	// Sent only by relay-generated account checks, which have no client request
-	// headers to pass through. Captured alongside the billing attribution above.
-	observedClientUserAgent = "claude-cli/2.1.219 (external, claude-desktop, agent-sdk/0.3.219)"
+	// headers to pass through.
+	defaultClientUserAgent = "claude-cli/" + defaultClaudeCodeVersion + " (external, claude-desktop)"
 )
 
 var sessionHeaderNames = []string{
@@ -62,7 +64,7 @@ func addSubscriptionAttribution(body []byte, headers http.Header, cred credentia
 
 	changed := false
 	if !billingFound {
-		billing := map[string]any{"type": "text", "text": observedBillingAttribution}
+		billing := map[string]any{"type": "text", "text": defaultBillingAttribution}
 		system = append([]any{billing}, system...)
 		root["system"] = system
 		changed = true

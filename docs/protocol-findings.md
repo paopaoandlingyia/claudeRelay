@@ -52,9 +52,12 @@ does not by itself prove how Anthropic classified subscription usage.
   `cc_entrypoint`. The reserved prefix or either field alone was rejected.
 - **Acceptance test:** Sonnet 5 and Opus 5 both accepted the minimum block with
   `cc_entrypoint=claude-desktop-3p` through the deployed third-party API path.
-- The relay currently uses the captured `2.1.219.0a7` identifier and
-  `cc_entrypoint=claude-desktop-3p` for synthetic requests. This matches its deployment role but is
-  a dated compatibility constant that must be revisited after client changes.
+- **Upstream rejection observed 2026-09-23:** Opus 5.5 rejects synthetic attribution identifying
+  Claude Code 2.1.219 and requires version 2.1.280 or newer.
+- The relay therefore uses the minimum supported `2.1.280` identifier and
+  `cc_entrypoint=claude-desktop-3p` for synthetic requests. Unlike the historical capture above,
+  this is a compatibility floor rather than a captured full build identifier and must be revisited
+  after later client or model changes.
 - A third-party algorithm claiming to derive the final three hex characters from message content
   produced `68d` for both exact captured requests, while the official value was `0a7`. It is not
   used here.

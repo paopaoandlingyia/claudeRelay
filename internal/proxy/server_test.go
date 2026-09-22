@@ -145,7 +145,7 @@ func TestForwardNormalizesToolNamesOnlyForCompatibleIngress(t *testing.T) {
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
 
-	compatibleBody := `{"model":"claude-test","system":[{"type":"text","text":"` + observedBillingAttribution + `"}],` +
+	compatibleBody := `{"model":"claude-test","system":[{"type":"text","text":"` + defaultBillingAttribution + `"}],` +
 		`"metadata":{"user_id":"caller-owned"},"tools":[` +
 		`{"name":"get_weather","input_schema":{"type":"object"}},` +
 		`{"type":"web_search_20250305","name":"web_search"}],` +
@@ -158,7 +158,7 @@ func TestForwardNormalizesToolNamesOnlyForCompatibleIngress(t *testing.T) {
 		t.Fatalf("compatible status = %d, body = %s", compatibleRecorder.Code, compatibleRecorder.Body.String())
 	}
 
-	officialBody := `{"model":"claude-test","system":[{"type":"text","text":"` + observedBillingAttribution + `"}],` +
+	officialBody := `{"model":"claude-test","system":[{"type":"text","text":"` + defaultBillingAttribution + `"}],` +
 		`"metadata":{"user_id":` + strconv.Quote(testClaudeCodeMetadata) + `},` +
 		`"tools":[{"name":"web_search","input_schema":{"type":"object"}}],"messages":[]}`
 	officialRequest := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(officialBody))
@@ -535,7 +535,7 @@ func TestForwardAddsMinimumAttributionAndStableHeaderSession(t *testing.T) {
 	second := decodeBody(t, bodies[1])
 	firstSystem := first["system"].([]any)
 	billing := firstSystem[0].(map[string]any)["text"].(string)
-	const expectedBilling = "x-anthropic-billing-header: cc_version=2.1.219.0a7; cc_entrypoint=claude-desktop-3p;"
+	const expectedBilling = "x-anthropic-billing-header: cc_version=2.1.280; cc_entrypoint=claude-desktop-3p;"
 	if billing != expectedBilling || strings.Contains(billing, "cch=") {
 		t.Fatalf("billing attribution = %q", billing)
 	}
@@ -610,7 +610,7 @@ func TestCountTokensAddsBillingWithoutMetadata(t *testing.T) {
 			t.Fatalf("count_tokens request contains unsupported metadata: %s", got)
 		}
 		system := body["system"].([]any)
-		if got := system[0].(map[string]any)["text"]; got != observedBillingAttribution {
+		if got := system[0].(map[string]any)["text"]; got != defaultBillingAttribution {
 			t.Fatalf("billing attribution = %#v", got)
 		}
 		w.WriteHeader(http.StatusOK)

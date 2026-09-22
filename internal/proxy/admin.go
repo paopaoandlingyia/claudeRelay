@@ -483,7 +483,7 @@ func (s *Server) checkAccount(w http.ResponseWriter, r *http.Request) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("anthropic-version", "2023-06-01")
 	request.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	request.Header.Set("User-Agent", observedClientUserAgent)
+	request.Header.Set("User-Agent", defaultClientUserAgent)
 	request.Host = s.upstream.Host
 
 	started := time.Now()
