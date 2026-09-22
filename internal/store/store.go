@@ -74,7 +74,7 @@ type CooldownMatch struct {
 	Reason string
 }
 
-const schemaVersion = 9
+const schemaVersion = 10
 
 type Store struct {
 	db *sql.DB
@@ -335,6 +335,17 @@ func (s *Store) initialize(ctx context.Context) error {
 			return err
 		}
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=9`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	if version < 10 {
+		// Opus 5.5 has lower standard and cache prices than Opus 5. The exact
+		// pattern must outrank the existing claude-opus-5* fallback. OR IGNORE
+		// preserves an operator price already stored at the same effective point.
+		if err := s.insertDefaultModelPrice(ctx, defaultOpusFiveFivePrice); err != nil {
+			return fmt.Errorf("insert Opus 5.5 default price: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=10`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}

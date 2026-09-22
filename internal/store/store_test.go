@@ -133,6 +133,60 @@ func TestSchemaV7RemovesOnlySeededSonnetFiveIncrease(t *testing.T) {
 	}
 }
 
+func TestSchemaV10SeedsOpusFiveFiveWithoutReplacingOperatorPrice(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		seedCustom bool
+		wantInput  float64
+		wantSource string
+	}{
+		{name: "missing price", wantInput: 4, wantSource: "Anthropic API pricing"},
+		{name: "operator price", seedCustom: true, wantInput: 3, wantSource: "operator override"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "relay.db")
+			database, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.db.Exec(`DELETE FROM model_prices WHERE
+				model_pattern='claude-opus-5-5*' AND effective_from=1`); err != nil {
+				t.Fatal(err)
+			}
+			if test.seedCustom {
+				_, err = database.db.Exec(`INSERT INTO model_prices(model_pattern,effective_from,
+					input_usd_per_mtok,output_usd_per_mtok,cache_creation_5m_usd_per_mtok,
+					cache_creation_1h_usd_per_mtok,cache_read_usd_per_mtok,source,created_at)
+					VALUES('claude-opus-5-5*',1,3,15,3.75,6,0.3,'operator override',1)`)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := database.db.Exec(`PRAGMA user_version=9`); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			database, err = Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			var input float64
+			var source string
+			if err := database.db.QueryRow(`SELECT input_usd_per_mtok,source FROM model_prices WHERE
+				model_pattern='claude-opus-5-5*' AND effective_from=1`).Scan(&input, &source); err != nil {
+				t.Fatal(err)
+			}
+			if input != test.wantInput || source != test.wantSource {
+				t.Fatalf("migrated price = input %g source %q", input, source)
+			}
+		})
+	}
+}
+
 // TestConnectionPragmas pins the per-connection settings to the DSN. Running
 // them as one-off statements at startup would leave any additional pooled
 // connection without foreign_keys, silently disabling ON DELETE CASCADE.

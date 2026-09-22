@@ -51,7 +51,13 @@ type ModelPrice struct {
 	CreatedAt                 int64   `json:"created_at"`
 }
 
+var defaultOpusFiveFivePrice = ModelPrice{
+	ModelPattern: "claude-opus-5-5*", InputUSDPerMTok: 4, OutputUSDPerMTok: 20,
+	CacheCreation5mUSDPerMTok: 5, CacheCreation1hUSDPerMTok: 8, CacheReadUSDPerMTok: .2,
+}
+
 var defaultModelPrices = []ModelPrice{
+	defaultOpusFiveFivePrice,
 	{ModelPattern: "claude-opus-5*", InputUSDPerMTok: 5, OutputUSDPerMTok: 25, CacheCreation5mUSDPerMTok: 6.25, CacheCreation1hUSDPerMTok: 10, CacheReadUSDPerMTok: .5},
 	{ModelPattern: "claude-opus-4-8*", InputUSDPerMTok: 5, OutputUSDPerMTok: 25, CacheCreation5mUSDPerMTok: 6.25, CacheCreation1hUSDPerMTok: 10, CacheReadUSDPerMTok: .5},
 	{ModelPattern: "claude-opus-4-7*", InputUSDPerMTok: 5, OutputUSDPerMTok: 25, CacheCreation5mUSDPerMTok: 6.25, CacheCreation1hUSDPerMTok: 10, CacheReadUSDPerMTok: .5},
@@ -64,21 +70,25 @@ var defaultModelPrices = []ModelPrice{
 }
 
 func (s *Store) insertDefaultModelPrices(ctx context.Context) error {
-	now := time.Now().Unix()
 	for _, price := range defaultModelPrices {
-		if price.EffectiveFrom == 0 {
-			price.EffectiveFrom = 1
-		}
-		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO model_prices(
-			model_pattern,effective_from,input_usd_per_mtok,output_usd_per_mtok,
-			cache_creation_5m_usd_per_mtok,cache_creation_1h_usd_per_mtok,cache_read_usd_per_mtok,source,created_at)
-			VALUES(?,?,?,?,?,?,?,?,?)`, price.ModelPattern, price.EffectiveFrom, price.InputUSDPerMTok,
-			price.OutputUSDPerMTok, price.CacheCreation5mUSDPerMTok, price.CacheCreation1hUSDPerMTok,
-			price.CacheReadUSDPerMTok, "Anthropic API pricing", now); err != nil {
+		if err := s.insertDefaultModelPrice(ctx, price); err != nil {
 			return fmt.Errorf("insert default model price: %w", err)
 		}
 	}
 	return nil
+}
+
+func (s *Store) insertDefaultModelPrice(ctx context.Context, price ModelPrice) error {
+	if price.EffectiveFrom == 0 {
+		price.EffectiveFrom = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO model_prices(
+		model_pattern,effective_from,input_usd_per_mtok,output_usd_per_mtok,
+		cache_creation_5m_usd_per_mtok,cache_creation_1h_usd_per_mtok,cache_read_usd_per_mtok,source,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?)`, price.ModelPattern, price.EffectiveFrom, price.InputUSDPerMTok,
+		price.OutputUSDPerMTok, price.CacheCreation5mUSDPerMTok, price.CacheCreation1hUSDPerMTok,
+		price.CacheReadUSDPerMTok, "Anthropic API pricing", time.Now().Unix())
+	return err
 }
 
 func (s *Store) AddUsageBuckets(ctx context.Context, buckets []UsageBucket) error {

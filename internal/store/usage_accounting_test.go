@@ -51,3 +51,27 @@ func TestSonnetFivePermanentPriceHasNoFutureIncrease(t *testing.T) {
 		}
 	}
 }
+
+func TestOpusFiveFiveHasItsPublishedPrice(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	prices, err := database.ModelPrices(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, price := range prices {
+		if price.ModelPattern != "claude-opus-5-5*" || price.EffectiveFrom != 1 {
+			continue
+		}
+		if price.InputUSDPerMTok != 4 || price.OutputUSDPerMTok != 20 ||
+			price.CacheCreation5mUSDPerMTok != 5 || price.CacheCreation1hUSDPerMTok != 8 ||
+			price.CacheReadUSDPerMTok != .2 {
+			t.Fatalf("Opus 5.5 price = %+v", price)
+		}
+		return
+	}
+	t.Fatal("Opus 5.5 default price is missing")
+}

@@ -67,6 +67,8 @@ func TestRelayUsageFlowsIntoDashboardAndFiveHourWindowWithoutChangingSSE(t *test
 func TestMatchingPricePrefersExactAndLatestVersion(t *testing.T) {
 	prices := []store.ModelPrice{
 		{ModelPattern: "claude-*", EffectiveFrom: 1, InputUSDPerMTok: 1},
+		{ModelPattern: "claude-opus-5*", EffectiveFrom: 1, InputUSDPerMTok: 5},
+		{ModelPattern: "claude-opus-5-5*", EffectiveFrom: 1, InputUSDPerMTok: 4},
 		{ModelPattern: "claude-sonnet-5*", EffectiveFrom: 1, InputUSDPerMTok: 2},
 		{ModelPattern: "claude-sonnet-5", EffectiveFrom: 1, InputUSDPerMTok: 3},
 		{ModelPattern: "claude-sonnet-5", EffectiveFrom: 20, InputUSDPerMTok: 4},
@@ -78,6 +80,10 @@ func TestMatchingPricePrefersExactAndLatestVersion(t *testing.T) {
 	price, ok = matchingPrice(prices, "claude-sonnet-5", 30)
 	if !ok || price.InputUSDPerMTok != 4 {
 		t.Fatalf("price at 30=%+v ok=%v", price, ok)
+	}
+	price, ok = matchingPrice(prices, "claude-opus-5-5-20260923", 30)
+	if !ok || price.InputUSDPerMTok != 4 {
+		t.Fatalf("Opus 5.5 price=%+v ok=%v", price, ok)
 	}
 }
 
