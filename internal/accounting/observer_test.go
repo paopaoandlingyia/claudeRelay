@@ -21,7 +21,7 @@ func TestStreamingObserverPreservesBytesAndCollectsCumulativeUsage(t *testing.T)
 	if string(forwarded) != raw {
 		t.Fatal("observer changed the forwarded SSE bytes")
 	}
-	usage, model := observer.Result(nil, "fallback")
+	usage, model, _ := observer.Result(nil, "fallback")
 	if model != "claude-sonnet-5" || !usage.Complete || usage.InputTokens != 100 || usage.OutputTokens != 12 ||
 		usage.CacheReadTokens != 40 || usage.CacheCreation5mTokens != 10 || usage.CacheCreation1hTokens != 20 {
 		t.Fatalf("observed model=%q usage=%+v", model, usage)
@@ -38,7 +38,7 @@ func TestStreamingObserverReconcilesAggregateCacheCreationWithLaterTTLDetail(t *
 	if _, err := io.ReadAll(observer); err != nil {
 		t.Fatal(err)
 	}
-	usage, model := observer.Result(nil, "fallback")
+	usage, model, _ := observer.Result(nil, "fallback")
 	if model != "claude-opus-5" || !usage.Complete || usage.CacheCreation5mTokens != 10 || usage.CacheCreation1hTokens != 20 {
 		t.Fatalf("observed model=%q usage=%+v", model, usage)
 	}
@@ -50,7 +50,7 @@ func TestNonStreamingObserverReadsLegacyCacheUsage(t *testing.T) {
 	if _, err := io.ReadAll(observer); err != nil {
 		t.Fatal(err)
 	}
-	usage, model := observer.Result(nil, "fallback")
+	usage, model, _ := observer.Result(nil, "fallback")
 	if model != "claude-haiku-4-5" || !usage.Complete || usage.CacheCreation5mTokens != 8 || usage.CacheReadTokens != 6 {
 		t.Fatalf("observed model=%q usage=%+v", model, usage)
 	}
@@ -60,7 +60,7 @@ func TestInterruptedStreamKeepsPartialUsageButMarksIncomplete(t *testing.T) {
 	raw := `data: {"type":"message_start","message":{"model":"m","usage":{"input_tokens":5}}}` + "\n\n"
 	observer := NewObserver(strings.NewReader(raw), "text/event-stream")
 	_, _ = io.ReadAll(observer)
-	usage, _ := observer.Result(errors.New("downstream closed"), "fallback")
+	usage, _, _ := observer.Result(errors.New("downstream closed"), "fallback")
 	if !usage.Seen || usage.Complete || usage.InputTokens != 5 {
 		t.Fatalf("usage=%+v", usage)
 	}
@@ -86,7 +86,55 @@ func BenchmarkSSEObserver(b *testing.B) {
 	for range b.N {
 		observer := NewObserver(bytes.NewReader(benchmarkSSE), "text/event-stream")
 		_, _ = io.Copy(io.Discard, observer)
-		_, _ = observer.Result(nil, "m")
+		_, _, _ = observer.Result(nil, "m")
+	}
+}
+
+func TestNonStreamingObserverDetectsRefusalWithoutOutputTokens(t *testing.T) {
+	raw := `{"type":"message","model":"claude-test","stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"sensitive text is not retained"},"usage":{"input_tokens":12,"output_tokens":0}}`
+	observer := NewObserver(strings.NewReader(raw), "application/json")
+	if _, err := io.ReadAll(observer); err != nil {
+		t.Fatal(err)
+	}
+	usage, _, refusal := observer.Result(nil, "fallback")
+	if !usage.Seen || usage.OutputTokens != 0 || !refusal.Seen || refusal.Category != "cyber" {
+		t.Fatalf("usage=%+v refusal=%+v", usage, refusal)
+	}
+}
+
+func TestStreamingObserverDetectsMidStreamRefusalWithOutputTokens(t *testing.T) {
+	raw := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"model":"claude-test","usage":{"input_tokens":12}}}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber"}},"usage":{"output_tokens":7}}` + "\n\n" +
+		"event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"
+	observer := NewObserver(strings.NewReader(raw), "text/event-stream")
+	if _, err := io.ReadAll(observer); err != nil {
+		t.Fatal(err)
+	}
+	usage, _, refusal := observer.Result(nil, "fallback")
+	if usage.OutputTokens != 7 || !refusal.Seen || refusal.Category != "cyber" {
+		t.Fatalf("usage=%+v refusal=%+v", usage, refusal)
+	}
+}
+
+func TestObserverNormalizesUncategorizedRefusal(t *testing.T) {
+	raw := `{"stop_reason":"refusal","stop_details":{"type":"refusal","category":null},"usage":{"output_tokens":0}}`
+	observer := NewObserver(strings.NewReader(raw), "application/json")
+	_, _ = io.ReadAll(observer)
+	_, _, refusal := observer.Result(nil, "fallback")
+	if !refusal.Seen || refusal.Category != "unknown" {
+		t.Fatalf("refusal=%+v", refusal)
+	}
+}
+
+func TestObserverIgnoresStopDetailsWithoutRefusalReason(t *testing.T) {
+	raw := `{"stop_reason":"end_turn","stop_details":null,"usage":{"output_tokens":1}}`
+	observer := NewObserver(strings.NewReader(raw), "application/json")
+	_, _ = io.ReadAll(observer)
+	_, _, refusal := observer.Result(nil, "fallback")
+	if refusal.Seen {
+		t.Fatalf("refusal=%+v", refusal)
 	}
 }
 

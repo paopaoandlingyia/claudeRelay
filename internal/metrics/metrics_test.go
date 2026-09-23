@@ -91,3 +91,15 @@ func TestForgetDropsAccountAggregates(t *testing.T) {
 		t.Fatal("account stats survived Forget")
 	}
 }
+
+func TestRefusalIsRecordedWithoutCountingSuccessfulHTTPResponseAsFailure(t *testing.T) {
+	recorder := New(2)
+	recorder.Record(Event{Status: 200, Account: "primary", Refusal: true, RefusalCategory: "cyber"})
+	records := recorder.Recent(1)
+	if len(records) != 1 || !records[0].Refusal || records[0].RefusalCategory != "cyber" {
+		t.Fatalf("records=%+v", records)
+	}
+	if summary := recorder.Summary(time.Now()); summary.Failures != 0 {
+		t.Fatalf("summary=%+v", summary)
+	}
+}

@@ -24,6 +24,14 @@ type Usage struct {
 	cacheCreation1hSeen    bool
 }
 
+// Refusal contains only the policy classification needed for operational
+// monitoring. The upstream explanation and response content are deliberately
+// not retained.
+type Refusal struct {
+	Seen     bool
+	Category string
+}
+
 type Observer struct {
 	upstream io.Reader
 	sse      bool
@@ -47,7 +55,7 @@ func (o *Observer) Read(buffer []byte) (int, error) {
 	return n, err
 }
 
-func (o *Observer) Result(copyErr error, fallbackModel string) (Usage, string) {
+func (o *Observer) Result(copyErr error, fallbackModel string) (Usage, string, Refusal) {
 	if o.sse {
 		o.stream.finish()
 		usage := o.stream.usage
@@ -56,14 +64,25 @@ func (o *Observer) Result(copyErr error, fallbackModel string) (Usage, string) {
 		if model == "" {
 			model = fallbackModel
 		}
-		return usage, model
+		return usage, model, o.stream.refusal
 	}
-	usage, model, ok := parseNonStreaming(o.tail)
+	usage, model, refusal, ok := parseNonStreaming(o.tail)
 	usage.Complete = copyErr == nil && ok
 	if model == "" {
 		model = fallbackModel
 	}
-	return usage, model
+	return usage, model, refusal
+}
+
+func refusalFor(stopReason, category string) Refusal {
+	if stopReason != "refusal" {
+		return Refusal{}
+	}
+	category = strings.TrimSpace(category)
+	if category == "" {
+		category = "unknown"
+	}
+	return Refusal{Seen: true, Category: category}
 }
 
 func (o *Observer) appendTail(data []byte) {
@@ -144,6 +163,7 @@ type sseObserver struct {
 	data    []byte
 	usage   Usage
 	model   string
+	refusal Refusal
 	stopped bool
 }
 
@@ -194,6 +214,12 @@ func (s *sseObserver) consumeEvent() {
 			Model string    `json:"model"`
 			Usage wireUsage `json:"usage"`
 		} `json:"message"`
+		Delta *struct {
+			StopReason  string `json:"stop_reason"`
+			StopDetails *struct {
+				Category string `json:"category"`
+			} `json:"stop_details"`
+		} `json:"delta"`
 	}
 	if json.Unmarshal(s.data, &envelope) == nil {
 		switch envelope.Type {
@@ -204,6 +230,15 @@ func (s *sseObserver) consumeEvent() {
 			}
 		case "message_delta":
 			s.usage.apply(envelope.Usage)
+			if envelope.Delta != nil {
+				category := ""
+				if envelope.Delta.StopDetails != nil {
+					category = envelope.Delta.StopDetails.Category
+				}
+				if refusal := refusalFor(envelope.Delta.StopReason, category); refusal.Seen {
+					s.refusal = refusal
+				}
+			}
 		case "message_stop":
 			s.stopped = true
 		}
@@ -219,27 +254,35 @@ func (s *sseObserver) finish() {
 	s.consumeEvent()
 }
 
-func parseNonStreaming(tail []byte) (Usage, string, bool) {
+func parseNonStreaming(tail []byte) (Usage, string, Refusal, bool) {
 	var message struct {
-		Model string    `json:"model"`
-		Usage wireUsage `json:"usage"`
+		Model       string    `json:"model"`
+		Usage       wireUsage `json:"usage"`
+		StopReason  string    `json:"stop_reason"`
+		StopDetails *struct {
+			Category string `json:"category"`
+		} `json:"stop_details"`
 	}
 	if json.Unmarshal(tail, &message) == nil {
 		var usage Usage
 		usage.apply(message.Usage)
-		return usage, message.Model, usage.Seen
+		category := ""
+		if message.StopDetails != nil {
+			category = message.StopDetails.Category
+		}
+		return usage, message.Model, refusalFor(message.StopReason, category), usage.Seen
 	}
 	raw, ok := lastJSONObjectField(tail, "usage")
 	if !ok {
-		return Usage{}, "", false
+		return Usage{}, "", Refusal{}, false
 	}
 	var wire wireUsage
 	if json.Unmarshal(raw, &wire) != nil {
-		return Usage{}, "", false
+		return Usage{}, "", Refusal{}, false
 	}
 	var usage Usage
 	usage.apply(wire)
-	return usage, "", usage.Seen
+	return usage, "", Refusal{}, usage.Seen
 }
 
 func lastJSONObjectField(data []byte, field string) ([]byte, bool) {

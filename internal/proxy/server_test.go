@@ -70,6 +70,44 @@ func TestForwardDecodesCompressedSSEBeforeUsageObservation(t *testing.T) {
 	}
 }
 
+func TestForwardRecordsSuccessfulRefusalInRequestsAndAccountSummary(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message","model":"claude-test","stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"not persisted"},"usage":{"input_tokens":8,"output_tokens":0}}`)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	records := server.metrics.Recent(1)
+	if len(records) != 1 || !records[0].Refusal || records[0].RefusalCategory != "cyber" {
+		t.Fatalf("records=%+v", records)
+	}
+	if summary := server.metrics.Summary(time.Now()); summary.Failures != 0 {
+		t.Fatalf("summary=%+v", summary)
+	}
+	if err := server.accounting.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := server.store.AllAccounts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	views, err := server.accountViews(httptest.NewRequest(http.MethodGet, "/admin/v1/accounts", nil), accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].Refusal == nil || views[0].Refusal.Count24h != 1 || views[0].Refusal.LastCategory != "cyber" {
+		t.Fatalf("views=%+v", views)
+	}
+}
+
 func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	t.Parallel()
 	requestBody := "{\n  \"model\": \"claude-test\",\n  \"system\": [{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.219.0a7; cc_entrypoint=claude-desktop; cch=abcde;\"}],\n  \"metadata\": {\"user_id\":\"official-client-value\"},\n  \"messages\": []\n}"

@@ -83,3 +83,31 @@ func TestClearFiveHourObservationsDropsPendingEventsOnly(t *testing.T) {
 		t.Fatalf("hourly buckets=%+v err=%v", buckets, err)
 	}
 }
+
+func TestManagerPersistsRefusalWithoutUsage(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	account, err := database.ImportAccount(context.Background(), "refusal", credential.Credential{
+		Type: "claude", AccessToken: "secret", AccountUUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		DeviceID: strings.Repeat("b", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	manager := NewManager(database)
+	manager.RecordRefusal(account.ID, now, Refusal{Seen: true, Category: "cyber"})
+	if err := manager.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	summaries, err := database.RecentAccountRefusals(context.Background(), now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := summaries[account.ID]; got.Count24h != 1 || got.LastCategory != "cyber" {
+		t.Fatalf("summary=%+v", got)
+	}
+}

@@ -18,12 +18,24 @@ type bucketKey struct {
 	model       string
 }
 
+type refusalBucketKey struct {
+	bucketStart int64
+	accountID   int64
+	category    string
+}
+
+type pendingRefusal struct {
+	count  int64
+	lastAt int64
+}
+
 type Manager struct {
-	store         *store.Store
-	flushMu       sync.Mutex
-	mu            sync.Mutex
-	pending       map[bucketKey]store.UsageCounters
-	pendingEvents []store.FiveHourEvent
+	store           *store.Store
+	flushMu         sync.Mutex
+	mu              sync.Mutex
+	pending         map[bucketKey]store.UsageCounters
+	pendingEvents   []store.FiveHourEvent
+	pendingRefusals map[refusalBucketKey]pendingRefusal
 }
 
 // FiveHourContext ties one Messages response to the quota reading that arrived
@@ -39,7 +51,32 @@ type FiveHourContext struct {
 }
 
 func NewManager(database *store.Store) *Manager {
-	return &Manager{store: database, pending: make(map[bucketKey]store.UsageCounters)}
+	return &Manager{
+		store:           database,
+		pending:         make(map[bucketKey]store.UsageCounters),
+		pendingRefusals: make(map[refusalBucketKey]pendingRefusal),
+	}
+}
+
+func (m *Manager) RecordRefusal(accountID int64, at time.Time, refusal Refusal) {
+	if m == nil || accountID <= 0 || !refusal.Seen {
+		return
+	}
+	category := refusal.Category
+	if category == "" {
+		category = "unknown"
+	}
+	key := refusalBucketKey{
+		bucketStart: at.UTC().Truncate(time.Hour).Unix(),
+		accountID:   accountID,
+		category:    category,
+	}
+	m.mu.Lock()
+	pending := m.pendingRefusals[key]
+	pending.count++
+	pending.lastAt = max(pending.lastAt, at.UnixMilli())
+	m.pendingRefusals[key] = pending
+	m.mu.Unlock()
 }
 
 func (m *Manager) Record(accountID int64, model string, at time.Time, usage Usage, fiveHour FiveHourContext) {
@@ -121,8 +158,10 @@ func (m *Manager) Flush(ctx context.Context) error {
 	m.pending = make(map[bucketKey]store.UsageCounters)
 	events := m.pendingEvents
 	m.pendingEvents = nil
+	refusals := m.pendingRefusals
+	m.pendingRefusals = make(map[refusalBucketKey]pendingRefusal)
 	m.mu.Unlock()
-	if len(batch) == 0 && len(events) == 0 {
+	if len(batch) == 0 && len(events) == 0 && len(refusals) == 0 {
 		return nil
 	}
 	if err := m.store.AddFiveHourEvents(ctx, events); err != nil {
@@ -133,6 +172,7 @@ func (m *Manager) Flush(ctx context.Context) error {
 			current.Add(counters)
 			m.pending[key] = current
 		}
+		m.restoreRefusalsLocked(refusals)
 		m.mu.Unlock()
 		return fmt.Errorf("persist five-hour observations: %w", err)
 	}
@@ -147,10 +187,33 @@ func (m *Manager) Flush(ctx context.Context) error {
 			current.Add(counters)
 			m.pending[key] = current
 		}
+		m.restoreRefusalsLocked(refusals)
 		m.mu.Unlock()
 		return fmt.Errorf("persist usage accounting: %w", err)
 	}
+	refusalBuckets := make([]store.RefusalBucket, 0, len(refusals))
+	for key, pending := range refusals {
+		refusalBuckets = append(refusalBuckets, store.RefusalBucket{
+			BucketStart: key.bucketStart, AccountID: key.accountID, Category: key.category,
+			Count: pending.count, LastObservedAt: pending.lastAt,
+		})
+	}
+	if err := m.store.AddRefusalBuckets(ctx, refusalBuckets); err != nil {
+		m.mu.Lock()
+		m.restoreRefusalsLocked(refusals)
+		m.mu.Unlock()
+		return fmt.Errorf("persist refusal observations: %w", err)
+	}
 	return nil
+}
+
+func (m *Manager) restoreRefusalsLocked(refusals map[refusalBucketKey]pendingRefusal) {
+	for key, pending := range refusals {
+		current := m.pendingRefusals[key]
+		current.count += pending.count
+		current.lastAt = max(current.lastAt, pending.lastAt)
+		m.pendingRefusals[key] = current
+	}
 }
 
 func (m *Manager) Clear(ctx context.Context) error {

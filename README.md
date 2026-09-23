@@ -115,12 +115,15 @@ Open `http://127.0.0.1:8567/` and sign in with the administration API key from t
 The console is a single dense screen with four sections:
 
 - **账号** — every account with its pool and real routing state: enabled, cooling down (with the reason and
-  remaining time), token expiry, last successful refresh, traffic totals, and live sticky bindings.
+  remaining time), token expiry, last successful refresh, traffic totals, live sticky bindings, and
+  rolling 24-hour refusal activity. Accounts with a recent refusal enter the attention filter.
   Successful Messages response headers update the available five-hour window automatically without
   another upstream request. A manual refresh remains available for optional weekly/model-specific
   OAuth usage windows and the plan label. Per-account actions cover usage refresh, enable/disable,
   connectivity check, forced token refresh, cooldown release, rename, and deletion.
 - **请求** — the recent request records described below, filterable by account and by failures only.
+  A policy refusal is marked separately even when Anthropic returns HTTP 200; it is not counted as a
+  transport failure.
 - **用量** — hourly token/API-price totals plus current and explicitly exhausted five-hour windows.
   Window rows expand into per-model input, 5m/1h cache creation, cache-read, output, and API-price
   composition. The long-term observation data can be exported as ZIP/CSV or cleared independently.
@@ -210,6 +213,13 @@ usage are combined, while incomplete streams remain visible as incomplete sample
 goroutines update an in-memory aggregate only. A background worker writes all pending account/model
 hour buckets and request-level five-hour events in short SQLite transactions every five seconds and
 retries failed batches, so SQLite work does not block model streaming.
+
+Anthropic policy refusals are detected from `stop_reason: "refusal"` in either top-level JSON or an
+SSE `message_delta`; output-token count is not used as a proxy because a stream can be refused after
+partial output. The relay persists only hourly account/category counts and the latest observation
+time—never `stop_details.explanation`, prompts, or response content. The account view reports a
+rolling 24-hour hourly aggregate (the boundary bucket may extend by up to one hour). Refusals are
+observational only: they do not cool down accounts, disable them, trigger failover, or alter routing.
 
 The usage console values raw input, output, five-minute/one-hour cache creation, and cache reads
 against versioned per-model prices. It derives token cache coverage as cache reads divided by all

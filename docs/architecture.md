@@ -396,6 +396,19 @@ The response observer also made five-hour analysis possible. Its original cumula
 estimator has since been removed; request-level attribution, explicit exhaustion criteria, export,
 and retention are defined by the 2026-08-26 decision above.
 
+## 2026-09-23: policy refusals are account observations, not routing failures
+
+The response observer recognizes Anthropic refusals only from `stop_reason == "refusal"`, including
+the `delta.stop_reason` field in streaming `message_delta` events. Output-token count is deliberately
+not part of detection because a streaming refusal may follow partial output. The in-memory request
+record marks the refusal separately from HTTP/transport failure.
+
+Durable data is limited to UTC-hour counts keyed by account and category plus the last observation
+time. The upstream explanation, prompts, and response content are not stored. Account summaries use
+a rolling 24-hour query over these hourly rows, so the boundary category bucket can include up to
+one earlier hour. A refusal adds an account to the console's attention view, but it never changes
+selection, failover, cooldown, or account-enabled state.
+
 ## 2026-08-01: CCH has no relay semantics
 
 The supported official path is Claude Code configured with a third-party API URL. Captures of that

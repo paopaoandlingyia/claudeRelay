@@ -263,7 +263,7 @@ function accountRow(account) {
   const row = document.createElement("article");
   const status = accountStatus(account);
   const pool = accountPoolView(account.pool);
-  row.className = `account-item ${status.css.replace("badge-", "account-")}`;
+  row.className = `account-item ${status.css.replace("badge-", "account-")} ${account.refusal?.count_24h ? "account-refusal" : ""}`;
 
   const identity = document.createElement("div");
   identity.className = "account-identity";
@@ -293,6 +293,12 @@ function accountRow(account) {
   identity.append(avatar, identityCopy);
 
   const stats = account.stats || {};
+  const refusal = account.refusal || {};
+  const refusalCount = Number(refusal.count_24h) || 0;
+  const refusalCategory = refusalCategoryLabel(refusal.last_category);
+  const refusalNote = refusalCount
+    ? `${refusalCategory} · ${formatRelative(refusal.last_at)}`
+    : "无近期拒绝";
   const metrics = document.createElement("div");
   metrics.className = "account-metrics";
   metrics.append(
@@ -301,7 +307,11 @@ function accountRow(account) {
     accountMetric("粘性绑定", `${account.sticky_sessions || 0}`, "近 1 小时"),
     accountMetric("生成并发", `${account.in_flight || 0}`, "当前 Messages"),
     accountMetric("计数并发", `${account.count_tokens_in_flight || 0}`, "当前 count_tokens"),
+    accountMetric("24h 拒绝", refusalCount ? `${refusalCount}` : "—", refusalNote),
   );
+  if (refusalCount) {
+    metrics.lastElementChild.title = `最近分类：${refusalCategory}；最近发生：${new Date(refusal.last_at).toLocaleString()}`;
+  }
 
   const actions = document.createElement("div");
   actions.className = "account-actions";
@@ -346,7 +356,11 @@ function accountMetric(label, value, noteText) {
 
 function accountNeedsAttention(account) {
   const label = accountStatus(account).label;
-  return label === "冷却中" || label === "待刷新" || label === "令牌过期";
+  return label === "冷却中" || label === "待刷新" || label === "令牌过期" || Number(account.refusal?.count_24h) > 0;
+}
+
+function refusalCategoryLabel(category) {
+  return !category || category === "unknown" ? "未分类" : String(category);
 }
 
 function renderRequests() {
@@ -961,10 +975,13 @@ function requestRow(record) {
   row.appendChild(time);
 
   const failed = isFailure(record);
-  const label = record.status ? String(record.status) : "无响应";
+  const label = record.refusal ? "拒绝" : (record.status ? String(record.status) : "无响应");
+  const refusalNote = record.refusal
+    ? `HTTP ${record.status || "无响应"} · ${refusalCategoryLabel(record.refusal_category)}`
+    : null;
   const outcome = cell(stack(
-    badge(label, failed ? "badge-bad" : "badge-ok"),
-    record.error ? small(record.error) : null,
+    badge(label, failed ? "badge-bad" : (record.refusal ? "badge-warn" : "badge-ok")),
+    record.error ? small(record.error) : (refusalNote ? small(refusalNote) : null),
   ));
   row.appendChild(outcome);
 

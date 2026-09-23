@@ -84,7 +84,7 @@ type CooldownMatch struct {
 	Reason string
 }
 
-const schemaVersion = 10
+const schemaVersion = 11
 
 type Store struct {
 	db *sql.DB
@@ -206,6 +206,15 @@ func (s *Store) initialize(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS usage_hourly_account_time_idx ON usage_hourly(account_id,bucket_start)`,
 		`CREATE INDEX IF NOT EXISTS usage_hourly_time_idx ON usage_hourly(bucket_start)`,
+		`CREATE TABLE IF NOT EXISTS refusal_hourly (
+			bucket_start INTEGER NOT NULL,
+			account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+			category TEXT NOT NULL,
+			refusal_count INTEGER NOT NULL,
+			last_observed_at INTEGER NOT NULL,
+			PRIMARY KEY(bucket_start, account_id, category)
+		)`,
+		`CREATE INDEX IF NOT EXISTS refusal_hourly_account_time_idx ON refusal_hourly(account_id,bucket_start)`,
 		`CREATE TABLE IF NOT EXISTS model_prices (
 			id INTEGER PRIMARY KEY,
 			model_pattern TEXT NOT NULL,
@@ -358,6 +367,18 @@ func (s *Store) initialize(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=10`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
+	}
+	if version < 11 {
+		// Refusals are retained only as per-account, per-category hourly counts.
+		// Prompt text, response content, and the upstream explanation are never
+		// stored.
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=11`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	refusalCutoff := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Hour).Unix()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM refusal_hourly WHERE bucket_start<?`, refusalCutoff); err != nil {
+		return fmt.Errorf("prune refusal observations during startup: %w", err)
 	}
 	return nil
 }

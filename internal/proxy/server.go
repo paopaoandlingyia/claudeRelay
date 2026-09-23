@@ -554,7 +554,15 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		slog.Info("restored experimental response tool names", "request_id", requestID,
 			"ingress", ingress.Name, "account", selected.Account.Alias, "names_changed", restoredToolNames)
 	}
-	observedUsage, servedModel := observer.Result(copyErr, route.Model)
+	observedUsage, servedModel, refusal := observer.Result(copyErr, route.Model)
+	if incoming.URL.Path == "/v1/messages" && refusal.Seen {
+		event.Refusal = true
+		event.RefusalCategory = refusal.Category
+		refusalObservedAt := time.Now()
+		s.accounting.RecordRefusal(selected.Account.ID, refusalObservedAt, refusal)
+		slog.Warn("upstream refused request", "request_id", requestID, "account", selected.Account.Alias,
+			"model", servedModel, "category", refusal.Category)
+	}
 	if incoming.URL.Path == "/v1/messages" && response.StatusCode >= 200 && response.StatusCode < 300 {
 		if !observedUsage.Seen && copyErr == nil {
 			s.warnMissingUsage(requestID, servedModel, response)

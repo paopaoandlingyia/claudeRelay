@@ -391,6 +391,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .account-item:hover { border-color: var(--line-strong); background: var(--surface-2); box-shadow: var(--shadow-soft); }
 .account-item.account-warn { border-left: 3px solid var(--warn); }
 .account-item.account-bad { border-left: 3px solid var(--danger); }
+.account-item.account-refusal:not(.account-bad) { border-left: 3px solid var(--warn); }
 .account-item-main {
   display: grid;
   grid-template-columns: minmax(220px, 1.1fr) minmax(300px, 1.65fr) minmax(246px, auto) auto;
@@ -479,7 +480,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .usage-more { color: var(--faint); font-size: 9px; }
 .usage-footer { justify-content: space-between; gap: 10px; }
 .usage-footer > small { color: var(--faint); }
-.account-metrics { display: grid; grid-template-columns: repeat(4, minmax(48px, auto)); gap: 12px; padding-left: 18px; border-left: 1px solid var(--line); }
+.account-metrics { display: grid; grid-template-columns: repeat(3, minmax(48px, auto)); gap: 12px; padding-left: 18px; border-left: 1px solid var(--line); }
 .account-metric { display: flex; min-width: 45px; flex-direction: column; gap: 1px; }
 .account-metric small:first-child { color: var(--muted); font-size: 10px; }
 .account-metric strong { font-size: 17px; font-weight: 680; font-variant-numeric: tabular-nums; line-height: 1.15; }
@@ -708,7 +709,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
   .account-identity { flex: 1 1 calc(100% - 110px); }
   .account-actions { order: 2; margin-left: auto; }
   .account-usage { order: 3; flex: 1 1 100%; padding-top: 12px; border-top: 1px solid var(--line); }
-  .account-metrics { order: 4; grid-template-columns: repeat(4, minmax(54px, auto)); flex: 0 0 auto; gap: 14px; padding-top: 1px; }
+  .account-metrics { order: 4; grid-template-columns: repeat(3, minmax(54px, auto)); flex: 0 0 auto; gap: 14px; padding-top: 1px; }
   .panel-bar { align-items: flex-start; flex-direction: column; padding: 13px 15px; }
   .filters { width: 100%; gap: 7px; }
   .field { flex: 1; }

@@ -30,6 +30,8 @@ type Event struct {
 	ClientKind            string
 	ClassificationVersion int
 	RelayAction           string
+	Refusal               bool
+	RefusalCategory       string
 }
 
 // ClientEvidence contains presence checks only. It never includes raw request
@@ -74,6 +76,8 @@ type Record struct {
 	ClassificationVersion int             `json:"classification_version,omitempty"`
 	ClientEvidence        *ClientEvidence `json:"client_evidence,omitempty"`
 	RelayAction           string          `json:"relay_action,omitempty"`
+	Refusal               bool            `json:"refusal,omitempty"`
+	RefusalCategory       string          `json:"refusal_category,omitempty"`
 }
 
 // AccountStat aggregates activity for one account alias.
@@ -153,6 +157,8 @@ func (r *Recorder) Record(event Event) {
 		ClassificationVersion: event.ClassificationVersion,
 		ClientEvidence:        event.Client,
 		RelayAction:           event.RelayAction,
+		Refusal:               event.Refusal,
+		RefusalCategory:       event.RefusalCategory,
 	}
 	failed := Failed(record.Status, record.Error)
 
