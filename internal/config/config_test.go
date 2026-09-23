@@ -54,6 +54,7 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 	}
 	t.Setenv("CLAUDE_RELAY_LISTEN", "0.0.0.0:8567")
 	t.Setenv("CLAUDE_RELAY_API_KEY", "environment-key")
+	t.Setenv("CLAUDE_RELAY_EXPERIMENTAL_API_KEY", "environment-experimental-key")
 	t.Setenv("CLAUDE_RELAY_OFFICIAL_API_KEY", "environment-official-key")
 	t.Setenv("CLAUDE_RELAY_ADMIN_API_KEY", "environment-admin-key")
 	t.Setenv("CLAUDE_RELAY_AVAILABILITY_API_KEY", "environment-availability-key")
@@ -69,10 +70,10 @@ func TestContainerEnvironmentOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Listen != "0.0.0.0:8567" || cfg.RelayAPIKey != "environment-key" ||
-		cfg.OfficialAPIKey != "environment-official-key" || cfg.AdminAPIKey != "environment-admin-key" ||
+		cfg.ExperimentalAPIKey != "environment-experimental-key" || cfg.OfficialAPIKey != "environment-official-key" || cfg.AdminAPIKey != "environment-admin-key" ||
 		cfg.AvailabilityAPIKey != "environment-availability-key" {
-		t.Fatalf("server environment overrides = listen %q compatible key %q official key %q admin key %q availability key %q",
-			cfg.Listen, cfg.RelayAPIKey, cfg.OfficialAPIKey, cfg.AdminAPIKey, cfg.AvailabilityAPIKey)
+		t.Fatalf("server environment overrides = listen %q compatible key %q experimental key %q official key %q admin key %q availability key %q",
+			cfg.Listen, cfg.RelayAPIKey, cfg.ExperimentalAPIKey, cfg.OfficialAPIKey, cfg.AdminAPIKey, cfg.AvailabilityAPIKey)
 	}
 	if cfg.DatabaseFile != "/data/claude-relay.db" || cfg.UpstreamProxy != "http://proxy:7890" {
 		t.Fatalf("runtime environment overrides = database %q proxy %q", cfg.DatabaseFile, cfg.UpstreamProxy)
@@ -139,6 +140,25 @@ func TestOfficialKeyIsOptionalAndMustBeDistinct(t *testing.T) {
 	}
 	if _, err := Load(path); err != nil {
 		t.Fatalf("Load() rejected an omitted official key: %v", err)
+	}
+}
+
+func TestExperimentalKeyIsOptionalAndMustBeDistinct(t *testing.T) {
+	t.Setenv("CLAUDE_RELAY_EXPERIMENTAL_API_KEY", "")
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"listen":"127.0.0.1:8567","relay_api_key":"relay-key","experimental_api_key":"relay-key","admin_api_key":"admin-key","database_file":"relay.db","upstream_base_url":"https://api.anthropic.com"}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() accepted an experimental key matching the compatible key")
+	}
+	raw = `{"listen":"127.0.0.1:8567","relay_api_key":"relay-key","admin_api_key":"admin-key","database_file":"relay.db","upstream_base_url":"https://api.anthropic.com"}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load() rejected an omitted experimental key: %v", err)
 	}
 }
 

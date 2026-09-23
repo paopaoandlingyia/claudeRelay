@@ -28,16 +28,29 @@ type Account struct {
 	credential.Credential
 }
 
-// Account pools name both the two ingress keys and the placement of an account.
-// Permeability between them is one way: Claude Code-shaped traffic is the shape a
-// subscription is expected to produce, so the official ingress may draw from
-// every pool, while the compatible ingress is fenced to the compatible pool.
-// Official-pool accounts therefore never serve a non-Claude-Code request, and the
-// official ingress keeps the full account set for load spreading and failover.
 const (
 	AccountPoolCompatible = "compatible"
 	AccountPoolOfficial   = "official"
 )
+
+// AccountAccess is independent of the ingress that authenticated a request.
+// Multiple ingress policies may share the same account access without becoming
+// new account pools themselves.
+type AccountAccess string
+
+const (
+	AccountAccessCompatibleOnly AccountAccess = "compatible_only"
+	AccountAccessAll            AccountAccess = "all"
+)
+
+func ValidateAccountAccess(access AccountAccess) error {
+	switch access {
+	case AccountAccessCompatibleOnly, AccountAccessAll:
+		return nil
+	default:
+		return fmt.Errorf("account access must be %q or %q", AccountAccessCompatibleOnly, AccountAccessAll)
+	}
+}
 
 func ValidateAccountPool(pool string) error {
 	switch strings.TrimSpace(pool) {
@@ -48,16 +61,13 @@ func ValidateAccountPool(pool string) error {
 	}
 }
 
-// accountPoolPredicate restricts a lookup to the accounts one ingress may select.
-// Its single bound parameter is the ingress name, so every query keeps a fixed
-// SQL text and argument order.
-const accountPoolPredicate = `(?='` + AccountPoolOfficial + `' OR a.account_pool='` + AccountPoolCompatible + `')`
+// accountPoolPredicate restricts a lookup to the account pools allowed by one
+// access policy. Its single bound parameter is an AccountAccess value.
+const accountPoolPredicate = `(?='` + string(AccountAccessAll) + `' OR a.account_pool='` + AccountPoolCompatible + `')`
 
-// IngressMayUse reports whether an ingress is allowed to select an account that
-// sits in the given pool. It must stay equivalent to accountPoolPredicate, so it
-// compares the stored values exactly rather than normalizing them.
-func IngressMayUse(ingress, pool string) bool {
-	return ingress == AccountPoolOfficial || pool == AccountPoolCompatible
+// AccountAccessMayUse must stay equivalent to accountPoolPredicate.
+func AccountAccessMayUse(access AccountAccess, pool string) bool {
+	return access == AccountAccessAll || (access == AccountAccessCompatibleOnly && pool == AccountPoolCompatible)
 }
 
 // Cooldown is an active routing exclusion for one account, optionally scoped to
@@ -469,15 +479,15 @@ func (s *Store) AccountCount(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// Accounts lists the healthy accounts the given ingress may select for a model.
-func (s *Store) Accounts(ctx context.Context, ingress, model string, now time.Time) ([]Account, error) {
-	if err := ValidateAccountPool(ingress); err != nil {
+// Accounts lists the healthy accounts the given access policy may select for a model.
+func (s *Store) Accounts(ctx context.Context, access AccountAccess, model string, now time.Time) ([]Account, error) {
+	if err := ValidateAccountAccess(access); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+accountColumns+` FROM accounts a
 		WHERE a.enabled=1 AND `+accountPoolPredicate+` AND NOT EXISTS (
 			SELECT 1 FROM account_cooldowns c WHERE c.account_id=a.id AND c.until_at>? AND (c.model='' OR c.model=?))
-		ORDER BY a.id`, ingress, now.Unix(), model)
+		ORDER BY a.id`, string(access), now.Unix(), model)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}
@@ -754,18 +764,24 @@ func (s *Store) UpdateTokens(ctx context.Context, id int64, accessToken, refresh
 	return account, err
 }
 
-func (s *Store) AccountByUUID(ctx context.Context, uuid, ingress string) (Account, bool, error) {
+func (s *Store) AccountByUUID(ctx context.Context, uuid string, access AccountAccess) (Account, bool, error) {
+	if err := ValidateAccountAccess(access); err != nil {
+		return Account{}, false, err
+	}
 	account, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts a
-		WHERE a.account_uuid=? AND `+accountPoolPredicate+` AND a.enabled=1 LIMIT 1`, uuid, ingress))
+		WHERE a.account_uuid=? AND `+accountPoolPredicate+` AND a.enabled=1 LIMIT 1`, uuid, string(access)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, false, nil
 	}
 	return account, err == nil, err
 }
 
-func (s *Store) BoundAccount(ctx context.Context, routeKey, ingress string, now time.Time) (Account, bool, error) {
+func (s *Store) BoundAccount(ctx context.Context, routeKey string, access AccountAccess, now time.Time) (Account, bool, error) {
+	if err := ValidateAccountAccess(access); err != nil {
+		return Account{}, false, err
+	}
 	account, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM session_bindings b
-		JOIN accounts a ON a.id=b.account_id WHERE b.route_key=? AND b.expires_at>? AND `+accountPoolPredicate+` AND a.enabled=1`, routeKey, now.Unix(), ingress))
+		JOIN accounts a ON a.id=b.account_id WHERE b.route_key=? AND b.expires_at>? AND `+accountPoolPredicate+` AND a.enabled=1`, routeKey, now.Unix(), string(access)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, false, nil
 	}

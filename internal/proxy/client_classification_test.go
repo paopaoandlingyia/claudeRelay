@@ -5,8 +5,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/local/claude-relay/internal/store"
 )
 
 const testClaudeCodeMetadata = `{"device_id":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","account_uuid":"","session_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}`
@@ -97,7 +95,7 @@ func TestClassifyClientRequestKinds(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			route, err := deriveRequestRoute([]byte(test.body), test.headers, store.AccountPoolCompatible, test.path)
+			route, err := deriveRequestRoute([]byte(test.body), test.headers, compatibleIngress, test.path)
 			if err != nil {
 				t.Fatal(err)
 			}

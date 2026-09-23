@@ -256,11 +256,18 @@
             <div class="value-row"><code id="connectEndpoint" class="mono">—</code><button class="btn btn-inline copy-endpoint" type="button">复制</button></div>
           </div>
           <div class="kv">
-            <span>兼容入口密钥</span>
+            <span>兼容保真入口密钥</span>
             <div class="value-row">
               <code id="connectKey" class="mono">—</code>
               <button id="toggleRelayKey" class="btn btn-inline" type="button">显示</button>
               <button id="copyRelayKey" class="btn btn-inline" type="button">复制</button>
+            </div>
+          </div>
+          <div class="kv">
+            <span>兼容实验入口密钥</span>
+            <div class="value-row">
+              <code id="connectExperimentalKey" class="mono">未配置</code>
+              <button id="copyExperimentalKey" class="btn btn-inline" type="button">复制</button>
             </div>
           </div>
           <div class="kv">
@@ -270,7 +277,7 @@
               <button id="copyOfficialKey" class="btn btn-inline" type="button">复制</button>
             </div>
           </div>
-          <p class="note">Official 入口仅接受识别为 Claude Code 的请求，可以使用任意账号；兼容入口不限制请求格式，但只能使用共享账号。设为 official 专用的账号不会承接兼容流量，指定账号也绕不过这条限制。</p>
+          <p class="note">Official 入口仅接受识别为 Claude Code 的请求，可以使用任意账号；两个兼容入口都只能使用共享账号。保真入口不做可选协议改写，实验入口会执行工具名等实验性适配。</p>
         </div>
 
         <div class="card">

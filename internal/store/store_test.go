@@ -13,6 +13,16 @@ import (
 	"github.com/local/claude-relay/internal/credential"
 )
 
+func TestInvalidAccountAccessFailsClosed(t *testing.T) {
+	invalid := AccountAccess("invalid")
+	if err := ValidateAccountAccess(invalid); err == nil {
+		t.Fatal("ValidateAccountAccess accepted an unknown policy")
+	}
+	if AccountAccessMayUse(invalid, AccountPoolCompatible) || AccountAccessMayUse(invalid, AccountPoolOfficial) {
+		t.Fatal("unknown account access policy admitted an account pool")
+	}
+}
+
 func TestSchemaV3MigratesExistingAccountsToCompatiblePool(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "relay.db")
@@ -245,7 +255,7 @@ func TestExpiredBindingsAreIgnoredBeforePruning(t *testing.T) {
 	if rows != 1 {
 		t.Fatalf("stale binding rows = %d, want the unpruned row to remain", rows)
 	}
-	if _, found, err := database.BoundAccount(ctx, "prefix:stale", AccountPoolCompatible, time.Now()); err != nil || found {
+	if _, found, err := database.BoundAccount(ctx, "prefix:stale", AccountAccessCompatibleOnly, time.Now()); err != nil || found {
 		t.Fatalf("expired binding was routable: found=%v err=%v", found, err)
 	}
 	counts, err := database.SessionBindingCounts(ctx, time.Now())
@@ -287,17 +297,17 @@ func TestBindingKeepsLongerAffinityOnlyOnTheSameAccount(t *testing.T) {
 	if err := database.Bind(t.Context(), "prefix:cache", first.ID, 5*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	bound, found, err := database.BoundAccount(t.Context(), "prefix:cache", AccountPoolCompatible, time.Now().Add(30*time.Minute))
+	bound, found, err := database.BoundAccount(t.Context(), "prefix:cache", AccountAccessCompatibleOnly, time.Now().Add(30*time.Minute))
 	if err != nil || !found || bound.ID != first.ID {
 		t.Fatalf("short refresh reduced same-account affinity: bound=%#v found=%v err=%v", bound, found, err)
 	}
 	if err := database.Bind(t.Context(), "prefix:cache", second.ID, 5*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := database.BoundAccount(t.Context(), "prefix:cache", AccountPoolCompatible, time.Now().Add(30*time.Minute)); err != nil || found {
+	if _, found, err := database.BoundAccount(t.Context(), "prefix:cache", AccountAccessCompatibleOnly, time.Now().Add(30*time.Minute)); err != nil || found {
 		t.Fatalf("account switch inherited old affinity: found=%v err=%v", found, err)
 	}
-	bound, found, err = database.BoundAccount(t.Context(), "prefix:cache", AccountPoolCompatible, time.Now())
+	bound, found, err = database.BoundAccount(t.Context(), "prefix:cache", AccountAccessCompatibleOnly, time.Now())
 	if err != nil || !found || bound.ID != second.ID {
 		t.Fatalf("new account binding unavailable: bound=%#v found=%v err=%v", bound, found, err)
 	}
@@ -330,14 +340,14 @@ func TestImportBindingAndCooldown(t *testing.T) {
 	if err := database.Bind(context.Background(), "route", account.ID, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	bound, found, err := database.BoundAccount(context.Background(), "route", AccountPoolCompatible, time.Now())
+	bound, found, err := database.BoundAccount(context.Background(), "route", AccountAccessCompatibleOnly, time.Now())
 	if err != nil || !found || bound.ID != account.ID {
 		t.Fatalf("bound account = %#v found=%v err=%v", bound, found, err)
 	}
 	if err := database.Cooldown(context.Background(), account.ID, "model", time.Now().Add(time.Minute), "test"); err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := database.Accounts(context.Background(), AccountPoolCompatible, "model", time.Now())
+	accounts, err := database.Accounts(context.Background(), AccountAccessCompatibleOnly, "model", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +501,7 @@ func TestClearCooldownsRestoresRouting(t *testing.T) {
 	if removed != 1 {
 		t.Errorf("cleared %d cooldowns, want 1", removed)
 	}
-	accounts, err := database.Accounts(ctx, AccountPoolCompatible, "claude-opus-5", time.Now())
+	accounts, err := database.Accounts(ctx, AccountAccessCompatibleOnly, "claude-opus-5", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,8 +561,8 @@ func TestOlderObservationCannotClearNewerCooldown(t *testing.T) {
 	}
 }
 
-// A fresh account is shared, so both ingresses see it. Moving it to the official
-// pool fences it off from the compatible ingress and drops its bindings.
+// A fresh account is shared, so both account-access policies see it. Moving it
+// to the official pool fences it off from compatible-only access and drops its bindings.
 func TestSetAccountPoolClearsBindingsAndFencesCompatibleTraffic(t *testing.T) {
 	t.Parallel()
 	database := newTestStore(t)
@@ -564,10 +574,10 @@ func TestSetAccountPoolClearsBindingsAndFencesCompatibleTraffic(t *testing.T) {
 	if _, err := database.SetAccountEnabled(ctx, account.Alias, true); err != nil {
 		t.Fatal(err)
 	}
-	for _, ingress := range []string{AccountPoolCompatible, AccountPoolOfficial} {
-		shared, err := database.Accounts(ctx, ingress, "claude-test", time.Now())
+	for _, access := range []AccountAccess{AccountAccessCompatibleOnly, AccountAccessAll} {
+		shared, err := database.Accounts(ctx, access, "claude-test", time.Now())
 		if err != nil || len(shared) != 1 {
-			t.Fatalf("%s ingress accounts = %#v err=%v", ingress, shared, err)
+			t.Fatalf("%s account access accounts = %#v err=%v", access, shared, err)
 		}
 	}
 	if err := database.Bind(ctx, "route", account.ID, time.Hour); err != nil {
@@ -580,14 +590,14 @@ func TestSetAccountPoolClearsBindingsAndFencesCompatibleTraffic(t *testing.T) {
 	if moved.Pool != AccountPoolOfficial || !moved.Enabled {
 		t.Fatalf("moved account = %#v", moved)
 	}
-	if _, found, err := database.BoundAccount(ctx, "route", AccountPoolOfficial, time.Now()); err != nil || found {
+	if _, found, err := database.BoundAccount(ctx, "route", AccountAccessAll, time.Now()); err != nil || found {
 		t.Fatalf("old binding survived pool move: found=%v err=%v", found, err)
 	}
-	compatible, err := database.Accounts(ctx, AccountPoolCompatible, "claude-test", time.Now())
+	compatible, err := database.Accounts(ctx, AccountAccessCompatibleOnly, "claude-test", time.Now())
 	if err != nil || len(compatible) != 0 {
 		t.Fatalf("compatible accounts = %#v err=%v", compatible, err)
 	}
-	official, err := database.Accounts(ctx, AccountPoolOfficial, "claude-test", time.Now())
+	official, err := database.Accounts(ctx, AccountAccessAll, "claude-test", time.Now())
 	if err != nil || len(official) != 1 || official[0].ID != account.ID {
 		t.Fatalf("official accounts = %#v err=%v", official, err)
 	}

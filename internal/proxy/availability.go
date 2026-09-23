@@ -36,9 +36,9 @@ func (s *Server) availability(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	available := func(ingress string) bool {
+	available := func(access store.AccountAccess) bool {
 		for _, account := range accounts {
-			if !account.Enabled || !store.IngressMayUse(ingress, account.Pool) || excluded[account.ID] {
+			if !account.Enabled || !store.AccountAccessMayUse(access, account.Pool) || excluded[account.ID] {
 				continue
 			}
 			refreshable := s.cfg.AutoRefresh && strings.TrimSpace(account.RefreshToken) != ""
@@ -52,8 +52,9 @@ func (s *Server) availability(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, availabilityResponse{
 		GeneratedAt: now.Unix(),
 		Availability: map[string]bool{
-			store.AccountPoolCompatible: available(store.AccountPoolCompatible),
-			store.AccountPoolOfficial:   s.cfg.OfficialAPIKey != "" && available(store.AccountPoolOfficial),
+			ingressCompatible:   available(compatibleIngress.AccountAccess),
+			ingressExperimental: s.cfg.ExperimentalAPIKey != "" && available(experimentalIngress.AccountAccess),
+			ingressOfficial:     s.cfg.OfficialAPIKey != "" && available(officialIngress.AccountAccess),
 		},
 	})
 }

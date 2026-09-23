@@ -87,7 +87,7 @@ func TestSuccessfulResponseClearsShortRequestCooldown(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.recoverCooldownsFromSuccess(t.Context(), account.ID, "claude-test", http.Header{}, time.Now())
-	accounts, err := server.store.Accounts(t.Context(), store.AccountPoolCompatible, "claude-test", time.Now())
+	accounts, err := server.store.Accounts(t.Context(), store.AccountAccessCompatibleOnly, "claude-test", time.Now())
 	if err != nil || len(accounts) != 1 {
 		t.Fatalf("routable accounts=%d err=%v", len(accounts), err)
 	}

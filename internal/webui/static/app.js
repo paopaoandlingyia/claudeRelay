@@ -1057,7 +1057,8 @@ function accountPoolView(pool) {
 
 function ingressView(ingress) {
   if (ingress === "official") return { label: "official", css: "badge-ok", note: "official 入口密钥" };
-  return { label: "compatible", css: "badge-off badge-plain", note: "兼容入口密钥" };
+  if (ingress === "experimental") return { label: "实验", css: "badge-warn", note: "兼容实验入口密钥" };
+  return { label: "兼容", css: "badge-off badge-plain", note: "兼容保真入口密钥" };
 }
 
 const USAGE_WINDOW_LABELS = {
@@ -1224,13 +1225,16 @@ function renderConnect() {
   if (!overview) return;
   const endpoint = overview.endpoint || location.origin;
   const compatibleKey = overview.relay_api_key || "";
+  const experimentalKey = overview.experimental_api_key || "";
   const officialKey = overview.official_api_key || "";
   const shownCompatible = state.relayKeyVisible ? compatibleKey : maskKey(compatibleKey);
+  const shownExperimental = experimentalKey ? (state.relayKeyVisible ? experimentalKey : maskKey(experimentalKey)) : "未配置";
   const shownOfficial = officialKey ? (state.relayKeyVisible ? officialKey : maskKey(officialKey)) : "未配置";
   const claudeCodeKey = officialKey ? shownOfficial : shownCompatible;
 
   $("connectEndpoint").textContent = endpoint;
   $("connectKey").textContent = shownCompatible;
+  $("connectExperimentalKey").textContent = shownExperimental;
   $("connectOfficialKey").textContent = shownOfficial;
   $("toggleRelayKey").textContent = state.relayKeyVisible ? "隐藏" : "显示";
 
@@ -2046,6 +2050,7 @@ $("toggleRelayKey").addEventListener("click", () => {
 });
 $("routingPolicyButton").addEventListener("click", (event) => toggleRoutingPolicy(event.currentTarget));
 $("copyRelayKey").addEventListener("click", () => copyText(state.overview?.relay_api_key, "中转密钥已复制"));
+$("copyExperimentalKey").addEventListener("click", () => copyText(state.overview?.experimental_api_key, "实验入口密钥已复制"));
 $("copyOfficialKey").addEventListener("click", () => copyText(state.overview?.official_api_key, "Official 入口密钥已复制"));
 for (const element of document.querySelectorAll(".copy-endpoint")) {
   element.addEventListener("click", () => copyText(state.overview?.endpoint || location.origin, "请求地址已复制"));
@@ -2054,10 +2059,12 @@ for (const element of document.querySelectorAll("[data-copy]")) {
   element.addEventListener("click", () => {
     const source = $(element.dataset.copy).textContent;
     const compatibleKey = state.overview?.relay_api_key;
+    const experimentalKey = state.overview?.experimental_api_key;
     const officialKey = state.overview?.official_api_key;
     // Snippets render masked keys while hidden, but copying should stay usable.
     let resolved = source;
     if (!state.relayKeyVisible && compatibleKey) resolved = resolved.split(maskKey(compatibleKey)).join(compatibleKey);
+    if (!state.relayKeyVisible && experimentalKey) resolved = resolved.split(maskKey(experimentalKey)).join(experimentalKey);
     if (!state.relayKeyVisible && officialKey) resolved = resolved.split(maskKey(officialKey)).join(officialKey);
     copyText(resolved, "已复制到剪贴板");
   });

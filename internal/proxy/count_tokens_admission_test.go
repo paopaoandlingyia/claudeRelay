@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/local/claude-relay/internal/store"
 )
 
 func TestCountTokensUsesIndependentInflightPool(t *testing.T) {
@@ -23,14 +21,14 @@ func TestCountTokensUsesIndependentInflightPool(t *testing.T) {
 
 	messageRoute, err := deriveRequestRoute(
 		[]byte(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`),
-		http.Header{}, store.AccountPoolCompatible, "/v1/messages",
+		http.Header{}, compatibleIngress, "/v1/messages",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	countRoute, err := deriveRequestRoute(
 		[]byte(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`),
-		http.Header{}, store.AccountPoolCompatible, "/v1/messages/count_tokens",
+		http.Header{}, compatibleIngress, "/v1/messages/count_tokens",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -80,11 +78,11 @@ func TestCountTokensDoesNotCreateSessionBinding(t *testing.T) {
 		t.Fatalf("count_tokens status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	route, err := deriveRequestRoute([]byte(body), request.Header, store.AccountPoolCompatible, request.URL.Path)
+	route, err := deriveRequestRoute([]byte(body), request.Header, compatibleIngress, request.URL.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, route.Ingress, time.Now()); err != nil || found {
+	if _, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, route.AccountAccess, time.Now()); err != nil || found {
 		t.Fatalf("count_tokens binding found=%v err=%v", found, err)
 	}
 }
@@ -107,7 +105,7 @@ func TestCountTokensDoesNotConsumeActiveSessionAdmission(t *testing.T) {
 	headers := http.Header{"X-Claude-Session-Id": []string{"count-session"}}
 	countRoute, err := deriveRequestRoute(
 		[]byte(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`),
-		headers, store.AccountPoolCompatible, "/v1/messages/count_tokens",
+		headers, compatibleIngress, "/v1/messages/count_tokens",
 	)
 	if err != nil {
 		t.Fatal(err)

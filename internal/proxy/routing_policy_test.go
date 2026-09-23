@@ -33,7 +33,7 @@ func TestQuotaAwareRoutingOverridesAutomaticAffinityAndLegacyRestoresIt(t *testi
 	})
 	route := requestRoute{
 		ConversationKey: "session:test", SelectionKey: "prefix:test", StickyTTL: time.Hour,
-		AccountUUID: secondary.AccountUUID, Ingress: store.AccountPoolCompatible, Model: "claude-test",
+		AccountUUID: secondary.AccountUUID, Ingress: ingressCompatible, AccountAccess: store.AccountAccessCompatibleOnly, Model: "claude-test",
 	}
 	if err := server.store.Bind(t.Context(), route.ConversationKey, secondary.ID, time.Hour); err != nil {
 		t.Fatal(err)
@@ -85,7 +85,7 @@ func TestQuotaAwareRoutingSamplesUnknownAccountsFirst(t *testing.T) {
 	}
 
 	selected, err := server.selector.selectAccount(t.Context(), requestRoute{
-		SelectionKey: "prefix:test", Ingress: store.AccountPoolCompatible, Model: "claude-test",
+		SelectionKey: "prefix:test", Ingress: ingressCompatible, AccountAccess: store.AccountAccessCompatibleOnly, Model: "claude-test",
 	}, "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestQuotaAwareRoutingSkipsKnownEmptyWindow(t *testing.T) {
 	}
 
 	selected, err := server.selector.selectAccount(t.Context(), requestRoute{
-		SelectionKey: "prefix:test", Ingress: store.AccountPoolCompatible, Model: "claude-test",
+		SelectionKey: "prefix:test", Ingress: ingressCompatible, AccountAccess: store.AccountAccessCompatibleOnly, Model: "claude-test",
 	}, "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestQuotaAwareSuccessDoesNotPersistAffinityAndRollbackDoes(t *testing.T) {
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 1<<20)
 	body := `{"model":"claude-test","system":[{"type":"text","text":"shared","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hello"}]}`
-	route, err := deriveRequestRoute([]byte(body), nil, store.AccountPoolCompatible, "/v1/messages")
+	route, err := deriveRequestRoute([]byte(body), nil, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestQuotaAwareSuccessDoesNotPersistAffinityAndRollbackDoes(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("quota-aware response status = %d body=%s", response.Code, response.Body.String())
 	}
-	if _, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountPoolCompatible, time.Now()); err != nil || found {
+	if _, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountAccessCompatibleOnly, time.Now()); err != nil || found {
 		t.Fatalf("quota-aware binding found=%v err=%v", found, err)
 	}
 
@@ -172,7 +172,7 @@ func TestQuotaAwareSuccessDoesNotPersistAffinityAndRollbackDoes(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("legacy response status = %d body=%s", response.Code, response.Body.String())
 	}
-	if _, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountPoolCompatible, time.Now()); err != nil || !found {
+	if _, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountAccessCompatibleOnly, time.Now()); err != nil || !found {
 		t.Fatalf("legacy binding found=%v err=%v", found, err)
 	}
 }

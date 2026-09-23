@@ -145,20 +145,21 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 type overviewResponse struct {
-	Version         string          `json:"version"`
-	StartedAt       int64           `json:"started_at"`
-	Listen          string          `json:"listen"`
-	Endpoint        string          `json:"endpoint"`
-	Upstream        string          `json:"upstream"`
-	UpstreamProxy   string          `json:"upstream_proxy,omitempty"`
-	AutoRefresh     bool            `json:"auto_refresh_enabled"`
-	MaxRequestBytes int64           `json:"max_request_bytes"`
-	RelayAPIKey     string          `json:"relay_api_key"`
-	OfficialAPIKey  string          `json:"official_api_key,omitempty"`
-	Accounts        accountTotals   `json:"accounts"`
-	StickySessions  int             `json:"sticky_sessions"`
-	Requests        metrics.Summary `json:"requests"`
-	RoutingPolicy   string          `json:"routing_policy"`
+	Version            string          `json:"version"`
+	StartedAt          int64           `json:"started_at"`
+	Listen             string          `json:"listen"`
+	Endpoint           string          `json:"endpoint"`
+	Upstream           string          `json:"upstream"`
+	UpstreamProxy      string          `json:"upstream_proxy,omitempty"`
+	AutoRefresh        bool            `json:"auto_refresh_enabled"`
+	MaxRequestBytes    int64           `json:"max_request_bytes"`
+	RelayAPIKey        string          `json:"relay_api_key"`
+	ExperimentalAPIKey string          `json:"experimental_api_key,omitempty"`
+	OfficialAPIKey     string          `json:"official_api_key,omitempty"`
+	Accounts           accountTotals   `json:"accounts"`
+	StickySessions     int             `json:"sticky_sessions"`
+	Requests           metrics.Summary `json:"requests"`
+	RoutingPolicy      string          `json:"routing_policy"`
 }
 
 type accountTotals struct {
@@ -214,20 +215,21 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, overviewResponse{
-		Version:         buildVersion(),
-		StartedAt:       s.startedAt.UnixMilli(),
-		Listen:          s.cfg.Listen,
-		Endpoint:        relayEndpoint(r),
-		Upstream:        s.upstream.String(),
-		UpstreamProxy:   s.cfg.UpstreamProxy,
-		AutoRefresh:     s.cfg.AutoRefresh,
-		MaxRequestBytes: s.cfg.MaxRequestBytes,
-		RelayAPIKey:     s.cfg.RelayAPIKey,
-		OfficialAPIKey:  s.cfg.OfficialAPIKey,
-		Accounts:        totals,
-		StickySessions:  sticky,
-		Requests:        s.metrics.Summary(now),
-		RoutingPolicy:   s.routingPolicy.current(),
+		Version:            buildVersion(),
+		StartedAt:          s.startedAt.UnixMilli(),
+		Listen:             s.cfg.Listen,
+		Endpoint:           relayEndpoint(r),
+		Upstream:           s.upstream.String(),
+		UpstreamProxy:      s.cfg.UpstreamProxy,
+		AutoRefresh:        s.cfg.AutoRefresh,
+		MaxRequestBytes:    s.cfg.MaxRequestBytes,
+		RelayAPIKey:        s.cfg.RelayAPIKey,
+		ExperimentalAPIKey: s.cfg.ExperimentalAPIKey,
+		OfficialAPIKey:     s.cfg.OfficialAPIKey,
+		Accounts:           totals,
+		StickySessions:     sticky,
+		Requests:           s.metrics.Summary(now),
+		RoutingPolicy:      s.routingPolicy.current(),
 	})
 }
 

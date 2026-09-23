@@ -132,7 +132,8 @@ func TestNewSessionsUseAnotherAccountWhenPendingSlotIsFull(t *testing.T) {
 		ConversationKey: "session:route-a",
 		SelectionKey:    "selection-a",
 		StickyTTL:       sessionStickyTTL,
-		Ingress:         store.AccountPoolCompatible,
+		Ingress:         ingressCompatible,
+		AccountAccess:   store.AccountAccessCompatibleOnly,
 	}, "", map[int64]bool{})
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +145,8 @@ func TestNewSessionsUseAnotherAccountWhenPendingSlotIsFull(t *testing.T) {
 		ConversationKey: "session:route-b",
 		SelectionKey:    "selection-b",
 		StickyTTL:       sessionStickyTTL,
-		Ingress:         store.AccountPoolCompatible,
+		Ingress:         ingressCompatible,
+		AccountAccess:   store.AccountAccessCompatibleOnly,
 	}, "", map[int64]bool{})
 	if err != nil {
 		t.Fatal(err)
@@ -186,11 +188,11 @@ func TestSuccessfulSessionBecomesConfirmedAdmission(t *testing.T) {
 		t.Fatalf("first session status=%d body=%s", first.Code, first.Body.String())
 	}
 	headers := http.Header{"X-Claude-Session-Id": []string{"session-a"}}
-	route, err := deriveRequestRoute([]byte(body), headers, store.AccountPoolCompatible, "/v1/messages")
+	route, err := deriveRequestRoute([]byte(body), headers, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bound, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountPoolCompatible, time.Now())
+	bound, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountAccessCompatibleOnly, time.Now())
 	if err != nil || !found {
 		t.Fatalf("confirmed binding = %#v found=%v err=%v", bound, found, err)
 	}

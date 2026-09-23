@@ -402,6 +402,9 @@ func TestOverviewAndRequestsExposeRelayActivity(t *testing.T) {
 	if overview.RelayAPIKey != "downstream-key" {
 		t.Errorf("relay_api_key = %q, want the configured relay key", overview.RelayAPIKey)
 	}
+	if overview.ExperimentalAPIKey != "experimental-downstream-key" {
+		t.Errorf("experimental_api_key = %q, want the configured experimental key", overview.ExperimentalAPIKey)
+	}
 	if overview.OfficialAPIKey != "official-downstream-key" {
 		t.Errorf("official_api_key = %q, want the configured official key", overview.OfficialAPIKey)
 	}

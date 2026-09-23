@@ -33,10 +33,12 @@ type requestRoute struct {
 	StickyTTL   time.Duration
 	AccountUUID string
 	Model       string
-	// Ingress is the pool name of the API key that authenticated the request. It
-	// scopes routing keys and decides which account pools may be selected.
-	Ingress string
-	Client  clientObservation
+	// Ingress scopes routing keys so policies that transform the same client
+	// request cannot share sticky state. AccountAccess independently controls
+	// which stored account pools may serve the request.
+	Ingress       string
+	AccountAccess store.AccountAccess
+	Client        clientObservation
 	// CountTokens selects the independent short-request admission pool and
 	// never consumes an active client-session slot.
 	CountTokens bool
@@ -47,7 +49,7 @@ type metadataIdentity struct {
 	SessionID   string `json:"session_id"`
 }
 
-func deriveRequestRoute(body []byte, headers http.Header, ingress, path string) (requestRoute, error) {
+func deriveRequestRoute(body []byte, headers http.Header, ingress ingressPolicy, path string) (requestRoute, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -57,7 +59,7 @@ func deriveRequestRoute(body []byte, headers http.Header, ingress, path string) 
 	if root == nil {
 		return requestRoute{}, fmt.Errorf("request body must be a JSON object")
 	}
-	route := requestRoute{Ingress: ingress, CountTokens: path == "/v1/messages/count_tokens"}
+	route := requestRoute{Ingress: ingress.Name, AccountAccess: ingress.AccountAccess, CountTokens: path == "/v1/messages/count_tokens"}
 	route.Model, _ = root["model"].(string)
 	route.Client = classifyClient(root, headers, path)
 
@@ -67,9 +69,9 @@ func deriveRequestRoute(body []byte, headers http.Header, ingress, path string) 
 	if session == "" {
 		session = identity.SessionID
 	}
-	// Routing keys stay scoped per ingress so the two key holders are treated as
-	// different clients and cannot collide on a sticky binding.
-	scope := shortHash(ingress)
+	// Routing keys stay scoped per ingress so different policies cannot collide
+	// on a sticky binding.
+	scope := shortHash(ingress.Name)
 	if session != "" {
 		route.ConversationKey = sessionRoutePrefix + shortHash(scope+"\x00"+session)
 		route.StickyTTL = sessionStickyTTL
@@ -369,7 +371,7 @@ func (s accountSelector) wasBoundTo(ctx context.Context, route requestRoute, acc
 	if route.StickyTTL <= 0 || route.ConversationKey == "" {
 		return false, nil
 	}
-	bound, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.Ingress, time.Now())
+	bound, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.AccountAccess, time.Now())
 	if err != nil {
 		return false, err
 	}
@@ -410,7 +412,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		if !found || !account.Enabled {
 			return selection{}, selectionFailed("requested account is unavailable", "requested account %q is unavailable", forcedAlias)
 		}
-		if !store.IngressMayUse(route.Ingress, account.Pool) {
+		if !store.AccountAccessMayUse(route.AccountAccess, account.Pool) {
 			return selection{}, selectionFailed("requested account cannot serve this traffic",
 				"requested account %q is in the %s pool and cannot serve %s traffic",
 				forcedAlias, account.Pool, route.Ingress)
@@ -454,7 +456,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	}
 
 	if route.AccountUUID != "" {
-		account, found, err := s.store.AccountByUUID(ctx, route.AccountUUID, route.Ingress)
+		account, found, err := s.store.AccountByUUID(ctx, route.AccountUUID, route.AccountAccess)
 		if err != nil {
 			return selection{}, err
 		}
@@ -493,7 +495,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 			if err != nil {
 				return selection{}, err
 			}
-			if found && account.Enabled && store.IngressMayUse(route.Ingress, account.Pool) {
+			if found && account.Enabled && store.AccountAccessMayUse(route.AccountAccess, account.Pool) {
 				cooling, coolingErr := s.store.IsCooling(ctx, account.ID, route.Model, time.Now())
 				if coolingErr != nil {
 					return selection{}, coolingErr
@@ -517,7 +519,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 	}
 
 	if route.StickyTTL > 0 && route.ConversationKey != "" {
-		account, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.Ingress, time.Now())
+		account, found, err := s.store.BoundAccount(ctx, route.ConversationKey, route.AccountAccess, time.Now())
 		if err != nil {
 			return selection{}, err
 		}
@@ -544,7 +546,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 		}
 	}
 
-	accounts, err := s.store.Accounts(ctx, route.Ingress, route.Model, time.Now())
+	accounts, err := s.store.Accounts(ctx, route.AccountAccess, route.Model, time.Now())
 	if err != nil {
 		return selection{}, err
 	}
@@ -613,7 +615,7 @@ func (s accountSelector) selectAccount(ctx context.Context, route requestRoute, 
 }
 
 func (s accountSelector) selectQuotaAware(ctx context.Context, route requestRoute, excluded map[int64]bool) (selection, error) {
-	accounts, err := s.store.Accounts(ctx, route.Ingress, route.Model, time.Now())
+	accounts, err := s.store.Accounts(ctx, route.AccountAccess, route.Model, time.Now())
 	if err != nil {
 		return selection{}, err
 	}

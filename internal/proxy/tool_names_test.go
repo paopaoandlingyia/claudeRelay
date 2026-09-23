@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestNormalizeCompatibleToolNamesUpdatesDeclarationsAndReferences(t *testing.T) {
+func TestNormalizeExperimentalToolNamesUpdatesDeclarationsAndReferences(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{
 		"model":"claude-test",
@@ -23,7 +23,7 @@ func TestNormalizeCompatibleToolNamesUpdatesDeclarationsAndReferences(t *testing
 		]
 	}`)
 
-	transformed, changed, err := normalizeCompatibleToolNames(body)
+	transformed, changed, err := normalizeExperimentalToolNames(body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestNormalizeCompatibleToolNamesUpdatesDeclarationsAndReferences(t *testing
 	}
 }
 
-func TestNormalizeCompatibleToolNamesLeavesBuiltInToolAndReferencesUnchanged(t *testing.T) {
+func TestNormalizeExperimentalToolNamesLeavesBuiltInToolAndReferencesUnchanged(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{
 		"tools":[{"type":"web_search_20250305","name":"web_search"}],
@@ -60,7 +60,7 @@ func TestNormalizeCompatibleToolNamesLeavesBuiltInToolAndReferencesUnchanged(t *
 			{"type":"tool_use","id":"toolu_1","name":"web_search","input":{}}
 		]}]
 	}`)
-	transformed, changed, err := normalizeCompatibleToolNames(body)
+	transformed, changed, err := normalizeExperimentalToolNames(body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,10 +69,10 @@ func TestNormalizeCompatibleToolNamesLeavesBuiltInToolAndReferencesUnchanged(t *
 	}
 }
 
-func TestNormalizeCompatibleToolNamesLeavesAlreadyCompatibleBodyByteExact(t *testing.T) {
+func TestNormalizeExperimentalToolNamesLeavesAlreadyCompatibleBodyByteExact(t *testing.T) {
 	t.Parallel()
 	body := []byte("{\n  \"tools\": [{\"name\":\"mcp__web_search\"}], \"messages\": []\n}")
-	transformed, changed, err := normalizeCompatibleToolNames(body)
+	transformed, changed, err := normalizeExperimentalToolNames(body)
 	if err != nil {
 		t.Fatal(err)
 	}

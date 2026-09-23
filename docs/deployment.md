@@ -6,7 +6,7 @@ rotation, sticky routing, and SQLite are intentionally single-instance boundarie
 
 ## Start with Docker Compose
 
-Copy the environment template and generate three different API keys:
+Copy the environment template and generate five different API keys:
 
 ```powershell
 Copy-Item .env.example .env
@@ -17,8 +17,8 @@ $rng.Dispose()
 -join ($bytes | ForEach-Object { $_.ToString("x2") })
 ```
 
-Run the generation command four times and put different values in `CLAUDE_RELAY_API_KEY`,
-`CLAUDE_RELAY_OFFICIAL_API_KEY`, `CLAUDE_RELAY_ADMIN_API_KEY`, and
+Run the generation command five times and put different values in `CLAUDE_RELAY_API_KEY`,
+`CLAUDE_RELAY_EXPERIMENTAL_API_KEY`, `CLAUDE_RELAY_OFFICIAL_API_KEY`, `CLAUDE_RELAY_ADMIN_API_KEY`, and
 `CLAUDE_RELAY_AVAILABILITY_API_KEY` in `.env`, then start the service:
 
 ```powershell
@@ -66,7 +66,7 @@ relay.example.com {
 }
 ```
 
-The compatible and official relay keys can call Anthropic endpoints and choose explicit aliases
+The compatible, experimental, and official relay keys can call Anthropic endpoints and choose explicit aliases
 among the accounts their ingress may reach, but cannot read or change account administration. The
 official key also rejects requests that do not match the observed Claude Code shape. The separate
 administration key controls the WebUI, OAuth, account placement, and activation, but cannot call
@@ -81,7 +81,8 @@ The image contains only non-secret defaults. Compose passes these supported runt
 | Environment variable | Purpose | Compose default |
 | --- | --- | --- |
 | `CLAUDE_RELAY_API_KEY` | Relay key for messages, token counting, and account override | Required |
-| `CLAUDE_RELAY_OFFICIAL_API_KEY` | Optional Claude Code-shaped ingress, isolated to official accounts | Empty |
+| `CLAUDE_RELAY_EXPERIMENTAL_API_KEY` | Optional compatible ingress with experimental request transforms | Empty |
+| `CLAUDE_RELAY_OFFICIAL_API_KEY` | Optional Claude Code-shaped ingress with access to every account | Empty |
 | `CLAUDE_RELAY_ADMIN_API_KEY` | Administration key for WebUI, OAuth, and account state | Required and must differ |
 | `CLAUDE_RELAY_AVAILABILITY_API_KEY` | Read-only key for `GET /ops/v1/availability` | Empty (endpoint disabled) |
 | `CLAUDE_RELAY_UPSTREAM_PROXY` | Optional outbound HTTP(S) proxy | Empty |
@@ -130,13 +131,15 @@ Attach Claude Relay to the same Docker network as New API and use the relay cont
 port (for example `http://claude-relay:8567`) as the channel base URL. `localhost:8567` inside the
 New API container refers to New API itself, not this relay.
 
-Create two Anthropic channels:
+Create three Anthropic channels:
 
-1. A compatible channel using `CLAUDE_RELAY_API_KEY`, assigned only to the compatible token group.
-2. An official channel using `CLAUDE_RELAY_OFFICIAL_API_KEY`, assigned only to the official token
+1. A stable compatible channel using `CLAUDE_RELAY_API_KEY`, assigned only to the compatible token group.
+2. An experimental compatible channel using `CLAUDE_RELAY_EXPERIMENTAL_API_KEY`, assigned only to
+   the experimental token group.
+3. An official channel using `CLAUDE_RELAY_OFFICIAL_API_KEY`, assigned only to the official token
    group.
 
-Enable request-body pass-through on both. The official channel must also copy the original client
+Enable request-body pass-through on all three. The official channel must also copy the original client
 headers explicitly:
 
 ```json

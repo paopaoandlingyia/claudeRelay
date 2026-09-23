@@ -2,6 +2,25 @@
 
 This file records decisions that shape the service beyond the dated Anthropic protocol findings.
 
+## 2026-09-23: compatibility policies are separate from account placement
+
+The relay exposes three model ingress policies: `compatible` preserves third-party request
+semantics, `experimental` applies explicitly selected compatibility transforms, and `official`
+admits only recognized Claude Code-shaped traffic. Tool-name normalization belongs only to the
+experimental policy; the relay does not silently fall back from compatible to experimental
+behavior.
+
+Ingress policy and account placement are independent axes. Both compatible policies may select
+only accounts in the shared `compatible` pool, while the official policy may select accounts from
+either stored pool. Adding an ingress transform therefore does not add a database account pool.
+The storage selector receives one of two account-access policies—compatible-only or all—rather than
+an ingress name.
+
+Routing keys remain scoped by ingress policy. Identical client session IDs and cache prefixes on
+the compatible and experimental keys cannot share sticky state because one request body may be
+transformed and the other preserved. Metrics and availability keep the three ingress names so
+operators can observe each contract independently.
+
 ## 2026-09-16: optional quota-aware routing for workspace-shared caches
 
 Some enterprise workspaces have been observed to share prompt-cache entries across their member
@@ -172,14 +191,14 @@ because it would add a second platform-specific lifecycle without improving the 
 
 ## 2026-07-30: model ingress and administration keys are separate
 
-Model callers and account operators have different authority. The compatible and official ingress
-keys authenticate native Anthropic message and token-count requests, including the private
+Model callers and account operators have different authority. The compatible, experimental, and
+official ingress keys authenticate native Anthropic message and token-count requests, including the private
 `X-Claude-Relay-Account` override within the pools that ingress may reach. The administration key
 authenticates
 WebUI data, OAuth flows, account placement, and activation. No ingress key grants administration
 authority, the administration key cannot call models, and configuration rejects identical values.
 
-This remains a small private deployment rather than a user/role system. There is one key per role,
+This remains a small private deployment rather than a user/role system. There is one key per ingress policy,
 no billing identity, and no per-caller quota. Splitting the keys prevents an API consumer from
 taking ownership of OAuth refresh tokens without introducing a general access-control platform.
 
@@ -257,12 +276,15 @@ superseded on 2026-08-09 by a byte-preserving response usage observer described 
 ## 2026-08-06: account pool permeability is one way
 
 Supersedes the 2026-07-31 decision that made the two pools mutually isolated.
+The 2026-09-23 decision later split compatible request handling into stable and experimental
+policies without changing the two account pools or their one-way permeability.
 
-The deployment serves two traffic policies without turning account selection into a general group
-scheduler. Format admission belongs to the key: the compatible ingress accepts ordinary native
-Anthropic requests, and the optional official ingress accepts only requests classified as
-`cc_candidate`. The classification is a policy signal, not authentication of the Claude Code
-executable; possession of either API key remains the actual authentication boundary.
+At the time of this decision the deployment served two traffic policies without turning account
+selection into a general group scheduler. Format admission belonged to the key: the compatible
+ingress accepted ordinary native Anthropic requests, and the optional official ingress accepted
+only requests classified as `cc_candidate`. The classification is a policy signal, not
+authentication of the Claude Code executable; possession of an ingress key remains the actual
+authentication boundary.
 
 Account placement is a separate axis, and the two traffic shapes carry asymmetric risk.
 Claude Code-shaped traffic is the shape a subscription is expected to produce, so the official
@@ -278,15 +300,15 @@ was the default state after an import.
 
 The fence is enforced in every account lookup, so explicit aliases, structured account UUIDs,
 sticky bindings, rendezvous candidates, and bounded failover all respect it. Routing keys stay
-scoped per ingress so the two key holders are treated as different clients and cannot collide on a
+scoped per ingress so different key holders are treated as different clients and cannot collide on a
 sticky binding. Moving an account clears its bindings in the same SQLite transaction, while
 preserving its enabled state, cooldowns, and OAuth tokens. Existing and newly imported accounts
 default to `compatible`, which is now the shared placement; the stored column and its two values are
 unchanged, so this decision needs no schema migration.
 
-There is one API key per ingress rather than arbitrary named groups. This directly matches the two
-New API token/channel groups in scope and avoids introducing group administration, per-user ACLs,
-quota logic, or weighted routing.
+There is one API key per ingress rather than arbitrary named groups. The later experimental ingress
+keeps this property while avoiding group administration, per-user ACLs, quota logic, or weighted
+routing.
 
 ## 2026-07-31: subscription usage is a cached management observation
 

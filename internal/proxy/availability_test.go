@@ -27,8 +27,8 @@ func TestAvailabilityReportsIngressRoutingWithoutAccountDetails(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if !response.Availability[store.AccountPoolCompatible] || !response.Availability[store.AccountPoolOfficial] {
-		t.Fatalf("availability=%v, want both ingresses available through the compatible pool", response.Availability)
+	if !response.Availability[ingressCompatible] || !response.Availability[ingressExperimental] || !response.Availability[ingressOfficial] {
+		t.Fatalf("availability=%v, want all three ingresses available through the compatible pool", response.Availability)
 	}
 	if strings.Contains(recorder.Body.String(), "default") || strings.Contains(recorder.Body.String(), "upstream-access-token") {
 		t.Fatalf("availability response exposed account details: %s", recorder.Body.String())
@@ -44,7 +44,7 @@ func TestAvailabilityReportsIngressRoutingWithoutAccountDetails(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Availability[store.AccountPoolCompatible] || !response.Availability[store.AccountPoolOfficial] {
+	if response.Availability[ingressCompatible] || response.Availability[ingressExperimental] || !response.Availability[ingressOfficial] {
 		t.Fatalf("availability=%v, want official ingress alone to reach the official pool", response.Availability)
 	}
 }
@@ -74,14 +74,14 @@ func TestAvailabilityIgnoresModelScoped429CooldownButHonorsAccountExclusion(t *t
 		}
 		return response
 	}
-	if response := read(); !response.Availability[store.AccountPoolCompatible] {
+	if response := read(); !response.Availability[ingressCompatible] || !response.Availability[ingressExperimental] {
 		t.Fatalf("model-scoped 429 made ingress unavailable: %v", response.Availability)
 	}
 
 	if err := server.store.Cooldown(t.Context(), account.ID, "", time.Now().Add(time.Minute), "oauth_refresh_failed"); err != nil {
 		t.Fatal(err)
 	}
-	if response := read(); response.Availability[store.AccountPoolCompatible] || response.Availability[store.AccountPoolOfficial] {
+	if response := read(); response.Availability[ingressCompatible] || response.Availability[ingressExperimental] || response.Availability[ingressOfficial] {
 		t.Fatalf("account-wide exclusion left ingress available: %v", response.Availability)
 	}
 }
@@ -90,7 +90,7 @@ func TestAvailabilityRequiresDedicatedKey(t *testing.T) {
 	server := newTestServer(t, "http://127.0.0.1:1", 4096)
 	server.cfg.AvailabilityAPIKey = "availability-key"
 
-	for _, key := range []string{"", "admin-key", "downstream-key"} {
+	for _, key := range []string{"", "admin-key", "downstream-key", "experimental-downstream-key"} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/ops/v1/availability", nil)
 		request.Header.Set("x-api-key", key)

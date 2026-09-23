@@ -10,12 +10,12 @@ import (
 
 const mcpToolNamePrefix = "mcp__"
 
-// normalizeCompatibleToolNames adapts third-party custom tool names to the
+// normalizeExperimentalToolNames adapts third-party custom tool names to the
 // MCP-shaped names required by the subscription upstream. Anthropic server
 // tools carry a versioned type and require their fixed names, so they are never
 // renamed. References in tool_choice and prior tool_use blocks are changed
 // only when their matching custom declaration was renamed.
-func normalizeCompatibleToolNames(body []byte) ([]byte, int, error) {
+func normalizeExperimentalToolNames(body []byte) ([]byte, int, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()

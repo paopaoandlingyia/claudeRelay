@@ -21,6 +21,7 @@ const (
 type Config struct {
 	Listen                           string `json:"listen"`
 	RelayAPIKey                      string `json:"relay_api_key"`
+	ExperimentalAPIKey               string `json:"experimental_api_key"`
 	OfficialAPIKey                   string `json:"official_api_key"`
 	AdminAPIKey                      string `json:"admin_api_key"`
 	AvailabilityAPIKey               string `json:"availability_api_key"`
@@ -67,6 +68,9 @@ func applyEnvironment(cfg *Config) error {
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_API_KEY")); value != "" {
 		cfg.RelayAPIKey = value
+	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_EXPERIMENTAL_API_KEY")); value != "" {
+		cfg.ExperimentalAPIKey = value
 	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_OFFICIAL_API_KEY")); value != "" {
 		cfg.OfficialAPIKey = value
@@ -133,6 +137,7 @@ func applyEnvironment(cfg *Config) error {
 func (cfg *Config) validate() error {
 	cfg.Listen = strings.TrimSpace(cfg.Listen)
 	cfg.RelayAPIKey = strings.TrimSpace(cfg.RelayAPIKey)
+	cfg.ExperimentalAPIKey = strings.TrimSpace(cfg.ExperimentalAPIKey)
 	cfg.OfficialAPIKey = strings.TrimSpace(cfg.OfficialAPIKey)
 	cfg.AdminAPIKey = strings.TrimSpace(cfg.AdminAPIKey)
 	cfg.AvailabilityAPIKey = strings.TrimSpace(cfg.AvailabilityAPIKey)
@@ -165,8 +170,11 @@ func (cfg *Config) validate() error {
 	if cfg.OfficialAPIKey != "" && (cfg.OfficialAPIKey == cfg.RelayAPIKey || cfg.OfficialAPIKey == cfg.AdminAPIKey) {
 		return fmt.Errorf("official, compatible, and admin API keys must be different")
 	}
-	if cfg.AvailabilityAPIKey != "" && (cfg.AvailabilityAPIKey == cfg.RelayAPIKey || cfg.AvailabilityAPIKey == cfg.OfficialAPIKey || cfg.AvailabilityAPIKey == cfg.AdminAPIKey) {
-		return fmt.Errorf("availability, official, compatible, and admin API keys must be different")
+	if cfg.ExperimentalAPIKey != "" && (cfg.ExperimentalAPIKey == cfg.RelayAPIKey || cfg.ExperimentalAPIKey == cfg.OfficialAPIKey || cfg.ExperimentalAPIKey == cfg.AdminAPIKey) {
+		return fmt.Errorf("experimental, official, compatible, and admin API keys must be different")
+	}
+	if cfg.AvailabilityAPIKey != "" && (cfg.AvailabilityAPIKey == cfg.RelayAPIKey || cfg.AvailabilityAPIKey == cfg.ExperimentalAPIKey || cfg.AvailabilityAPIKey == cfg.OfficialAPIKey || cfg.AvailabilityAPIKey == cfg.AdminAPIKey) {
+		return fmt.Errorf("availability, experimental, official, compatible, and admin API keys must be different")
 	}
 	if cfg.DatabaseFile == "" {
 		cfg.DatabaseFile = "data/claude-relay.db"

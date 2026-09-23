@@ -234,17 +234,19 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ingress := ""
+		var policy ingressPolicy
 		switch {
 		case secureKeyEqual(provided, s.cfg.RelayAPIKey):
-			ingress = store.AccountPoolCompatible
+			policy = compatibleIngress
+		case s.cfg.ExperimentalAPIKey != "" && secureKeyEqual(provided, s.cfg.ExperimentalAPIKey):
+			policy = experimentalIngress
 		case s.cfg.OfficialAPIKey != "" && secureKeyEqual(provided, s.cfg.OfficialAPIKey):
-			ingress = store.AccountPoolOfficial
+			policy = officialIngress
 		default:
 			writeError(w, http.StatusUnauthorized, "authentication_error", "invalid API key")
 			return
 		}
-		ctx := context.WithValue(r.Context(), ingressContextKey{}, ingress)
+		ctx := context.WithValue(r.Context(), ingressContextKey{}, policy)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -257,10 +259,10 @@ func secureKeyEqual(provided, expected string) bool {
 	return subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1
 }
 
-// requestIngress reports which ingress key authenticated the request.
-func requestIngress(ctx context.Context) string {
-	ingress, _ := ctx.Value(ingressContextKey{}).(string)
-	return ingress
+// requestIngress reports the policy selected by the authenticating API key.
+func requestIngress(ctx context.Context) ingressPolicy {
+	policy, _ := ctx.Value(ingressContextKey{}).(ingressPolicy)
+	return policy
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -303,17 +305,17 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	}
 	includeMetadata := incoming.URL.Path == "/v1/messages"
 	ingress := requestIngress(incoming.Context())
-	event.Ingress = ingress
+	event.Ingress = ingress.Name
 	normalizedToolNames := 0
-	if ingress == store.AccountPoolCompatible {
-		body, normalizedToolNames, err = normalizeCompatibleToolNames(body)
+	if ingress.NormalizeToolNames {
+		body, normalizedToolNames, err = normalizeExperimentalToolNames(body)
 		if err != nil {
 			fail(http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
 		if normalizedToolNames > 0 {
-			slog.Info("normalized compatible tool names", "request_id", requestID, "path", incoming.URL.Path,
-				"ingress", ingress, "names_changed", normalizedToolNames)
+			slog.Info("normalized experimental tool names", "request_id", requestID, "path", incoming.URL.Path,
+				"ingress", ingress.Name, "names_changed", normalizedToolNames)
 		}
 	}
 	route, routeErr := deriveRequestRoute(body, incoming.Header, ingress, incoming.URL.Path)
@@ -337,8 +339,8 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		AnthropicBeta:      route.Client.Evidence.AnthropicBeta,
 		AnthropicVersion:   route.Client.Evidence.AnthropicVersion,
 	}
-	if ingress == store.AccountPoolOfficial && route.Client.Class != clientClassCCCandidate {
-		slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "client_class", route.Client.Class, "client_kind", route.Client.Kind)
+	if ingress.RequireClaudeCode && route.Client.Class != clientClassCCCandidate {
+		slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress.Name, "client_class", route.Client.Class, "client_kind", route.Client.Kind)
 		fail(http.StatusForbidden, "permission_error", "official ingress requires a Claude Code-shaped request")
 		return
 	}
@@ -381,7 +383,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			event.Status = status
 			event.Error = err.Error()
 			slog.Warn("account selection failed", "request_id", requestID, "path", incoming.URL.Path,
-				"ingress", ingress, "status", status, "error", err)
+				"ingress", ingress.Name, "status", status, "error", err)
 			writeError(w, status, errorType, clientMessage)
 			return
 		}
@@ -402,7 +404,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		freshAccount, refreshErr := s.tokens.ensureFresh(incoming.Context(), selected.Account)
 		if refreshErr != nil {
 			slog.Warn("account authentication failed", "request_id", requestID, "path", incoming.URL.Path,
-				"ingress", ingress, "account", selected.Account.Alias, "error", refreshErr)
+				"ingress", ingress.Name, "account", selected.Account.Alias, "error", refreshErr)
 			if cooldownErr := s.store.Cooldown(incoming.Context(), selected.Account.ID, "", time.Now().Add(time.Minute), "oauth_refresh_failed"); cooldownErr != nil {
 				slog.Warn("persist OAuth refresh cooldown", "request_id", requestID, "account", selected.Account.Alias, "error", cooldownErr)
 			}
@@ -439,7 +441,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			event.RelayAction = "unchanged"
 		}
 		if changed {
-			slog.Info("added subscription attribution", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "account", selected.Account.Alias)
+			slog.Info("added subscription attribution", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress.Name, "account", selected.Account.Alias)
 		}
 		response, err = s.doUpstream(incoming, transformedBody, selected.Account.AccessToken)
 		if err == nil && !retryableStatus(response.StatusCode) {
@@ -479,7 +481,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		excluded[selected.Account.ID] = true
 	}
 	if err != nil {
-		slog.Error("upstream request failed", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
+		slog.Error("upstream request failed", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress.Name, "account", selected.Account.Alias, "duration_ms", time.Since(started).Milliseconds(), "error", err)
 		fail(http.StatusBadGateway, "api_error", "upstream request failed")
 		return
 	}
@@ -545,7 +547,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			}
 		}
 	}
-	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
+	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress.Name, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
 }
 
 func (s *Server) markFiveHourExhausted(ctx context.Context, requestID string, account store.Account,

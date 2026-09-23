@@ -60,6 +60,7 @@ The schema upgrade that introduced activation also disables every pre-existing a
 ```powershell
 Copy-Item config.example.json config.json
 $env:CLAUDE_RELAY_API_KEY = "replace-with-a-long-random-key"
+$env:CLAUDE_RELAY_EXPERIMENTAL_API_KEY = "replace-with-a-different-long-random-key"
 $env:CLAUDE_RELAY_OFFICIAL_API_KEY = "replace-with-a-different-long-random-key"
 $env:CLAUDE_RELAY_ADMIN_API_KEY = "replace-with-a-different-long-random-key"
 .\claude-relay.exe serve -config config.json
@@ -123,7 +124,7 @@ The console is a single dense screen with four sections:
 - **用量** — hourly token/API-price totals plus current and explicitly exhausted five-hour windows.
   Window rows expand into per-model input, 5m/1h cache creation, cache-read, output, and API-price
   composition. The long-term observation data can be exported as ZIP/CSV or cleared independently.
-- **接入** — the relay endpoint, both ingress API keys, copy-ready Claude Code / PowerShell / curl
+- **接入** — the relay endpoint, all configured ingress API keys, copy-ready Claude Code / PowerShell / curl
   snippets, and the effective runtime parameters.
 
 It polls every five seconds while the tab is visible, checks `/healthz` for the status indicator,
@@ -131,9 +132,9 @@ and follows the system light/dark preference with a manual override. The managem
 the current tab's `sessionStorage`; it is not written to the server or to persistent browser
 storage. The static login page is public, while every management API remains authenticated.
 
-The console shows both ingress API keys so working client configurations can be copied in one step.
+The console shows all configured ingress API keys so working client configurations can be copied in one step.
 The administration key already controls account placement and credentials, so this does not widen
-the trust boundary — but it does mean anyone who signs in to the console can obtain all three roles.
+the trust boundary — but it does mean anyone who signs in to the console can obtain every model role.
 Put the service behind an HTTPS reverse proxy before exposing it over a network.
 
 ## Account management
@@ -259,9 +260,10 @@ whenever its endpoints or client behavior change.
 
 ## Account selection
 
-Two things are marked separately. The **key** decides which request format is admitted: requests
+Two things are marked separately. The **key** decides which request policy is applied: requests
 authenticated by `official_api_key` must have a recognized Claude Code shape or are rejected with
-`403`, while `relay_api_key` places no restriction on shape. Every accepted official request has a
+`403`; `relay_api_key` preserves third-party request semantics; and the optional
+`experimental_api_key` applies experimental compatibility transforms. Every accepted official request has a
 versioned `claude-cli/...` User-Agent, `X-Claude-Code-Session-Id`, `X-App: cli`, `anthropic-beta`,
 and `anthropic-version`. Ordinary Messages additionally require structured Claude Code metadata and
 either a billing attribution block or a recognized official system prompt. Native `count_tokens`,
@@ -276,6 +278,7 @@ The **account** carries a pool that decides which traffic may reach it, and perm
 | --- | --- |
 | `official_api_key` | every enabled account, in either pool |
 | `relay_api_key` | `compatible` accounts only |
+| `experimental_api_key` | `compatible` accounts only |
 
 New and upgraded accounts start in `compatible`, the shared placement, so the official ingress can
 use them without any placement step. Move an account to `official` only to keep compatible traffic
@@ -283,10 +286,13 @@ off it. Claude Code-shaped traffic is what a subscription is expected to produce
 every account costs nothing while the fence still keeps chosen accounts clean, and the official
 ingress keeps the full account set for load spreading and failover.
 
-For compatible-ingress requests, third-party custom tool names without the subscription upstream's
-`mcp__` prefix are normalized before forwarding. The relay updates the matching declaration, an
-explicit `tool_choice`, and prior `tool_use` blocks together. Typed Anthropic server tools (such as
-`web_search_20250305`), already-prefixed names, and official-ingress requests are unchanged.
+The compatible ingress performs only relay-required authentication and attribution changes. It does
+not rewrite third-party tool names. On the experimental ingress, custom tool names without the
+subscription upstream's `mcp__` prefix are normalized before forwarding. The relay updates the
+matching declaration, an explicit `tool_choice`, and prior `tool_use` blocks together. Typed
+Anthropic server tools (such as `web_search_20250305`) and already-prefixed names are unchanged.
+The two compatible policies use separate sticky-routing namespaces, so a conversation cannot cross
+between transformed and untransformed traffic.
 
 Changing an account's pool immediately clears its sticky bindings. Cooldowns and OAuth ownership
 state remain with the account. The fence applies to every selection path, so `X-Claude-Relay-Account`
@@ -399,13 +405,15 @@ so a rate-limited account is visible in its own totals rather than hidden behind
 
 ## New API grouping
 
-Create two Anthropic channels pointing at the same relay URL. Use `relay_api_key` for the channel
-available to the compatible New API group, and `official_api_key` for the channel available to the
-official group. On the official channel, preserve the three client identification headers with the
-override shown above. Request-body pass-through alone does not preserve them.
+Create three Anthropic channels pointing at the same relay URL. Use `relay_api_key` for the stable
+compatible group, `experimental_api_key` for the experimental compatibility group, and
+`official_api_key` for the official group. On the official channel, preserve the three client
+identification headers with the override shown above. Request-body pass-through alone does not
+preserve them.
 
 The official New API group should be issued only to Claude Code users. The relay rejects a request
 that reaches the official key without the required shape before selecting an account, and does not
 fall back to the compatible behaviour — assigning callers to the right group is the operator's job.
-Conversely, compatible traffic never consumes an `official` account even when it supplies an account
-alias.
+Conversely, neither compatible policy consumes an `official` account even when it supplies an
+account alias. The relay never falls back from the stable compatible policy to experimental
+transforms.

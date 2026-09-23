@@ -131,7 +131,7 @@ func TestForwardPreservesBodyAndReplacesAuthentication(t *testing.T) {
 	}
 }
 
-func TestForwardNormalizesToolNamesOnlyForCompatibleIngress(t *testing.T) {
+func TestForwardNormalizesToolNamesOnlyForExperimentalIngress(t *testing.T) {
 	t.Parallel()
 	var upstreamBodies []map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +157,13 @@ func TestForwardNormalizesToolNamesOnlyForCompatibleIngress(t *testing.T) {
 	if compatibleRecorder.Code != http.StatusOK {
 		t.Fatalf("compatible status = %d, body = %s", compatibleRecorder.Code, compatibleRecorder.Body.String())
 	}
+	experimentalRequest := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(compatibleBody))
+	experimentalRequest.Header.Set("x-api-key", "experimental-downstream-key")
+	experimentalRecorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(experimentalRecorder, experimentalRequest)
+	if experimentalRecorder.Code != http.StatusOK {
+		t.Fatalf("experimental status = %d, body = %s", experimentalRecorder.Code, experimentalRecorder.Body.String())
+	}
 
 	officialBody := `{"model":"claude-test","system":[{"type":"text","text":"` + defaultBillingAttribution + `"}],` +
 		`"metadata":{"user_id":` + strconv.Quote(testClaudeCodeMetadata) + `},` +
@@ -170,11 +177,11 @@ func TestForwardNormalizesToolNamesOnlyForCompatibleIngress(t *testing.T) {
 		t.Fatalf("official status = %d, body = %s", officialRecorder.Code, officialRecorder.Body.String())
 	}
 
-	if len(upstreamBodies) != 2 {
-		t.Fatalf("upstream requests = %d, want 2", len(upstreamBodies))
+	if len(upstreamBodies) != 3 {
+		t.Fatalf("upstream requests = %d, want 3", len(upstreamBodies))
 	}
 	compatibleTools := upstreamBodies[0]["tools"].([]any)
-	if got := compatibleTools[0].(map[string]any)["name"]; got != "mcp__get_weather" {
+	if got := compatibleTools[0].(map[string]any)["name"]; got != "get_weather" {
 		t.Fatalf("compatible tool name = %q", got)
 	}
 	if got := compatibleTools[1].(map[string]any)["name"]; got != "web_search" {
@@ -182,10 +189,22 @@ func TestForwardNormalizesToolNamesOnlyForCompatibleIngress(t *testing.T) {
 	}
 	compatibleMessages := upstreamBodies[0]["messages"].([]any)
 	compatibleToolUse := compatibleMessages[0].(map[string]any)["content"].([]any)[0].(map[string]any)
-	if got := compatibleToolUse["name"]; got != "mcp__get_weather" {
+	if got := compatibleToolUse["name"]; got != "get_weather" {
 		t.Fatalf("compatible tool use name = %q", got)
 	}
-	officialTools := upstreamBodies[1]["tools"].([]any)
+	experimentalTools := upstreamBodies[1]["tools"].([]any)
+	if got := experimentalTools[0].(map[string]any)["name"]; got != "mcp__get_weather" {
+		t.Fatalf("experimental tool name = %q", got)
+	}
+	if got := experimentalTools[1].(map[string]any)["name"]; got != "web_search" {
+		t.Fatalf("experimental built-in tool name = %q, want unchanged", got)
+	}
+	experimentalMessages := upstreamBodies[1]["messages"].([]any)
+	experimentalToolUse := experimentalMessages[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if got := experimentalToolUse["name"]; got != "mcp__get_weather" {
+		t.Fatalf("experimental tool use name = %q", got)
+	}
+	officialTools := upstreamBodies[2]["tools"].([]any)
 	if got := officialTools[0].(map[string]any)["name"]; got != "web_search" {
 		t.Fatalf("official tool name = %q, want unchanged", got)
 	}
@@ -212,7 +231,7 @@ func TestOfficialIngressRejectsNonClaudeCodeShape(t *testing.T) {
 		t.Fatalf("official gate allowed %d upstream calls", upstreamCalls)
 	}
 	records := server.metrics.Recent(1)
-	if len(records) != 1 || records[0].Ingress != store.AccountPoolOfficial ||
+	if len(records) != 1 || records[0].Ingress != ingressOfficial ||
 		records[0].ClientClass != clientClassCompatible || records[0].Account != "" {
 		t.Fatalf("rejected request record = %#v", records)
 	}
@@ -286,9 +305,9 @@ func TestOfficialIngressClassifiesClaudeCodeRequestKinds(t *testing.T) {
 	}
 }
 
-// The compatible ingress is fenced: an official-pool account must never serve a
-// request that did not come through the official key.
-func TestCompatibleIngressNeverSelectsOfficialPoolAccounts(t *testing.T) {
+// Both compatible policies are fenced: an official-pool account must never
+// serve a request that did not come through the official key.
+func TestCompatiblePoliciesNeverSelectOfficialPoolAccounts(t *testing.T) {
 	t.Parallel()
 	var authorizations []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -302,18 +321,27 @@ func TestCompatibleIngressNeverSelectsOfficialPoolAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, session := range []string{"one", "two", "three"} {
-		request := httptest.NewRequest(http.MethodPost, "/v1/messages",
-			strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
-		request.Header.Set("x-api-key", "downstream-key")
-		request.Header.Set(claudeCodeSessionHeader, session)
-		recorder := httptest.NewRecorder()
-		server.routes().ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("compatible status = %d, body = %s", recorder.Code, recorder.Body.String())
+	policies := []struct {
+		name string
+		key  string
+	}{
+		{name: ingressCompatible, key: "downstream-key"},
+		{name: ingressExperimental, key: "experimental-downstream-key"},
+	}
+	for _, policy := range policies {
+		for _, session := range []string{"one", "two"} {
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+				strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+			request.Header.Set("x-api-key", policy.key)
+			request.Header.Set(claudeCodeSessionHeader, session)
+			recorder := httptest.NewRecorder()
+			server.routes().ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, body = %s", policy.name, recorder.Code, recorder.Body.String())
+			}
 		}
 	}
-	if len(authorizations) != 3 {
+	if len(authorizations) != 4 {
 		t.Fatalf("upstream calls = %#v", authorizations)
 	}
 	for _, authorization := range authorizations {
@@ -321,9 +349,13 @@ func TestCompatibleIngressNeverSelectsOfficialPoolAccounts(t *testing.T) {
 			t.Fatalf("compatible ingress reached a fenced account: %#v", authorizations)
 		}
 	}
-	records := server.metrics.Recent(1)
-	if len(records) != 1 || records[0].Ingress != store.AccountPoolCompatible {
-		t.Fatalf("request record = %#v", records)
+	records := server.metrics.Recent(4)
+	seen := map[string]bool{}
+	for _, record := range records {
+		seen[record.Ingress] = true
+	}
+	if !seen[ingressCompatible] || !seen[ingressExperimental] {
+		t.Fatalf("request ingresses = %#v", seen)
 	}
 }
 
@@ -351,7 +383,7 @@ func TestOfficialIngressDrawsFromTheCompatiblePool(t *testing.T) {
 		t.Fatalf("official authorizations = %#v", authorizations)
 	}
 	records := server.metrics.Recent(1)
-	if len(records) != 1 || records[0].Ingress != store.AccountPoolOfficial || records[0].Account != "default" {
+	if len(records) != 1 || records[0].Ingress != ingressOfficial || records[0].Account != "default" {
 		t.Fatalf("request record = %#v", records)
 	}
 }
@@ -859,7 +891,7 @@ func TestStickyOverloadReturns429WithoutSwitchingAccount(t *testing.T) {
 	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
 	body := `{"model":"claude-test","messages":[{"role":"user","content":"sticky overload"}]}`
 	headers := http.Header{"X-Claude-Session-Id": []string{"sticky-overload"}}
-	route, err := deriveRequestRoute([]byte(body), headers, store.AccountPoolCompatible, "/v1/messages")
+	route, err := deriveRequestRoute([]byte(body), headers, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -889,7 +921,7 @@ func TestStickyOverloadReturns429WithoutSwitchingAccount(t *testing.T) {
 		!strings.Contains(first.Body.String(), relayCapacityClientMessage) {
 		t.Fatalf("sticky overload exposed account identity: %s", first.Body.String())
 	}
-	bound, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountPoolCompatible, time.Now())
+	bound, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey, store.AccountAccessCompatibleOnly, time.Now())
 	if err != nil || !found || bound.ID != primary.ID {
 		t.Fatalf("temporary fallback changed sticky binding: account=%#v found=%v err=%v", bound, found, err)
 	}
@@ -1161,11 +1193,11 @@ func TestUnknownBillingFieldsDoNotOverrideForcedAccount(t *testing.T) {
 func TestRoutingPrefixIgnoresContentAfterCacheBreakpoint(t *testing.T) {
 	t.Parallel()
 	headers := http.Header{}
-	first, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"one"}]}`), headers, store.AccountPoolCompatible, "/v1/messages")
+	first, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"one"}]}`), headers, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`), headers, store.AccountPoolCompatible, "/v1/messages")
+	second, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`), headers, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1174,6 +1206,25 @@ func TestRoutingPrefixIgnoresContentAfterCacheBreakpoint(t *testing.T) {
 	}
 	if first.StickyTTL != defaultCacheStickyTTL || second.StickyTTL != defaultCacheStickyTTL {
 		t.Fatalf("default cache sticky TTLs = %v, %v", first.StickyTTL, second.StickyTTL)
+	}
+}
+
+func TestCompatibleIngressPoliciesUseSeparateRoutingScopes(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"same"}]}`)
+	headers := http.Header{sessionHeaderNames[0]: []string{"same-session"}}
+	compatible, err := deriveRequestRoute(body, headers, compatibleIngress, "/v1/messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	experimental, err := deriveRequestRoute(body, headers, experimentalIngress, "/v1/messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatible.AccountAccess != experimental.AccountAccess {
+		t.Fatalf("account access differs: %q != %q", compatible.AccountAccess, experimental.AccountAccess)
+	}
+	if compatible.ConversationKey == experimental.ConversationKey || compatible.SelectionKey == experimental.SelectionKey {
+		t.Fatalf("routing scopes collided: compatible=%#v experimental=%#v", compatible, experimental)
 	}
 }
 
@@ -1220,7 +1271,7 @@ func TestRoutingStickyTTLSeparatesSessionsCachesAndFallbacks(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			route, err := deriveRequestRoute([]byte(test.body), test.headers, store.AccountPoolCompatible, "/v1/messages")
+			route, err := deriveRequestRoute([]byte(test.body), test.headers, compatibleIngress, "/v1/messages")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1286,7 +1337,7 @@ func TestOnlyDeclaredAffinityPersistsAfterSuccess(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			route, err := deriveRequestRoute([]byte(test.body), nil, store.AccountPoolCompatible, "/v1/messages")
+			route, err := deriveRequestRoute([]byte(test.body), nil, compatibleIngress, "/v1/messages")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1298,13 +1349,13 @@ func TestOnlyDeclaredAffinityPersistsAfterSuccess(t *testing.T) {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
 			_, found, err := server.store.BoundAccount(t.Context(), route.ConversationKey,
-				store.AccountPoolCompatible, time.Now().Add(test.foundAfter))
+				store.AccountAccessCompatibleOnly, time.Now().Add(test.foundAfter))
 			if err != nil || found != test.wantFound {
 				t.Fatalf("binding found=%v want=%v err=%v route=%#v", found, test.wantFound, err, route)
 			}
 			if test.notFoundAfter > 0 {
 				_, found, err = server.store.BoundAccount(t.Context(), route.ConversationKey,
-					store.AccountPoolCompatible, time.Now().Add(test.notFoundAfter))
+					store.AccountAccessCompatibleOnly, time.Now().Add(test.notFoundAfter))
 				if err != nil || found {
 					t.Fatalf("expired binding found=%v err=%v route=%#v", found, err, route)
 				}
@@ -1316,7 +1367,7 @@ func TestOnlyDeclaredAffinityPersistsAfterSuccess(t *testing.T) {
 func TestOrdinaryFallbackIgnoresLegacyPrefixBinding(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t, "http://127.0.0.1:1", 4096)
-	route, err := deriveRequestRoute([]byte(`{"model":"m","messages":[{"role":"user","content":"legacy"}]}`), nil, store.AccountPoolCompatible, "/v1/messages")
+	route, err := deriveRequestRoute([]byte(`{"model":"m","messages":[{"role":"user","content":"legacy"}]}`), nil, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1473,15 +1524,16 @@ func newTestServer(t *testing.T, upstreamURL string, maxRequestBytes int64) *Ser
 		t.Fatal(err)
 	}
 	server, err := NewServer(config.Config{
-		Listen:          "127.0.0.1:0",
-		RelayAPIKey:     "downstream-key",
-		OfficialAPIKey:  "official-downstream-key",
-		AdminAPIKey:     "admin-key",
-		CredentialsFile: "unused.json",
-		UpstreamBaseURL: upstreamURL,
-		MaxRequestBytes: maxRequestBytes,
-		RequestLogSize:  50,
-		AutoRefresh:     true,
+		Listen:             "127.0.0.1:0",
+		RelayAPIKey:        "downstream-key",
+		ExperimentalAPIKey: "experimental-downstream-key",
+		OfficialAPIKey:     "official-downstream-key",
+		AdminAPIKey:        "admin-key",
+		CredentialsFile:    "unused.json",
+		UpstreamBaseURL:    upstreamURL,
+		MaxRequestBytes:    maxRequestBytes,
+		RequestLogSize:     50,
+		AutoRefresh:        true,
 	}, database)
 	if err != nil {
 		t.Fatal(err)
