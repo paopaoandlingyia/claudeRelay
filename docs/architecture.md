@@ -10,6 +10,12 @@ admits only recognized Claude Code-shaped traffic. Tool-name normalization belon
 experimental policy; the relay does not silently fall back from compatible to experimental
 behavior.
 
+Experimental tool-name adaptation is bidirectional and request-scoped. The request transform
+records only names it actually changed, and response handling uses that exact map for non-streaming
+`tool_use` blocks and streaming `content_block_start` events. It never strips an untracked prefix.
+Declarations whose transformed names would collide are rejected before account selection because
+there is no reversible mapping for them.
+
 Ingress policy and account placement are independent axes. Both compatible policies may select
 only accounts in the shared `compatible` pool, while the official policy may select accounts from
 either stored pool. Adding an ingress transform therefore does not add a database account pool.

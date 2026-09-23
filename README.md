@@ -291,6 +291,10 @@ not rewrite third-party tool names. On the experimental ingress, custom tool nam
 subscription upstream's `mcp__` prefix are normalized before forwarding. The relay updates the
 matching declaration, an explicit `tool_choice`, and prior `tool_use` blocks together. Typed
 Anthropic server tools (such as `web_search_20250305`) and already-prefixed names are unchanged.
+Tool names returned in non-streaming `tool_use` blocks and streaming `content_block_start` events
+are restored through the exact request mapping; the relay never strips an untracked `mcp__`
+prefix. A request that declares both `name` and `mcp__name` is rejected because the transformed
+names would collide.
 The two compatible policies use separate sticky-routing namespaces, so a conversation cannot cross
 between transformed and untransformed traffic.
 

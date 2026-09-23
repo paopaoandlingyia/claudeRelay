@@ -10,28 +10,44 @@ import (
 
 const mcpToolNamePrefix = "mcp__"
 
+// toolNameMapping contains only names changed by the experimental ingress.
+// A client that already declared an mcp__ name therefore never has that name
+// stripped from the response.
+type toolNameMapping map[string]string
+
 // normalizeExperimentalToolNames adapts third-party custom tool names to the
 // MCP-shaped names required by the subscription upstream. Anthropic server
 // tools carry a versioned type and require their fixed names, so they are never
 // renamed. References in tool_choice and prior tool_use blocks are changed
 // only when their matching custom declaration was renamed.
-func normalizeExperimentalToolNames(body []byte) ([]byte, int, error) {
+func normalizeExperimentalToolNames(body []byte) ([]byte, int, toolNameMapping, error) {
 	var root map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	if err := decoder.Decode(&root); err != nil {
-		return nil, 0, fmt.Errorf("decode request body: %w", err)
+		return nil, 0, nil, fmt.Errorf("decode request body: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, 0, fmt.Errorf("decode request body: trailing JSON value")
+		return nil, 0, nil, fmt.Errorf("decode request body: trailing JSON value")
 	}
 	if root == nil {
-		return nil, 0, fmt.Errorf("request body must be a JSON object")
+		return nil, 0, nil, fmt.Errorf("request body must be a JSON object")
 	}
 
 	changed := 0
 	renamed := make(map[string]string)
+	restored := make(toolNameMapping)
 	if tools, ok := root["tools"].([]any); ok {
+		declaredNames := make(map[string]struct{}, len(tools))
+		for _, raw := range tools {
+			tool, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if name, ok := tool["name"].(string); ok && name != "" {
+				declaredNames[name] = struct{}{}
+			}
+		}
 		for _, raw := range tools {
 			tool, ok := raw.(map[string]any)
 			if !ok {
@@ -47,8 +63,12 @@ func normalizeExperimentalToolNames(body []byte) ([]byte, int, error) {
 				continue
 			}
 			normalized := mcpToolNamePrefix + name
+			if _, collision := declaredNames[normalized]; collision {
+				return nil, 0, nil, fmt.Errorf("normalize tool name %q: target %q is already declared", name, normalized)
+			}
 			tool["name"] = normalized
 			renamed[name] = normalized
+			restored[normalized] = name
 			changed++
 		}
 	}
@@ -77,13 +97,13 @@ func normalizeExperimentalToolNames(body []byte) ([]byte, int, error) {
 		}
 	}
 	if changed == 0 {
-		return body, 0, nil
+		return body, 0, nil, nil
 	}
 	transformed, err := json.Marshal(root)
 	if err != nil {
-		return nil, 0, fmt.Errorf("encode tool-normalized request body: %w", err)
+		return nil, 0, nil, fmt.Errorf("encode tool-normalized request body: %w", err)
 	}
-	return transformed, changed, nil
+	return transformed, changed, restored, nil
 }
 
 func renameToolReference(value map[string]any, renamed map[string]string) bool {

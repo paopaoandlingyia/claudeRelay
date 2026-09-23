@@ -23,12 +23,15 @@ func TestNormalizeExperimentalToolNamesUpdatesDeclarationsAndReferences(t *testi
 		]
 	}`)
 
-	transformed, changed, err := normalizeExperimentalToolNames(body)
+	transformed, changed, names, err := normalizeExperimentalToolNames(body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if changed != 3 {
 		t.Fatalf("changed names = %d, want 3", changed)
+	}
+	if len(names) != 1 || names["mcp__web_search"] != "web_search" {
+		t.Fatalf("response name mapping = %#v", names)
 	}
 	var root map[string]any
 	if err := json.Unmarshal(transformed, &root); err != nil {
@@ -60,23 +63,31 @@ func TestNormalizeExperimentalToolNamesLeavesBuiltInToolAndReferencesUnchanged(t
 			{"type":"tool_use","id":"toolu_1","name":"web_search","input":{}}
 		]}]
 	}`)
-	transformed, changed, err := normalizeExperimentalToolNames(body)
+	transformed, changed, names, err := normalizeExperimentalToolNames(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed != 0 || string(transformed) != string(body) {
-		t.Fatalf("changed=%d body=%s", changed, transformed)
+	if changed != 0 || len(names) != 0 || string(transformed) != string(body) {
+		t.Fatalf("changed=%d names=%#v body=%s", changed, names, transformed)
 	}
 }
 
 func TestNormalizeExperimentalToolNamesLeavesAlreadyCompatibleBodyByteExact(t *testing.T) {
 	t.Parallel()
 	body := []byte("{\n  \"tools\": [{\"name\":\"mcp__web_search\"}], \"messages\": []\n}")
-	transformed, changed, err := normalizeExperimentalToolNames(body)
+	transformed, changed, names, err := normalizeExperimentalToolNames(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed != 0 || string(transformed) != string(body) {
-		t.Fatalf("changed=%d body=%s", changed, transformed)
+	if changed != 0 || len(names) != 0 || string(transformed) != string(body) {
+		t.Fatalf("changed=%d names=%#v body=%s", changed, names, transformed)
+	}
+}
+
+func TestNormalizeExperimentalToolNamesRejectsIntroducedCollision(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"tools":[{"name":"search"},{"name":"mcp__search"}],"messages":[]}`)
+	if _, _, _, err := normalizeExperimentalToolNames(body); err == nil {
+		t.Fatal("normalization accepted names that collide after prefixing")
 	}
 }

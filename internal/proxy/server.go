@@ -307,8 +307,9 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	ingress := requestIngress(incoming.Context())
 	event.Ingress = ingress.Name
 	normalizedToolNames := 0
+	var toolNames toolNameMapping
 	if ingress.NormalizeToolNames {
-		body, normalizedToolNames, err = normalizeExperimentalToolNames(body)
+		body, normalizedToolNames, toolNames, err = normalizeExperimentalToolNames(body)
 		if err != nil {
 			fail(http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
@@ -513,12 +514,46 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		s.sampler.observe(selected.Account, window)
 	}
 
+	contentType := response.Header.Get("Content-Type")
+	observer := accounting.NewObserver(response.Body, contentType)
+	responseWriter := flushWriter{ResponseWriter: w}
+	restoreJSON := len(toolNames) > 0 && strings.Contains(strings.ToLower(contentType), "json")
+	restoreSSE := len(toolNames) > 0 && strings.Contains(strings.ToLower(contentType), "text/event-stream")
+	var copyErr error
+	var responseBody []byte
+	restoredToolNames := 0
+	if restoreJSON {
+		responseBody, copyErr = io.ReadAll(observer)
+		if copyErr == nil {
+			responseBody, restoredToolNames, copyErr = restoreNonStreamingToolNames(responseBody, toolNames)
+		}
+		if copyErr != nil {
+			slog.Error("restore experimental response tool names", "request_id", requestID,
+				"ingress", ingress.Name, "account", selected.Account.Alias, "error", copyErr)
+			fail(http.StatusBadGateway, "api_error", "upstream response could not be adapted")
+			return
+		}
+	}
+
 	copyResponseHeaders(w.Header(), response.Header)
 	w.Header().Set(requestIDHeader, requestID)
 	w.Header().Set("X-Claude-Relay-Account", selected.Account.Alias)
+	if restoreSSE || restoredToolNames > 0 {
+		w.Header().Del("Content-Length")
+	}
 	w.WriteHeader(response.StatusCode)
-	observer := accounting.NewObserver(response.Body, response.Header.Get("Content-Type"))
-	_, copyErr := io.Copy(flushWriter{ResponseWriter: w}, observer)
+	switch {
+	case restoreJSON:
+		_, copyErr = writeAll(responseWriter, responseBody)
+	case restoreSSE:
+		_, restoredToolNames, copyErr = copySSEWithRestoredToolNames(responseWriter, observer, toolNames)
+	default:
+		_, copyErr = io.Copy(responseWriter, observer)
+	}
+	if restoredToolNames > 0 {
+		slog.Info("restored experimental response tool names", "request_id", requestID,
+			"ingress", ingress.Name, "account", selected.Account.Alias, "names_changed", restoredToolNames)
+	}
 	observedUsage, servedModel := observer.Result(copyErr, route.Model)
 	if incoming.URL.Path == "/v1/messages" && response.StatusCode >= 200 && response.StatusCode < 300 {
 		if !observedUsage.Seen && copyErr == nil {

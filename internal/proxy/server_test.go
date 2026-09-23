@@ -210,6 +210,82 @@ func TestForwardNormalizesToolNamesOnlyForExperimentalIngress(t *testing.T) {
 	}
 }
 
+func TestExperimentalIngressRestoresNonStreamingResponseToolNames(t *testing.T) {
+	t.Parallel()
+	responseBody := `{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"toolu_1","name":"mcp__get_weather","input":{}}],"usage":{"input_tokens":3,"output_tokens":2}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := decodeBody(t, body)
+		tool := root["tools"].([]any)[0].(map[string]any)
+		if got := tool["name"]; got != "mcp__get_weather" {
+			t.Fatalf("upstream tool name = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(responseBody)))
+		_, _ = io.WriteString(w, responseBody)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+
+	requestBody := `{"model":"claude-test","system":[{"type":"text","text":"` + defaultBillingAttribution + `"}],` +
+		`"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"messages":[]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
+	request.Header.Set("x-api-key", "experimental-downstream-key")
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("stale Content-Length = %q", got)
+	}
+	root := decodeBody(t, recorder.Body.Bytes())
+	toolUse := root["content"].([]any)[0].(map[string]any)
+	if got := toolUse["name"]; got != "get_weather" {
+		t.Fatalf("downstream tool name = %q", got)
+	}
+	if err := server.accounting.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	account, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("default account found=%v err=%v", found, err)
+	}
+	totals, err := server.store.UsageTotalsByModel(t.Context(), account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage := totals["claude-test"]; usage.InputTokens != 3 || usage.OutputTokens != 2 {
+		t.Fatalf("usage after response adaptation = %#v", usage)
+	}
+}
+
+func TestExperimentalIngressRestoresStreamingResponseToolNames(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: content_block_start\n"+
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"mcp__get_weather\",\"input\":{}}}\n\n"+
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+		`{"model":"claude-test","tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"messages":[]}`))
+	request.Header.Set("x-api-key", "experimental-downstream-key")
+	recorder := httptest.NewRecorder()
+	server.routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"name":"get_weather"`) || strings.Contains(recorder.Body.String(), `"name":"mcp__get_weather"`) {
+		t.Fatalf("streaming tool name was not restored: %s", recorder.Body.String())
+	}
+}
+
 func TestOfficialIngressRejectsNonClaudeCodeShape(t *testing.T) {
 	t.Parallel()
 	upstreamCalls := 0
