@@ -254,6 +254,7 @@ function renderAccounts() {
   });
 
   $("accountsNoMatch").classList.toggle("hidden", !hasAccounts || visible.length !== 0);
+  $("accountsHead").classList.toggle("hidden", visible.length === 0);
   for (const account of visible) {
     body.appendChild(accountRow(account));
   }
@@ -263,7 +264,8 @@ function accountRow(account) {
   const row = document.createElement("article");
   const status = accountStatus(account);
   const pool = accountPoolView(account.pool);
-  row.className = `account-item ${status.css.replace("badge-", "account-")} ${account.refusal?.count_24h ? "account-refusal" : ""}`;
+  // Only states that need an operator get a row accent; refusals are flagged in their own column.
+  row.className = `account-row ${status.css.replace("badge-", "account-")}`;
 
   const identity = document.createElement("div");
   identity.className = "account-identity";
@@ -282,35 +284,29 @@ function accountRow(account) {
     title: "点击复制别名",
   }));
   const statusBadge = badge(status.label, status.css);
-  statusBadge.classList.add("account-status-badge");
   statusBadge.title = status.note || status.label;
   identityLine.append(statusBadge);
-  identityCopy.append(identityLine, accountContactLine(account));
-  const poolBadge = badge(pool.label, pool.css);
-  poolBadge.classList.add("account-pool-badge");
-  poolBadge.title = pool.note;
-  identityCopy.appendChild(poolBadge);
+  const contactLine = document.createElement("div");
+  contactLine.className = "identity-line";
+  contactLine.append(accountContactLine(account));
+  // "共享" is the default pool, so only the restricted pool earns a badge.
+  if (account.pool === "official") {
+    const poolBadge = badge(pool.label, pool.css);
+    poolBadge.title = pool.note;
+    contactLine.append(poolBadge);
+  }
+  identityCopy.append(identityLine, contactLine);
   identity.append(avatar, identityCopy);
 
   const stats = account.stats || {};
-  const refusal = account.refusal || {};
-  const refusalCount = Number(refusal.count_24h) || 0;
-  const refusalCategory = refusalCategoryLabel(refusal.last_category);
-  const refusalNote = refusalCount
-    ? `${refusalCategory} · ${formatRelative(refusal.last_at)}`
-    : "无近期拒绝";
-  const metrics = document.createElement("div");
-  metrics.className = "account-metrics";
-  metrics.append(
-    accountMetric("请求", stats.requests ? `${stats.requests}` : "—", stats.requests ? `${stats.failures || 0} 次失败` : ""),
-    accountMetric("活跃会话", `${account.active_sessions || 0}`, "近 5 分钟"),
-    accountMetric("粘性绑定", `${account.sticky_sessions || 0}`, "近 1 小时"),
-    accountMetric("生成并发", `${account.in_flight || 0}`, "当前 Messages"),
-    accountMetric("计数并发", `${account.count_tokens_in_flight || 0}`, "当前 count_tokens"),
-    accountMetric("24h 拒绝", refusalCount ? `${refusalCount}` : "—", refusalNote),
-  );
-  if (refusalCount) {
-    metrics.lastElementChild.title = `最近分类：${refusalCategory}；最近发生：${new Date(refusal.last_at).toLocaleString()}`;
+  const requests = accountCell("请求");
+  if (stats.requests) {
+    const failures = Number(stats.failures) || 0;
+    const failureNote = small(`${failures} 次失败`);
+    if (failures / stats.requests >= 0.1) failureNote.className = "is-warn";
+    requests.append(strong(`${stats.requests}`), failureNote);
+  } else {
+    requests.append(strong("—"));
   }
 
   const actions = document.createElement("div");
@@ -318,12 +314,62 @@ function accountRow(account) {
   actions.appendChild(button(account.enabled ? "停用" : "启用", "btn btn-inline btn-toggle", () => toggleAccount(account)));
   actions.appendChild(button("详情", "btn btn-inline", () => openActions(account)));
 
-  const main = document.createElement("div");
-  main.className = "account-item-main";
-  main.append(identity, accountUsageSummary(account), metrics, actions);
-  row.appendChild(main);
-
+  row.append(identity, accountUsageSummary(account), requests, accountActivityCell(account), accountRefusalCell(account), actions);
   return row;
+}
+
+// A table cell that carries its own label, shown only when the row collapses on narrow screens.
+function accountCell(label) {
+  const cell = document.createElement("div");
+  cell.className = "account-cell";
+  const caption = small(label);
+  caption.className = "account-cell-label";
+  cell.appendChild(caption);
+  return cell;
+}
+
+function accountActivityCell(account) {
+  const cell = accountCell("当前活动");
+  const items = [
+    ["生成", account.in_flight, "当前 Messages 并发"],
+    ["计数", account.count_tokens_in_flight, "当前 count_tokens 并发"],
+    ["会话", account.active_sessions, "近 5 分钟活跃会话"],
+    ["粘性", account.sticky_sessions, "近 1 小时粘性绑定"],
+  ];
+  cell.title = items.map(([, value, hint]) => `${hint}：${value || 0}`).join("\n");
+  const active = items.filter(([, value]) => Number(value) > 0);
+  if (active.length === 0) {
+    const idle = small("空闲");
+    idle.className = "account-idle";
+    cell.appendChild(idle);
+    return cell;
+  }
+  const list = document.createElement("div");
+  list.className = "activity-list";
+  for (const [label, value] of active) {
+    const item = document.createElement("span");
+    item.append(strong(`${value}`), ` ${label}`);
+    list.appendChild(item);
+  }
+  cell.appendChild(list);
+  return cell;
+}
+
+function accountRefusalCell(account) {
+  const cell = accountCell("24h 拒绝");
+  const refusal = account.refusal || {};
+  const count = Number(refusal.count_24h) || 0;
+  if (!count) {
+    cell.append(strong("—"));
+    return cell;
+  }
+  const category = refusalCategoryLabel(refusal.last_category);
+  const value = strong(`${count}`);
+  value.className = "is-warn";
+  const detail = small(`${category} · ${formatRelative(refusal.last_at)}`);
+  cell.append(value, detail);
+  cell.title = `最近分类：${category}；最近发生：${new Date(refusal.last_at).toLocaleString()}`;
+  return cell;
 }
 
 function accountContactLine(account) {
@@ -344,14 +390,6 @@ function accountContactLine(account) {
     });
   }
   return small("未知身份");
-}
-
-function accountMetric(label, value, noteText) {
-  const metric = document.createElement("div");
-  metric.className = "account-metric";
-  metric.append(small(label), strong(value));
-  if (noteText) metric.appendChild(small(noteText));
-  return metric;
 }
 
 function accountNeedsAttention(account) {
@@ -1124,67 +1162,59 @@ function accountUsageSummary(account) {
   const wrapper = document.createElement("div");
   wrapper.className = "account-usage";
 
-  const heading = document.createElement("div");
-  heading.className = "usage-heading";
-  const title = document.createElement("span");
-  title.className = "usage-title";
-  title.textContent = "订阅额度";
-  heading.appendChild(title);
-  if (usage?.status === "success" && usage.plan_type) {
-    const plan = document.createElement("span");
-    plan.className = "usage-plan";
-    plan.textContent = usage.plan_type.toUpperCase();
-    heading.appendChild(plan);
-  }
-  wrapper.appendChild(heading);
-
-  const refresh = button(loading ? "读取中" : "刷新", "btn btn-inline usage-refresh", () => {
+  const refresh = button(loading ? "…" : "↻", "btn btn-inline usage-refresh", () => {
     void loadAccountUsage(account, { notify: true });
   });
   refresh.disabled = loading;
+  refresh.setAttribute("aria-label", "刷新订阅额度");
+
+  const notice = (text, css, title) => {
+    const element = small(text);
+    element.className = `usage-notice ${css}`;
+    if (title) element.title = title;
+    return element;
+  };
 
   if (!usage && display.windows.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "usage-empty";
-    empty.append(small(loading ? "正在读取额度…" : "尚未读取"), refresh);
-    wrapper.appendChild(empty);
+    refresh.title = "读取订阅额度";
+    wrapper.append(notice(loading ? "正在读取额度…" : "尚未读取额度", ""), refresh);
     return wrapper;
   }
 
   if (usage?.status === "error" && display.windows.length === 0) {
-    const error = document.createElement("div");
-    error.className = "usage-error";
-    const message = small(usage.error || "额度读取失败");
-    message.title = usage.error || "";
-    error.append(badge("读取失败", "badge-bad"), message, refresh);
-    wrapper.appendChild(error);
+    refresh.title = "重试读取订阅额度";
+    wrapper.append(notice(`读取失败：${usage.error || "未知错误"}`, "is-bad", usage.error), refresh);
     return wrapper;
   }
 
   const windows = display.windows;
+  if (windows.length === 0) wrapper.appendChild(notice("上游未返回额度窗口", ""));
   for (const window of windows.slice(0, 2)) wrapper.appendChild(quotaMeter(window));
-  if (windows.length === 0) {
-    const empty = small("上游未返回额度窗口");
-    empty.className = "usage-empty-note";
-    wrapper.appendChild(empty);
-  } else if (windows.length > 2) {
-    const more = small(`还有 ${windows.length - 2} 个额度窗口`);
-    more.className = "usage-more";
-    wrapper.appendChild(more);
-  }
+  if (windows.length === 1) wrapper.appendChild(document.createElement("span"));
 
-  const footer = document.createElement("div");
-  footer.className = "usage-footer";
-  let footerText = display.responseDerived
+  // Freshness, plan and overflow windows are secondary, so they live in the refresh tooltip.
+  const details = [display.responseDerived
     ? `请求响应更新于 ${formatRelative(display.updatedAt)}`
-    : `更新于 ${formatRelative(display.updatedAt)}`;
-  if (usage?.status === "error") footerText = "手动刷新失败，显示请求响应结果";
-  if (usage?.refresh_error) footerText = "手动刷新失败，显示最近结果";
-  const fetched = small(footerText);
-  if (usage?.status === "error") fetched.title = usage.error || "额度读取失败";
-  if (usage?.refresh_error) fetched.title = `最近刷新失败：${usage.refresh_error}`;
-  footer.append(fetched, refresh);
-  wrapper.appendChild(footer);
+    : `更新于 ${formatRelative(display.updatedAt)}`];
+  if (usage?.status === "success" && usage.plan_type) details.push(`套餐：${usage.plan_type.toUpperCase()}`);
+  if (windows.length > 2) {
+    details.push(...windows.slice(2).map((window) =>
+      `${USAGE_WINDOW_LABELS[window.id] || window.id}：剩余 ${Math.round(Number(window.remaining_percent) || 0)}%`));
+  }
+  if (usage?.status === "error") details.push(`手动刷新失败，显示请求响应结果：${usage.error || "额度读取失败"}`);
+  if (usage?.refresh_error) details.push(`最近刷新失败，显示最近结果：${usage.refresh_error}`);
+  if (usage?.status === "error" || usage?.refresh_error) refresh.classList.add("is-warn");
+  refresh.title = details.join("\n");
+  const side = document.createElement("div");
+  side.className = "usage-side";
+  if (windows.length > 2) {
+    const more = small(`+${windows.length - 2}`);
+    more.className = "usage-more";
+    more.title = refresh.title;
+    side.appendChild(more);
+  }
+  side.appendChild(refresh);
+  wrapper.appendChild(side);
   return wrapper;
 }
 
@@ -1196,8 +1226,8 @@ function quotaMeter(window) {
   heading.className = "quota-meter-head";
   const label = document.createElement("span");
   label.textContent = USAGE_WINDOW_LABELS[window.id] || window.id;
-  const percent = document.createElement("strong");
-  percent.textContent = `${Math.round(remaining)}%`;
+  const percent = document.createElement("span");
+  percent.append("剩 ", strong(`${Math.round(remaining)}%`));
   heading.append(label, percent);
   const track = document.createElement("div");
   track.className = "quota-track";
@@ -1205,7 +1235,7 @@ function quotaMeter(window) {
   fill.className = remaining <= 20 ? "quota-low" : remaining <= 50 ? "quota-mid" : "";
   fill.style.width = `${remaining}%`;
   track.appendChild(fill);
-  const reset = small(window.resets_at ? `重置 ${formatUsageReset(window.resets_at)}` : "重置时间未知");
+  const reset = small(formatUsageReset(window.resets_at));
   reset.className = "quota-reset";
   wrapper.append(heading, track, reset);
   return wrapper;

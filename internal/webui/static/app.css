@@ -381,33 +381,40 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .select-field select { font-size: 12px; }
 /* ---------- account list ---------- */
 
-.account-list { display: grid; gap: 8px; padding: 12px 14px 14px; }
-.account-item {
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--surface);
-  transition: border-color .14s, background .14s, box-shadow .14s;
-}
-.account-item:hover { border-color: var(--line-strong); background: var(--surface-2); box-shadow: var(--shadow-soft); }
-.account-item.account-warn { border-left: 3px solid var(--warn); }
-.account-item.account-bad { border-left: 3px solid var(--danger); }
-.account-item.account-refusal:not(.account-bad) { border-left: 3px solid var(--warn); }
-.account-item-main {
+/* Every row, header included, shares one fixed column template so columns line up. */
+.account-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.1fr) minmax(300px, 1.65fr) minmax(246px, auto) auto;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 2.2fr) minmax(0, .6fr) minmax(0, .75fr) minmax(0, 1.1fr) 112px;
   align-items: center;
   gap: 20px;
-  min-height: 112px;
-  padding: 15px 16px;
+  padding: 12px 22px;
 }
-.account-identity { display: flex; align-items: center; min-width: 0; gap: 13px; }
+.account-head {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+.account-list > .account-row { border-bottom: 1px solid var(--line); transition: background .14s; }
+.account-list > .account-row:last-child { border-bottom: 0; }
+.account-list > .account-row:hover { background: var(--surface-2); }
+.account-row.account-warn { box-shadow: inset 3px 0 0 var(--warn); }
+.account-row.account-bad { box-shadow: inset 3px 0 0 var(--danger); }
+.account-row.account-off { color: var(--muted); }
+.account-row.account-off .account-avatar { background: var(--surface-3); color: var(--faint); }
+
+.account-identity { display: flex; align-items: center; min-width: 0; gap: 11px; }
 .account-avatar {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   flex: 0 0 auto;
-  border-radius: 11px;
+  border-radius: 10px;
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 11px;
@@ -415,13 +422,11 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
   letter-spacing: .03em;
 }
 /* The chips carry their own padding, so the block is pulled back by that inset
-   to keep the alias text optically aligned with the avatar and the pool badge. */
-.identity-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; margin-left: -8px; gap: 2px; }
-.identity-line { display: flex; align-items: center; min-width: 0; max-width: 100%; gap: 5px; }
-.identity-copy small { max-width: 100%; overflow: hidden; margin-left: 8px; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.account-status-badge { padding: 2px 6px; font-size: 10px; }
-.account-status-badge::before { width: 4px; height: 4px; }
-.account-pool-badge { margin-top: 2px; margin-left: 8px; }
+   to keep the alias text optically aligned with the avatar. */
+.identity-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; margin-left: -7px; gap: 1px; }
+.identity-line { display: flex; align-items: center; min-width: 0; max-width: 100%; gap: 6px; }
+.identity-line > .alias-chip, .identity-line > .badge { flex: 0 0 auto; }
+.identity-line > small { min-width: 0; overflow: hidden; margin-left: 7px; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
 .copy-chip {
   display: inline-flex;
@@ -444,48 +449,47 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .copy-chip-icon svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 
 .alias-chip {
-  border-color: var(--line);
-  background: var(--surface-3);
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: -.01em;
 }
-.alias-chip .copy-chip-icon { color: var(--faint); }
-.alias-chip:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.alias-chip .copy-chip-icon, .contact-chip .copy-chip-icon { opacity: 0; color: var(--faint); transition: opacity .12s; }
+.account-row:hover .copy-chip-icon, .copy-chip:focus-visible .copy-chip-icon { opacity: 1; }
+.alias-chip:hover { border-color: var(--accent-soft); background: var(--accent-soft); color: var(--accent); }
 .alias-chip:hover .copy-chip-icon { color: inherit; }
 
-.contact-chip { color: var(--muted); font-size: 11px; }
-.contact-chip .copy-chip-icon { opacity: 0; transition: opacity .12s; }
-.account-item:hover .contact-chip .copy-chip-icon, .contact-chip:focus-visible .copy-chip-icon { opacity: 1; }
+.contact-chip { padding-top: 1px; padding-bottom: 1px; color: var(--muted); font-size: 12px; }
 .contact-chip:hover { background: var(--surface-3); color: var(--text); }
 
 .copy-chip.is-copied, .copy-chip.is-copied:hover { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
-.account-usage { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
-.usage-heading { display: flex; align-items: center; gap: 7px; }
-.usage-title { color: var(--muted); font-size: 10px; font-weight: 650; }
-.usage-plan { padding: 1px 5px; border-radius: 4px; background: var(--surface-3); color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .04em; }
-.usage-empty, .usage-error, .usage-footer { display: flex; align-items: center; min-width: 0; gap: 7px; }
-.usage-empty > small, .usage-error > small, .usage-footer > small { min-width: 0; overflow: hidden; color: var(--faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.usage-error > small { color: var(--danger); }
-.usage-refresh { height: 25px; flex: 0 0 auto; padding: 0 8px; font-size: 10px; }
-.quota-meter { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
-.quota-meter-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 10px; }
-.quota-meter-head strong { color: var(--text); font-size: 10px; font-variant-numeric: tabular-nums; }
+
+.account-usage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; min-width: 0; gap: 18px; }
+.usage-notice { grid-column: 1 / 3; min-width: 0; overflow: hidden; color: var(--faint); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.usage-notice.is-bad { color: var(--danger); }
+.usage-side { display: flex; align-items: center; gap: 4px; }
+.usage-more { color: var(--faint); font-size: 11px; cursor: help; }
+.usage-refresh { width: 28px; height: 28px; padding: 0; border-color: transparent; background: transparent; color: var(--faint); font-size: 15px; }
+.usage-refresh:hover { border-color: var(--line); color: var(--text); }
+.usage-refresh.is-warn { color: var(--warn); }
+.quota-meter { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.quota-meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.quota-meter-head strong { color: var(--text); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .quota-track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--surface-3); }
 .quota-track span { display: block; height: 100%; border-radius: inherit; background: var(--ok); transition: width .25s ease; }
 .quota-track span.quota-mid { background: var(--warn); }
 .quota-track span.quota-low { background: var(--danger); }
-.quota-reset { color: var(--faint); font-size: 9px; }
-.usage-more { color: var(--faint); font-size: 9px; }
-.usage-footer { justify-content: space-between; gap: 10px; }
-.usage-footer > small { color: var(--faint); }
-.account-metrics { display: grid; grid-template-columns: repeat(3, minmax(48px, auto)); gap: 12px; padding-left: 18px; border-left: 1px solid var(--line); }
-.account-metric { display: flex; min-width: 45px; flex-direction: column; gap: 1px; }
-.account-metric small:first-child { color: var(--muted); font-size: 10px; }
-.account-metric strong { font-size: 17px; font-weight: 680; font-variant-numeric: tabular-nums; line-height: 1.15; }
-.account-metric small:last-child { color: var(--faint); font-size: 10px; white-space: nowrap; }
-.account-actions { display: inline-flex; grid-column: 4; justify-content: flex-end; gap: 6px; }
+.quota-reset { overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+.account-cell { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.account-cell > strong { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.3; }
+.account-cell > small { overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.account-cell > .is-warn { color: var(--warn); }
+.account-cell-label { display: none; }
+.account-cell > .account-idle { font-size: 12px; }
+.activity-list { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--muted); font-size: 12px; }
+.activity-list strong { color: var(--accent); font-variant-numeric: tabular-nums; }
+.account-actions { display: inline-flex; justify-content: flex-end; gap: 6px; }
 .account-off .btn-toggle, .account-bad .btn-toggle { border-color: var(--accent); background: var(--accent); color: var(--accent-text); }
 .account-off .btn-toggle:hover, .account-bad .btn-toggle:hover { background: var(--accent-strong); }
 .badge {
@@ -682,9 +686,25 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 
 @media (max-width: 1180px) {
   .app { padding-right: 20px; padding-left: 20px; }
-  .account-item-main { grid-template-columns: minmax(200px, 1fr) minmax(270px, 1.35fr) auto; }
-  .account-metrics { grid-column: 1 / 3; grid-row: 2; padding-left: 0; border-left: 0; }
-  .account-actions { grid-column: 3; grid-row: 1 / 3; }
+}
+
+/* Below this width a row becomes a two-line card: identity + actions, quota, then labelled stats. */
+@media (max-width: 1040px) {
+  .account-head { display: none; }
+  .account-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+    grid-template-areas: "identity identity identity actions" "usage usage usage usage" "requests activity refusal refusal";
+    gap: 12px 18px;
+    padding: 14px 18px;
+  }
+  .account-identity { grid-area: identity; }
+  .account-usage { grid-area: usage; }
+  .account-row > .account-cell:nth-child(3) { grid-area: requests; }
+  .account-row > .account-cell:nth-child(4) { grid-area: activity; }
+  .account-row > .account-cell:nth-child(5) { grid-area: refusal; }
+  .account-actions { grid-area: actions; }
+  .account-cell { align-self: start; }
+  .account-cell > .account-cell-label { display: block; color: var(--muted); }
 }
 
 @media (max-width: 720px) {
@@ -704,12 +724,12 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
   .account-tools { align-items: stretch; }
   .search-field { flex: 1; width: auto; }
   .select-field { width: 122px; }
-  .account-list { padding: 10px; }
-  .account-item-main { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px; }
-  .account-identity { flex: 1 1 calc(100% - 110px); }
-  .account-actions { order: 2; margin-left: auto; }
-  .account-usage { order: 3; flex: 1 1 100%; padding-top: 12px; border-top: 1px solid var(--line); }
-  .account-metrics { order: 4; grid-template-columns: repeat(3, minmax(54px, auto)); flex: 0 0 auto; gap: 14px; padding-top: 1px; }
+  .account-row { padding: 14px; }
+  .account-usage { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+  .account-usage .quota-meter { grid-column: 1; }
+  .account-usage .usage-notice { grid-column: 1; }
+  .account-usage > span:empty { display: none; }
+  .usage-side { grid-column: 2; grid-row: 1; }
   .panel-bar { align-items: flex-start; flex-direction: column; padding: 13px 15px; }
   .filters { width: 100%; gap: 7px; }
   .field { flex: 1; }
@@ -733,8 +753,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
   .topbar-actions .btn:nth-child(2) { display: none; }
   .account-tools { flex-direction: column; }
   .select-field { width: 100%; }
-  .account-identity { flex-basis: calc(100% - 86px); }
-  .account-actions { width: 100%; margin-left: 0; }
+  .account-row { grid-template-areas: "identity identity identity identity" "usage usage usage usage" "requests activity refusal refusal" "actions actions actions actions"; }
   .account-actions .btn { flex: 1; }
   .empty { padding: 40px 15px; }
   .dialog-body { padding: 18px; }
