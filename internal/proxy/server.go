@@ -576,7 +576,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			fiveHour.ResetsAt = window.resetsAt
 			fiveHour.UsedPercent = window.usedPercent
 		}
-		s.accounting.Record(selected.Account.ID, servedModel, started, observedUsage, fiveHour)
+		s.accounting.Record(selected.Account.ID, servedModel, ingress.Name, started, observedUsage, fiveHour)
 	}
 	if copyErr != nil {
 		slog.Warn("relay response interrupted", "request_id", requestID, "path", incoming.URL.Path, "status", response.StatusCode, "error", copyErr)

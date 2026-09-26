@@ -27,7 +27,7 @@ func TestManagerPersistsFiveHourEventEvenWhenUsageIsMissing(t *testing.T) {
 	}
 	now := time.Now()
 	manager := NewManager(database)
-	manager.Record(account.ID, "claude-test", now, Usage{}, FiveHourContext{
+	manager.Record(account.ID, "claude-test", "compatible", now, Usage{}, FiveHourContext{
 		EventKey: "request-1", ResetsAt: strconv.FormatInt(time.Now().Add(4*time.Hour).Unix(), 10),
 		ObservedAt: now, CompletedAt: now.Add(time.Second), Status: 200, UsedPercent: 20,
 	})
@@ -65,7 +65,7 @@ func TestClearFiveHourObservationsDropsPendingEventsOnly(t *testing.T) {
 	}
 	now := time.Now()
 	manager := NewManager(database)
-	manager.Record(account.ID, "claude-test", now, Usage{Seen: true, Complete: true, InputTokens: 10}, FiveHourContext{
+	manager.Record(account.ID, "claude-test", "compatible", now, Usage{Seen: true, Complete: true, InputTokens: 10}, FiveHourContext{
 		EventKey: "request-1", ObservedAt: now, CompletedAt: now, UsedPercent: -1,
 	})
 	if err := manager.ClearFiveHourObservations(context.Background()); err != nil {
@@ -81,6 +81,10 @@ func TestClearFiveHourObservationsDropsPendingEventsOnly(t *testing.T) {
 	buckets, err := database.UsageBuckets(context.Background(), 0)
 	if err != nil || len(buckets) != 1 || buckets[0].Counters.InputTokens != 10 {
 		t.Fatalf("hourly buckets=%+v err=%v", buckets, err)
+	}
+	ingressBuckets, err := database.UsageIngressBuckets(context.Background(), 0)
+	if err != nil || len(ingressBuckets) != 1 || ingressBuckets[0].Ingress != "compatible" || ingressBuckets[0].Counters.InputTokens != 10 {
+		t.Fatalf("ingress hourly buckets=%+v err=%v", ingressBuckets, err)
 	}
 }
 

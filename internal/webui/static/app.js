@@ -460,6 +460,7 @@ function renderUsage() {
 
   renderUsageRows($("usageModelsBody"), dashboard.by_model || [], "model");
   renderUsageRows($("usageAccountsBody"), dashboard.by_account || [], "account");
+  renderUsageRows($("usageIngressBody"), dashboard.by_ingress || [], "ingress", false);
 
   const currentWindows = Array.isArray(dashboard.five_hour_current) ? dashboard.five_hour_current : [];
   const exhaustedWindows = Array.isArray(dashboard.five_hour_exhausted) ? dashboard.five_hour_exhausted : [];
@@ -867,7 +868,7 @@ function buildFiveHourModelDetails(window, models) {
   return row;
 }
 
-function renderUsageRows(body, values, key) {
+function renderUsageRows(body, values, key, showCost = true) {
   body.replaceChildren();
   for (const value of values) {
     const usage = value.usage || {};
@@ -882,8 +883,8 @@ function renderUsageRows(body, values, key) {
       numberCell(globalThis.ClaudeRelayUsageMetrics.formatRatio(cache.coverage, "%")),
       numberCell(globalThis.ClaudeRelayUsageMetrics.formatRatio(cache.reuse, "×")),
       numberCell(formatTokens(usage.output_tokens || 0)),
-      numberCell(value.unpriced ? "—" : formatUSD(value.cost_usd || 0)),
     );
+    if (showCost) row.appendChild(numberCell(value.unpriced ? "—" : formatUSD(value.cost_usd || 0)));
     body.appendChild(row);
   }
 }

@@ -38,6 +38,12 @@ type UsageBucket struct {
 	Counters    UsageCounters `json:"usage"`
 }
 
+type UsageIngressBucket struct {
+	BucketStart int64
+	Ingress     string
+	Counters    UsageCounters
+}
+
 type ModelPrice struct {
 	ID                        int64   `json:"id"`
 	ModelPattern              string  `json:"model_pattern"`
@@ -92,7 +98,11 @@ func (s *Store) insertDefaultModelPrice(ctx context.Context, price ModelPrice) e
 }
 
 func (s *Store) AddUsageBuckets(ctx context.Context, buckets []UsageBucket) error {
-	if len(buckets) == 0 {
+	return s.AddUsageBucketsWithIngress(ctx, buckets, nil)
+}
+
+func (s *Store) AddUsageBucketsWithIngress(ctx context.Context, buckets []UsageBucket, ingressBuckets []UsageIngressBucket) error {
+	if len(buckets) == 0 && len(ingressBuckets) == 0 {
 		return nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -121,10 +131,55 @@ func (s *Store) AddUsageBuckets(ctx context.Context, buckets []UsageBucket) erro
 			return fmt.Errorf("write usage batch: %w", err)
 		}
 	}
+	if len(ingressBuckets) > 0 {
+		ingressStatement, err := tx.PrepareContext(ctx, `INSERT INTO usage_ingress_hourly(
+			bucket_start,ingress,input_tokens,output_tokens,cache_creation_5m_tokens,
+			cache_creation_1h_tokens,cache_read_tokens,request_count,incomplete_count)
+			VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(bucket_start,ingress) DO UPDATE SET
+			input_tokens=input_tokens+excluded.input_tokens,output_tokens=output_tokens+excluded.output_tokens,
+			cache_creation_5m_tokens=cache_creation_5m_tokens+excluded.cache_creation_5m_tokens,
+			cache_creation_1h_tokens=cache_creation_1h_tokens+excluded.cache_creation_1h_tokens,
+			cache_read_tokens=cache_read_tokens+excluded.cache_read_tokens,
+			request_count=request_count+excluded.request_count,incomplete_count=incomplete_count+excluded.incomplete_count`)
+		if err != nil {
+			return fmt.Errorf("prepare ingress usage batch: %w", err)
+		}
+		defer ingressStatement.Close()
+		for _, bucket := range ingressBuckets {
+			c := bucket.Counters
+			if _, err := ingressStatement.ExecContext(ctx, bucket.BucketStart, bucket.Ingress,
+				c.InputTokens, c.OutputTokens, c.CacheCreation5mTokens, c.CacheCreation1hTokens,
+				c.CacheReadTokens, c.Requests, c.Incomplete); err != nil {
+				return fmt.Errorf("write ingress usage batch: %w", err)
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit usage batch: %w", err)
+		return fmt.Errorf("commit usage batches: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) UsageIngressBuckets(ctx context.Context, since int64) ([]UsageIngressBucket, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT bucket_start,ingress,input_tokens,output_tokens,
+		cache_creation_5m_tokens,cache_creation_1h_tokens,cache_read_tokens,request_count,incomplete_count
+		FROM usage_ingress_hourly WHERE bucket_start>=? ORDER BY bucket_start,ingress`, since)
+	if err != nil {
+		return nil, fmt.Errorf("query ingress usage buckets: %w", err)
+	}
+	defer rows.Close()
+	var buckets []UsageIngressBucket
+	for rows.Next() {
+		var bucket UsageIngressBucket
+		c := &bucket.Counters
+		if err := rows.Scan(&bucket.BucketStart, &bucket.Ingress, &c.InputTokens, &c.OutputTokens,
+			&c.CacheCreation5mTokens, &c.CacheCreation1hTokens, &c.CacheReadTokens,
+			&c.Requests, &c.Incomplete); err != nil {
+			return nil, fmt.Errorf("scan ingress usage bucket: %w", err)
+		}
+		buckets = append(buckets, bucket)
+	}
+	return buckets, rows.Err()
 }
 
 func (s *Store) UsageBuckets(ctx context.Context, since int64) ([]UsageBucket, error) {
@@ -239,6 +294,9 @@ func (s *Store) ClearUsageAccounting(ctx context.Context) error {
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_hourly`); err != nil {
 		return fmt.Errorf("clear usage accounting: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_ingress_hourly`); err != nil {
+		return fmt.Errorf("clear ingress usage accounting: %w", err)
 	}
 	return tx.Commit()
 }

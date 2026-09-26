@@ -84,7 +84,7 @@ type CooldownMatch struct {
 	Reason string
 }
 
-const schemaVersion = 11
+const schemaVersion = 12
 
 type Store struct {
 	db *sql.DB
@@ -206,6 +206,19 @@ func (s *Store) initialize(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS usage_hourly_account_time_idx ON usage_hourly(account_id,bucket_start)`,
 		`CREATE INDEX IF NOT EXISTS usage_hourly_time_idx ON usage_hourly(bucket_start)`,
+		`CREATE TABLE IF NOT EXISTS usage_ingress_hourly (
+			bucket_start INTEGER NOT NULL,
+			ingress TEXT NOT NULL,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_5m_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+			request_count INTEGER NOT NULL DEFAULT 0,
+			incomplete_count INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(bucket_start, ingress)
+		)`,
+		`CREATE INDEX IF NOT EXISTS usage_ingress_hourly_time_idx ON usage_ingress_hourly(bucket_start)`,
 		`CREATE TABLE IF NOT EXISTS refusal_hourly (
 			bucket_start INTEGER NOT NULL,
 			account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -373,6 +386,13 @@ func (s *Store) initialize(ctx context.Context) error {
 		// Prompt text, response content, and the upstream explanation are never
 		// stored.
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=11`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	if version < 12 {
+		// Ingress-group cache coverage starts at the migration boundary because
+		// historical usage rows do not retain the API key group that served them.
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=12`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}

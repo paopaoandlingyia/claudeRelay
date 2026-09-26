@@ -125,6 +125,9 @@ The console is a single dense screen with four sections:
   A policy refusal is marked separately even when Anthropic returns HTTP 200; it is not counted as a
   transport failure.
 - **用量** — hourly token/API-price totals plus current and explicitly exhausted five-hour windows.
+  The usage view also compares Token cache coverage by API ingress group (`compatible`,
+  `experimental`, and `official`). Ingress-group rows begin at the schema migration boundary;
+  older hourly rows cannot be attributed to an API key group.
   Window rows expand into per-model input, 5m/1h cache creation, cache-read, output, and API-price
   composition. The long-term observation data can be exported as ZIP/CSV or cleared independently.
 - **接入** — the relay endpoint, all configured ingress API keys, copy-ready Claude Code / PowerShell / curl

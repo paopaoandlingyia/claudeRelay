@@ -68,7 +68,7 @@ func TestSchemaV10MigratesRefusalObservationTable(t *testing.T) {
 	if err := database.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='refusal_hourly'`).Scan(&tableCount); err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || tableCount != 1 {
+	if version != schemaVersion || tableCount != 1 {
 		t.Fatalf("version=%d refusal_hourly tables=%d", version, tableCount)
 	}
 }

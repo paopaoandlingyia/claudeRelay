@@ -18,6 +18,11 @@ type bucketKey struct {
 	model       string
 }
 
+type ingressBucketKey struct {
+	bucketStart int64
+	ingress     string
+}
+
 type refusalBucketKey struct {
 	bucketStart int64
 	accountID   int64
@@ -34,6 +39,7 @@ type Manager struct {
 	flushMu         sync.Mutex
 	mu              sync.Mutex
 	pending         map[bucketKey]store.UsageCounters
+	pendingIngress  map[ingressBucketKey]store.UsageCounters
 	pendingEvents   []store.FiveHourEvent
 	pendingRefusals map[refusalBucketKey]pendingRefusal
 }
@@ -54,6 +60,7 @@ func NewManager(database *store.Store) *Manager {
 	return &Manager{
 		store:           database,
 		pending:         make(map[bucketKey]store.UsageCounters),
+		pendingIngress:  make(map[ingressBucketKey]store.UsageCounters),
 		pendingRefusals: make(map[refusalBucketKey]pendingRefusal),
 	}
 }
@@ -79,7 +86,7 @@ func (m *Manager) RecordRefusal(accountID int64, at time.Time, refusal Refusal) 
 	m.mu.Unlock()
 }
 
-func (m *Manager) Record(accountID int64, model string, at time.Time, usage Usage, fiveHour FiveHourContext) {
+func (m *Manager) Record(accountID int64, model, ingress string, at time.Time, usage Usage, fiveHour FiveHourContext) {
 	if m == nil || accountID <= 0 {
 		return
 	}
@@ -100,6 +107,10 @@ func (m *Manager) Record(accountID int64, model string, at time.Time, usage Usag
 		current := m.pending[key]
 		current.Add(delta)
 		m.pending[key] = current
+		ingressKey := ingressBucketKey{bucketStart: key.bucketStart, ingress: ingress}
+		ingressCurrent := m.pendingIngress[ingressKey]
+		ingressCurrent.Add(delta)
+		m.pendingIngress[ingressKey] = ingressCurrent
 	}
 	if fiveHour.EventKey != "" {
 		observedAt := fiveHour.ObservedAt
@@ -156,12 +167,14 @@ func (m *Manager) Flush(ctx context.Context) error {
 	m.mu.Lock()
 	batch := m.pending
 	m.pending = make(map[bucketKey]store.UsageCounters)
+	ingressBatch := m.pendingIngress
+	m.pendingIngress = make(map[ingressBucketKey]store.UsageCounters)
 	events := m.pendingEvents
 	m.pendingEvents = nil
 	refusals := m.pendingRefusals
 	m.pendingRefusals = make(map[refusalBucketKey]pendingRefusal)
 	m.mu.Unlock()
-	if len(batch) == 0 && len(events) == 0 && len(refusals) == 0 {
+	if len(batch) == 0 && len(ingressBatch) == 0 && len(events) == 0 && len(refusals) == 0 {
 		return nil
 	}
 	if err := m.store.AddFiveHourEvents(ctx, events); err != nil {
@@ -180,12 +193,22 @@ func (m *Manager) Flush(ctx context.Context) error {
 	for key, counters := range batch {
 		buckets = append(buckets, store.UsageBucket{BucketStart: key.bucketStart, AccountID: key.accountID, Model: key.model, Counters: counters})
 	}
-	if err := m.store.AddUsageBuckets(ctx, buckets); err != nil {
+	ingressBuckets := make([]store.UsageIngressBucket, 0, len(ingressBatch))
+	for key, counters := range ingressBatch {
+		ingressBuckets = append(ingressBuckets, store.UsageIngressBucket{BucketStart: key.bucketStart, Ingress: key.ingress, Counters: counters})
+	}
+	if err := m.store.AddUsageBucketsWithIngress(ctx, buckets, ingressBuckets); err != nil {
 		m.mu.Lock()
+		m.pendingEvents = append(events, m.pendingEvents...)
 		for key, counters := range batch {
 			current := m.pending[key]
 			current.Add(counters)
 			m.pending[key] = current
+		}
+		for key, counters := range ingressBatch {
+			current := m.pendingIngress[key]
+			current.Add(counters)
+			m.pendingIngress[key] = current
 		}
 		m.restoreRefusalsLocked(refusals)
 		m.mu.Unlock()
@@ -224,6 +247,7 @@ func (m *Manager) Clear(ctx context.Context) error {
 	defer m.flushMu.Unlock()
 	m.mu.Lock()
 	m.pending = make(map[bucketKey]store.UsageCounters)
+	m.pendingIngress = make(map[ingressBucketKey]store.UsageCounters)
 	m.mu.Unlock()
 	return m.store.ClearUsageAccounting(ctx)
 }

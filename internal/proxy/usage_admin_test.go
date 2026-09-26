@@ -55,7 +55,8 @@ func TestRelayUsageFlowsIntoDashboardAndFiveHourWindowWithoutChangingSSE(t *test
 	if err := json.Unmarshal(admin.Body.Bytes(), &dashboard); err != nil {
 		t.Fatal(err)
 	}
-	if dashboard.Totals.CostUSD <= 0 || len(dashboard.ByModel) != 1 {
+	if dashboard.Totals.CostUSD <= 0 || len(dashboard.ByModel) != 1 || len(dashboard.ByIngress) != 1 ||
+		dashboard.ByIngress[0].Ingress != ingressCompatible || dashboard.ByIngress[0].Usage.CacheReadTokens != 50 {
 		t.Fatalf("dashboard=%+v", dashboard)
 	}
 	if len(dashboard.FiveHourCurrent) != 1 || dashboard.FiveHourCurrent[0].EventCount != 1 ||

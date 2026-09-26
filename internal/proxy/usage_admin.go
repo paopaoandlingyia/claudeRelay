@@ -12,6 +12,7 @@ import (
 
 type valuedUsage struct {
 	Account  string              `json:"account,omitempty"`
+	Ingress  string              `json:"ingress,omitempty"`
 	Model    string              `json:"model,omitempty"`
 	Usage    store.UsageCounters `json:"usage"`
 	CostUSD  float64             `json:"cost_usd"`
@@ -42,6 +43,7 @@ type usageDashboardResponse struct {
 	Totals            valuedUsage                    `json:"totals"`
 	ByModel           []valuedUsage                  `json:"by_model"`
 	ByAccount         []valuedUsage                  `json:"by_account"`
+	ByIngress         []valuedUsage                  `json:"by_ingress"`
 	UnpricedModels    []string                       `json:"unpriced_models"`
 	FiveHourCurrent   []fiveHourWindowUsage          `json:"five_hour_current"`
 	FiveHourExhausted []fiveHourWindowUsage          `json:"five_hour_exhausted"`
@@ -68,12 +70,17 @@ func (s *Server) usageDashboard(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "api_error", "failed to query usage")
 		return
 	}
+	ingressBuckets, err := s.store.UsageIngressBuckets(r.Context(), from)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to query ingress usage")
+		return
+	}
 	prices, err := s.store.ModelPrices(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "api_error", "failed to query model prices")
 		return
 	}
-	response := buildUsageDashboard(buckets, prices, from, now.Unix())
+	response := buildUsageDashboard(buckets, ingressBuckets, prices, from, now.Unix())
 	current, err := s.store.FiveHourWindows(r.Context(), false, now.UnixMilli(), 100)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "api_error", "failed to query current five-hour windows")
@@ -95,11 +102,12 @@ func (s *Server) usageDashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func buildUsageDashboard(buckets []store.UsageBucket, prices []store.ModelPrice, from, to int64) usageDashboardResponse {
+func buildUsageDashboard(buckets []store.UsageBucket, ingressBuckets []store.UsageIngressBucket, prices []store.ModelPrice, from, to int64) usageDashboardResponse {
 	byModel := make(map[string]*valuedUsage)
 	byAccount := make(map[string]*valuedUsage)
+	byIngress := make(map[string]*valuedUsage)
 	unpriced := make(map[string]bool)
-	response := usageDashboardResponse{From: from * 1000, To: to * 1000, ByModel: []valuedUsage{}, ByAccount: []valuedUsage{}, UnpricedModels: []string{}, FiveHourCurrent: []fiveHourWindowUsage{}, FiveHourExhausted: []fiveHourWindowUsage{}}
+	response := usageDashboardResponse{From: from * 1000, To: to * 1000, ByModel: []valuedUsage{}, ByAccount: []valuedUsage{}, ByIngress: []valuedUsage{}, UnpricedModels: []string{}, FiveHourCurrent: []fiveHourWindowUsage{}, FiveHourExhausted: []fiveHourWindowUsage{}}
 	for _, bucket := range buckets {
 		price, priced := matchingPrice(prices, bucket.Model, bucket.BucketStart)
 		cost := 0.0
@@ -128,12 +136,24 @@ func buildUsageDashboard(buckets []store.UsageBucket, prices []store.ModelPrice,
 		account.CostUSD += cost
 		account.Unpriced = account.Unpriced || !priced
 	}
+	for _, bucket := range ingressBuckets {
+		ingress := byIngress[bucket.Ingress]
+		if ingress == nil {
+			ingress = &valuedUsage{Ingress: bucket.Ingress}
+			byIngress[bucket.Ingress] = ingress
+		}
+		ingress.Usage.Add(bucket.Counters)
+	}
 	for _, value := range byModel {
 		response.ByModel = append(response.ByModel, *value)
 	}
 	for _, value := range byAccount {
 		response.ByAccount = append(response.ByAccount, *value)
 	}
+	for _, value := range byIngress {
+		response.ByIngress = append(response.ByIngress, *value)
+	}
+	sort.Slice(response.ByIngress, func(i, j int) bool { return response.ByIngress[i].Ingress < response.ByIngress[j].Ingress })
 	for model := range unpriced {
 		response.UnpricedModels = append(response.UnpricedModels, model)
 	}

@@ -233,6 +233,10 @@
         </div>
         <p class="cache-stats-note">缓存覆盖率按缓存读取 ÷（普通输入＋缓存写入＋缓存读取）计算。复用倍数受所选时间范围边界影响：读取可能来自范围开始前创建的缓存，写入也可能在范围结束后才被复用。</p>
         <div id="usageUnpriced" class="usage-warning hidden"></div>
+        <div class="card usage-card">
+          <div class="usage-card-head"><div><h3>按接入分组</h3><small>只统计改版后新请求；用于比较不同 API key 通道的 Token 缓存覆盖率</small></div></div>
+          <div class="table-wrap"><table class="grid usage-table"><thead><tr><th>接入分组</th><th class="col-number">请求</th><th class="col-number">输入</th><th class="col-number">缓存写入</th><th class="col-number">缓存读取</th><th class="col-number">覆盖率</th><th class="col-number">复用</th><th class="col-number">输出</th></tr></thead><tbody id="usageIngressBody"></tbody></table></div>
+        </div>
         <div class="usage-grid">
           <div class="card usage-card">
             <div class="usage-card-head"><div><h3>按模型</h3><small>原始 usage 与 API 标价估值</small></div></div>
