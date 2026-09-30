@@ -84,7 +84,7 @@ type CooldownMatch struct {
 	Reason string
 }
 
-const schemaVersion = 12
+const schemaVersion = 13
 
 type Store struct {
 	db *sql.DB
@@ -276,6 +276,11 @@ func (s *Store) initialize(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS five_hour_events_window_idx ON five_hour_events(account_id,resets_at,observed_at)`,
 		`CREATE INDEX IF NOT EXISTS five_hour_events_observed_idx ON five_hour_events(observed_at)`,
+		`CREATE TABLE IF NOT EXISTS runtime_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -396,9 +401,47 @@ func (s *Store) initialize(ctx context.Context) error {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}
+	if version < 13 {
+		// Runtime settings are persisted so administrative policy changes survive
+		// a restart without requiring a second configuration file.
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=13`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
 	refusalCutoff := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Hour).Unix()
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM refusal_hourly WHERE bucket_start<?`, refusalCutoff); err != nil {
 		return fmt.Errorf("prune refusal observations during startup: %w", err)
+	}
+	return nil
+}
+
+// RuntimeSetting reads one persisted administrative setting. A missing key is
+// reported with found=false; an empty value is still a deliberately stored value.
+func (s *Store) RuntimeSetting(ctx context.Context, key string) (value string, found bool, err error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false, fmt.Errorf("runtime setting key is required")
+	}
+	err = s.db.QueryRowContext(ctx, `SELECT value FROM runtime_settings WHERE key=?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read runtime setting %q: %w", key, err)
+	}
+	return value, true, nil
+}
+
+// SetRuntimeSetting stores one administrative setting atomically.
+func (s *Store) SetRuntimeSetting(ctx context.Context, key, value string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("runtime setting key is required")
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO runtime_settings(key,value,updated_at) VALUES(?,?,?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		key, value, time.Now().Unix()); err != nil {
+		return fmt.Errorf("write runtime setting %q: %w", key, err)
 	}
 	return nil
 }

@@ -1301,6 +1301,18 @@ function renderConnect() {
   $("runtimeMaxBytes").textContent = formatBytes(overview.max_request_bytes || 0);
   $("runtimeLogSize").textContent = `${overview.requests?.capacity ?? 0} 条`;
   $("runtimeStarted").textContent = overview.started_at ? new Date(overview.started_at).toLocaleString() : "—";
+  const minVersion = $("officialMinVersion");
+  const maxVersion = $("officialMaxVersion");
+  if (minVersion && document.activeElement !== minVersion) minVersion.value = overview.official_min_cli_version || "";
+  if (maxVersion && document.activeElement !== maxVersion) maxVersion.value = overview.official_max_cli_version || "";
+
+  const probeSwitch = $("a6APIProbesSwitch");
+  const probesAllowed = overview.allow_a6api_probes;
+  if (!probeSwitch.disabled) {
+    probeSwitch.textContent = probesAllowed ? "已开启" : "已关闭";
+    probeSwitch.className = probesAllowed ? "btn btn-primary" : "btn";
+    probeSwitch.setAttribute("aria-checked", String(probesAllowed));
+  }
 
   const quotaAware = overview.routing_policy === "quota_aware";
   const badge = $("routingPolicyBadge");
@@ -1312,6 +1324,45 @@ function renderConnect() {
   const policyButton = $("routingPolicyButton");
   policyButton.textContent = quotaAware ? "恢复现有策略" : "启用额度优先";
   policyButton.className = quotaAware ? "btn" : "btn btn-primary";
+}
+
+async function toggleA6APIProbes(element) {
+  const enabled = !state.overview.allow_a6api_probes;
+  setBusy(element, true, "保存中");
+  try {
+    const result = await api("/admin/v1/official/a6api-probes", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    state.overview.allow_a6api_probes = result.allow_a6api_probes;
+    showToast(result.allow_a6api_probes ? "探测放行已开启" : "探测放行已关闭");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    setBusy(element, false);
+    renderConnect();
+  }
+}
+
+async function saveOfficialVersionBounds(element) {
+  const minVersion = $("officialMinVersion").value.trim();
+  const maxVersion = $("officialMaxVersion").value.trim();
+  setBusy(element, true, "保存中");
+  $("officialVersionError").textContent = "";
+  try {
+    const result = await api("/admin/v1/official/version-bounds", {
+      method: "POST",
+      body: JSON.stringify({ min_version: minVersion, max_version: maxVersion }),
+    });
+    state.overview.official_min_cli_version = result.official_min_cli_version || "";
+    state.overview.official_max_cli_version = result.official_max_cli_version || "";
+    showToast("Official 版本限制已保存");
+    renderConnect();
+  } catch (error) {
+    $("officialVersionError").textContent = error.message;
+  } finally {
+    setBusy(element, false);
+  }
 }
 
 async function toggleRoutingPolicy(element) {
@@ -2097,6 +2148,8 @@ $("toggleRelayKey").addEventListener("click", () => {
   renderConnect();
 });
 $("routingPolicyButton").addEventListener("click", (event) => toggleRoutingPolicy(event.currentTarget));
+$("saveOfficialVersionButton").addEventListener("click", (event) => saveOfficialVersionBounds(event.currentTarget));
+$("a6APIProbesSwitch").addEventListener("click", (event) => toggleA6APIProbes(event.currentTarget));
 $("copyRelayKey").addEventListener("click", () => copyText(state.overview?.relay_api_key, "中转密钥已复制"));
 $("copyExperimentalKey").addEventListener("click", () => copyText(state.overview?.experimental_api_key, "实验入口密钥已复制"));
 $("copyOfficialKey").addEventListener("click", () => copyText(state.overview?.official_api_key, "Official 入口密钥已复制"));

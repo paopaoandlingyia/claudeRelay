@@ -284,7 +284,7 @@
               <button id="copyOfficialKey" class="btn btn-inline" type="button">复制</button>
             </div>
           </div>
-          <p class="note">Official 入口仅接受识别为 Claude Code 的请求，可以使用任意账号；两个兼容入口都只能使用共享账号。保真入口不做可选协议改写，实验入口会执行工具名等实验性适配。</p>
+          <p class="note">Official 入口默认仅接受识别为 Claude Code 的请求，可以使用任意账号；两个兼容入口都只能使用共享账号。保真入口不做可选协议改写，实验入口会执行工具名等实验性适配。</p>
         </div>
 
         <div class="card">
@@ -314,6 +314,28 @@
             <div><dt>请求记录容量</dt><dd id="runtimeLogSize">—</dd></div>
             <div><dt>启动时间</dt><dd id="runtimeStarted">—</dd></div>
           </dl>
+        </div>
+
+        <div class="card official-version-card">
+          <h3>Official 版本限制</h3>
+          <p class="note">只影响 Official 入口。根据下游 <code class="mono">claude-cli/x.y.z</code> User-Agent 校验；留空表示不限制。</p>
+          <div class="form-grid">
+            <label for="officialMinVersion">最低版本</label>
+            <input id="officialMinVersion" class="mono" type="text" inputmode="numeric" placeholder="例如 2.1.280" autocomplete="off">
+            <label for="officialMaxVersion">最高版本</label>
+            <input id="officialMaxVersion" class="mono" type="text" inputmode="numeric" placeholder="留空表示不限" autocomplete="off">
+          </div>
+          <button id="saveOfficialVersionButton" class="btn btn-primary" type="button">保存版本限制</button>
+          <p id="officialVersionError" class="form-error" role="alert"></p>
+        </div>
+
+        <div class="card">
+          <div class="routing-policy-head">
+            <h3>A6API 探测放行</h3>
+            <button id="a6APIProbesSwitch" class="btn" type="button" role="switch" aria-checked="false" aria-label="A6API 探测放行" aria-describedby="a6APIProbesDescription">已关闭</button>
+          </div>
+          <p id="a6APIProbesDescription" class="note">开启后，携带非空 X-A6API-Probe-Id 的 Official 请求跳过 CC 格式和版本检查，仍需有效密钥并真实调用上游。持有密钥的调用方均可添加此标记。</p>
+          <p class="note">默认关闭，切换立即生效，重启后保留。</p>
         </div>
 
         <div class="card routing-policy-card">

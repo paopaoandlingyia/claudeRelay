@@ -434,3 +434,19 @@ fall back to the compatible behaviour — assigning callers to the right group i
 Conversely, neither compatible policy consumes an `official` account even when it supplies an
 account alias. The relay never falls back from the stable compatible policy to experimental
 transforms.
+
+For temporary A6API platform health probes, toggle **A6API 探测放行** in the WebUI's
+**接入** panel. Changes apply immediately and persist across restarts; the default is
+disabled. On the authenticated official ingress only, a nonblank
+`X-A6API-Probe-Id` skips Claude Code shape and CLI version checks. Classification remains
+unchanged, each exception emits a warning without credentials or raw header values, and the
+request still calls the real upstream using the official ingress account pool. The marker
+does not authenticate the platform: any caller with an official ingress key can supply it.
+Turn the switch off when the temporary exception is no longer needed.
+In the New API channel header overrides, add
+`"X-A6API-Probe-Id": "{client_header:X-A6API-Probe-Id}"` to forward the original marker.
+
+The WebUI's `接入` panel can optionally set minimum and maximum Claude Code CLI versions for the
+official ingress. The bounds are persisted in SQLite and apply immediately; an empty bound means
+unrestricted. The relay compares the version in the downstream `claude-cli/x.y.z` User-Agent and
+leaves compatible and experimental ingress behavior unchanged.

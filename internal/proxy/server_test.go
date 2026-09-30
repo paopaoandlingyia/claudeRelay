@@ -351,6 +351,166 @@ func TestOfficialIngressRejectsNonClaudeCodeShape(t *testing.T) {
 	}
 }
 
+func TestA6APIProbeSwitchAppliesImmediatelyAndPersists(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	if server.allowA6APIProbes.Load() {
+		t.Fatal("probe exception did not default to disabled")
+	}
+	for _, enabled := range []bool{true, false} {
+		response := adminRequest(t, server, http.MethodPost, "/admin/v1/official/a6api-probes",
+			`{"enabled":`+strconv.FormatBool(enabled)+`}`)
+		if response.Code != http.StatusOK {
+			t.Fatalf("toggle status = %d: %s", response.Code, response.Body.String())
+		}
+		overview := adminRequest(t, server, http.MethodGet, "/admin/v1/overview", "")
+		if overview.Code != http.StatusOK || !strings.Contains(overview.Body.String(), `"allow_a6api_probes":`+strconv.FormatBool(enabled)) {
+			t.Fatal("overview did not expose saved switch state")
+		}
+		// Construct another server over the same store to exercise restart loading.
+		restarted, err := NewServer(server.cfg, server.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, instance := range []*Server{server, restarted} {
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages",
+				strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`))
+			request.Header.Set("x-api-key", "official-downstream-key")
+			request.Header.Set("X-A6API-Probe-Id", "probe-1")
+			recorder := httptest.NewRecorder()
+			instance.routes().ServeHTTP(recorder, request)
+			want := http.StatusForbidden
+			if enabled {
+				want = http.StatusOK
+			}
+			if recorder.Code != want {
+				t.Fatalf("enabled=%v: probe status=%d, want %d", enabled, recorder.Code, want)
+			}
+		}
+	}
+}
+
+func TestA6APIProbeSwitchRejectsInvalidAndUnauthorizedChanges(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, "https://upstream.invalid", 4096)
+	for _, body := range []string{`{}`, `{"enabled":null}`, `{"enabled":"true"}`, `{"enabled":true,"unknown":1}`} {
+		recorder := adminRequest(t, server, http.MethodPost, "/admin/v1/official/a6api-probes", body)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("invalid toggle %s: status = %d", body, recorder.Code)
+		}
+	}
+	for _, key := range []string{"", "wrong-key", "official-downstream-key", "downstream-key"} {
+		request := httptest.NewRequest(http.MethodPost, "/admin/v1/official/a6api-probes", strings.NewReader(`{"enabled":true}`))
+		request.Header.Set("x-api-key", key)
+		recorder := httptest.NewRecorder()
+		server.routes().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("non-admin toggle status = %d", recorder.Code)
+		}
+	}
+	if server.allowA6APIProbes.Load() {
+		t.Fatal("rejected request changed switch state")
+	}
+	// Failed persistence must not enable admission, and corrupt stored settings
+	// must fail startup rather than silently restore a permissive policy.
+	if err := server.store.SetRuntimeSetting(t.Context(), a6APIProbeSetting, "invalid"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewServer(server.cfg, server.store); err == nil {
+		t.Fatal("startup accepted corrupt probe policy")
+	}
+	if err := server.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := adminRequest(t, server, http.MethodPost, "/admin/v1/official/a6api-probes", `{"enabled":true}`)
+	if recorder.Code != http.StatusInternalServerError || server.allowA6APIProbes.Load() {
+		t.Fatal("failed persistence enabled probe admission")
+	}
+}
+
+func TestOfficialIngressA6APIProbeException(t *testing.T) {
+	t.Parallel()
+	const body = `{"model":"claude-test","messages":[{"role":"user","content":"hi"}]}`
+	tests := []struct {
+		name       string
+		enabled    bool
+		probeID    string
+		key        string
+		response   int
+		wantStatus int
+	}{
+		{name: "disabled by default", probeID: "probe-1", key: "official-downstream-key", wantStatus: http.StatusForbidden},
+		{name: "missing marker", enabled: true, key: "official-downstream-key", wantStatus: http.StatusForbidden},
+		{name: "blank marker", enabled: true, probeID: " \t", key: "official-downstream-key", wantStatus: http.StatusForbidden},
+		{name: "missing key", enabled: true, probeID: "probe-1", wantStatus: http.StatusUnauthorized},
+		{name: "invalid key", enabled: true, probeID: "probe-1", key: "wrong-key", wantStatus: http.StatusUnauthorized},
+		{name: "admin key is not an ingress key", enabled: true, probeID: "probe-1", key: "admin-key", wantStatus: http.StatusUnauthorized},
+		{name: "authenticated probe reaches upstream", enabled: true, probeID: "probe-1", key: "official-downstream-key", response: http.StatusOK, wantStatus: http.StatusOK},
+		{name: "upstream rejection stays a rejection", enabled: true, probeID: "probe-1", key: "official-downstream-key", response: http.StatusForbidden, wantStatus: http.StatusForbidden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				raw, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				var forwarded struct {
+					Model    string `json:"model"`
+					Messages []struct {
+						Role    string `json:"role"`
+						Content string `json:"content"`
+					} `json:"messages"`
+				}
+				// Existing relay attribution may add metadata/system fields; the
+				// probe's model and conversation must still reach the real upstream.
+				if err := json.Unmarshal(raw, &forwarded); err != nil {
+					t.Error(err)
+				}
+				if forwarded.Model != "claude-test" || len(forwarded.Messages) != 1 ||
+					forwarded.Messages[0].Role != "user" || forwarded.Messages[0].Content != "hi" {
+					t.Errorf("probe conversation changed: %s", raw)
+				}
+				w.WriteHeader(tc.response)
+				_, _ = io.WriteString(w, `{"error":{"type":"permission_error","message":"upstream rejected probe"}}`)
+			}))
+			defer upstream.Close()
+			server := newTestServer(t, upstream.URL, 4096)
+			server.allowA6APIProbes.Store(tc.enabled)
+			// Real probes lack a CLI version and must bypass the version bounds too.
+			server.officialVersion.set(officialVersionBounds{Min: "2.1.280"})
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+			request.Header.Set("x-api-key", tc.key)
+			request.Header.Set("X-A6API-Probe-Id", tc.probeID)
+			request.Header.Set("anthropic-version", "2023-06-01")
+			recorder := httptest.NewRecorder()
+			server.routes().ServeHTTP(recorder, request)
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+			wantCalls := 0
+			if tc.response != 0 {
+				wantCalls = 1
+			}
+			if calls != wantCalls {
+				t.Fatalf("upstream calls = %d, want %d", calls, wantCalls)
+			}
+			if tc.wantStatus != http.StatusUnauthorized {
+				records := server.metrics.Recent(1)
+				if len(records) != 1 || records[0].Ingress != ingressOfficial || records[0].ClientClass != clientClassAmbiguous {
+					t.Fatalf("probe classification was not preserved: %#v", records)
+				}
+			}
+		})
+	}
+}
+
 func TestOfficialIngressClassifiesClaudeCodeRequestKinds(t *testing.T) {
 	t.Parallel()
 	upstreamCalls := 0

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,23 +31,27 @@ var allowedPaths = map[string]struct{}{
 }
 
 const missingUsageWarningInterval = 5 * time.Minute
+const a6APIProbeSetting = "allow_a6api_probes"
 
 type Server struct {
-	cfg             config.Config
-	store           *store.Store
-	selector        accountSelector
-	load            *accountLoadTracker
-	countTokensLoad *accountLoadTracker
-	upstream        *url.URL
-	httpServer      *http.Server
-	client          *http.Client
-	oauth           *claudeoauth.Client
-	tokens          *tokenManager
-	metrics         *metrics.Recorder
-	usage           *accountUsageManager
-	accounting      *accounting.Manager
-	sampler         *subscriptionSampler
-	routingPolicy   *routingPolicyState
+	cfg              config.Config
+	store            *store.Store
+	selector         accountSelector
+	load             *accountLoadTracker
+	countTokensLoad  *accountLoadTracker
+	upstream         *url.URL
+	httpServer       *http.Server
+	client           *http.Client
+	oauth            *claudeoauth.Client
+	tokens           *tokenManager
+	metrics          *metrics.Recorder
+	usage            *accountUsageManager
+	accounting       *accounting.Manager
+	sampler          *subscriptionSampler
+	routingPolicy    *routingPolicyState
+	officialVersion  *officialVersionPolicy
+	allowA6APIProbes atomic.Bool
+	a6APIProbeMu     sync.Mutex // Serialize persistence and publication of admin changes.
 	// missingUsageWarningAt rate-limits diagnostics for successful Messages
 	// responses whose decoded body did not contain Anthropic usage metadata.
 	missingUsageWarningAt atomic.Int64
@@ -74,6 +79,10 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	}
 	if cfg.MaxActiveSessionsPerAccount < 1 {
 		return nil, fmt.Errorf("config max_active_sessions_per_account must be positive")
+	}
+	officialVersion, err := loadOfficialVersionPolicy(database)
+	if err != nil {
+		return nil, err
 	}
 	upstream, err := url.Parse(cfg.UpstreamBaseURL)
 	if err != nil {
@@ -106,15 +115,27 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 			sampler:                       sampler,
 			policy:                        routingPolicy,
 		},
-		upstream:      upstream,
-		client:        &http.Client{Transport: transport},
-		oauth:         oauthClient,
-		metrics:       metrics.New(cfg.RequestLogSize),
-		sampler:       sampler,
-		routingPolicy: routingPolicy,
-		startedAt:     time.Now(),
+		upstream:        upstream,
+		client:          &http.Client{Transport: transport},
+		oauth:           oauthClient,
+		metrics:         metrics.New(cfg.RequestLogSize),
+		sampler:         sampler,
+		routingPolicy:   routingPolicy,
+		officialVersion: officialVersion,
+		startedAt:       time.Now(),
 	}
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
+	probeValue, probeFound, err := database.RuntimeSetting(context.Background(), a6APIProbeSetting)
+	if err != nil {
+		return nil, err
+	}
+	if probeFound {
+		allowed, err := strconv.ParseBool(probeValue)
+		if err != nil {
+			return nil, fmt.Errorf("decode persisted A6API probe setting: %w", err)
+		}
+		server.allowA6APIProbes.Store(allowed)
+	}
 	server.usage = newAccountUsageManager(database, server.tokens, server.client, upstream)
 	server.accounting = accounting.NewManager(database)
 	server.httpServer = &http.Server{
@@ -170,6 +191,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.forward)
 	mux.HandleFunc("GET /admin/v1/overview", s.overview)
 	mux.HandleFunc("POST /admin/v1/routing/policy", s.setRoutingPolicy)
+	mux.HandleFunc("POST /admin/v1/official/version-bounds", s.setOfficialVersionBounds)
+	mux.HandleFunc("POST /admin/v1/official/a6api-probes", s.setA6APIProbes)
 	mux.HandleFunc("GET /admin/v1/requests", s.listRequests)
 	mux.HandleFunc("GET /admin/v1/accounts", s.listAccounts)
 	mux.HandleFunc("POST /admin/v1/accounts/import", s.importAccount)
@@ -340,10 +363,28 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		AnthropicBeta:      route.Client.Evidence.AnthropicBeta,
 		AnthropicVersion:   route.Client.Evidence.AnthropicVersion,
 	}
-	if ingress.RequireClaudeCode && route.Client.Class != clientClassCCCandidate {
+	// A6API sends non-CC health probes. This temporary, opt-in exception only
+	// applies after official-key authentication; the caller-controlled header
+	// is a marker, not proof of platform identity. Preserve the classification.
+	allowA6APIProbe := ingress.RequireClaudeCode && s.allowA6APIProbes.Load() &&
+		strings.TrimSpace(incoming.Header.Get("X-A6API-Probe-Id")) != ""
+	if allowA6APIProbe {
+		slog.Warn("temporary A6API probe admission bypasses Claude Code checks",
+			"request_id", requestID, "path", incoming.URL.Path, "ingress", ingress.Name,
+			"client_class", route.Client.Class, "client_kind", route.Client.Kind)
+	}
+	if ingress.RequireClaudeCode && !allowA6APIProbe && route.Client.Class != clientClassCCCandidate {
 		slog.Warn("rejected non-Claude-Code request on official ingress", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress.Name, "client_class", route.Client.Class, "client_kind", route.Client.Kind)
 		fail(http.StatusForbidden, "permission_error", "official ingress requires a Claude Code-shaped request")
 		return
+	}
+	if ingress.RequireClaudeCode && !allowA6APIProbe {
+		if err := s.officialVersion.check(incoming.Header.Get("User-Agent")); err != nil {
+			slog.Warn("rejected Claude Code version on official ingress", "request_id", requestID,
+				"client_version", extractClaudeCodeUAVersion(incoming.Header.Get("User-Agent")), "error", err)
+			fail(http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
 	}
 	forcedAlias := incoming.Header.Get(accountHeader)
 	excluded := make(map[int64]bool)

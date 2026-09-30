@@ -643,6 +643,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 .runtime > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; }
 .runtime dt { color: var(--muted); white-space: nowrap; }
 .runtime dd { margin: 0; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.official-version-card .note { margin: 0 0 13px; }
+.official-version-card .form-grid { display: grid; grid-template-columns: 1fr 1.4fr; align-items: center; gap: 9px 10px; margin-bottom: 13px; }
+.official-version-card .form-grid label { color: var(--muted); font-size: 11px; }
+.official-version-card input { width: 100%; }
 .routing-policy-card { grid-column: 1 / -1; }
 .routing-policy-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .routing-policy-head > div { display: flex; align-items: center; gap: 9px; }

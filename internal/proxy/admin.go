@@ -168,6 +168,9 @@ type overviewResponse struct {
 	StickySessions     int             `json:"sticky_sessions"`
 	Requests           metrics.Summary `json:"requests"`
 	RoutingPolicy      string          `json:"routing_policy"`
+	OfficialMinVersion string          `json:"official_min_cli_version,omitempty"`
+	OfficialMaxVersion string          `json:"official_max_cli_version,omitempty"`
+	AllowA6APIProbes   bool            `json:"allow_a6api_probes"`
 }
 
 type accountTotals struct {
@@ -238,6 +241,63 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		StickySessions:     sticky,
 		Requests:           s.metrics.Summary(now),
 		RoutingPolicy:      s.routingPolicy.current(),
+		OfficialMinVersion: s.officialVersion.current().Min,
+		OfficialMaxVersion: s.officialVersion.current().Max,
+		AllowA6APIProbes:   s.allowA6APIProbes.Load(),
+	})
+}
+
+func (s *Server) setA6APIProbes(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decodeAdminJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if request.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "enabled is required")
+		return
+	}
+	s.a6APIProbeMu.Lock()
+	defer s.a6APIProbeMu.Unlock()
+	if err := s.store.SetRuntimeSetting(r.Context(), a6APIProbeSetting, strconv.FormatBool(*request.Enabled)); err != nil {
+		slog.Error("persist A6API probe setting", "error", err)
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to persist A6API probe setting")
+		return
+	}
+	s.allowA6APIProbes.Store(*request.Enabled)
+	slog.Info("A6API probe admission changed", "enabled", *request.Enabled, "remote_addr", r.RemoteAddr)
+	writeJSON(w, http.StatusOK, map[string]any{"allow_a6api_probes": *request.Enabled})
+}
+
+type officialVersionBoundsRequest struct {
+	MinVersion string `json:"min_version"`
+	MaxVersion string `json:"max_version"`
+}
+
+func (s *Server) setOfficialVersionBounds(w http.ResponseWriter, r *http.Request) {
+	var request officialVersionBoundsRequest
+	if err := decodeAdminJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	request.MinVersion = strings.TrimSpace(request.MinVersion)
+	request.MaxVersion = strings.TrimSpace(request.MaxVersion)
+	if err := validateOfficialVersionBounds(request.MinVersion, request.MaxVersion); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	bounds := officialVersionBounds{Min: request.MinVersion, Max: request.MaxVersion}
+	if err := s.officialVersion.persist(r.Context(), s.store, bounds); err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to persist official CLI version bounds")
+		return
+	}
+	slog.Info("official CLI version bounds changed", "min_version", bounds.Min, "max_version", bounds.Max, "remote_addr", r.RemoteAddr)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"official_min_cli_version": bounds.Min,
+		"official_max_cli_version": bounds.Max,
+		"persistent":               true,
 	})
 }
 

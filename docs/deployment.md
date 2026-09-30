@@ -92,6 +92,11 @@ The image contains only non-secret defaults. Compose passes these supported runt
 | `CLAUDE_RELAY_AUTO_REFRESH_ENABLED` | Emergency global OAuth refresh switch | `true` |
 | `CLAUDE_RELAY_BIND_ADDRESS` | Host-side published address | `127.0.0.1` |
 
+The Official Claude Code version lower and upper bounds are configured from the WebUI under
+`接入 → Official 版本限制`. They are persisted in the relay database and take effect immediately;
+leaving either field empty disables that bound. The check uses the downstream
+`User-Agent: claude-cli/x.y.z` version and applies only to the official ingress.
+
 `CLAUDE_RELAY_BIND_ADDRESS` affects Docker's host port only. The process listens on
 `0.0.0.0:8567` inside its isolated container. On Docker Desktop, a host-side Clash proxy can
 usually be addressed as `http://host.docker.internal:7890`. On a Linux server, use a reachable
