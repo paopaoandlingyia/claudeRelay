@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,6 +20,43 @@ import (
 	"github.com/local/claude-relay/internal/credential"
 	"github.com/local/claude-relay/internal/store"
 )
+
+func TestAuthenticationDiagnosticsPreserveUpstreamResponse(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	for _, body := range []string{
+		`{"error":{"type":"authentication_error","message":"OAuth access token has been revoked. secret-access user@example.com"}}`,
+		strings.Repeat("x", 20<<10),
+	} {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, body)
+		}))
+		server := newTestServer(t, upstream.URL, 4096)
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`))
+		request.Header.Set("x-api-key", "downstream-key")
+		recorder := httptest.NewRecorder()
+		server.routes().ServeHTTP(recorder, request)
+		upstream.Close()
+		if recorder.Code != http.StatusUnauthorized || recorder.Body.String() != body {
+			t.Fatalf("upstream authentication response changed: status=%d bytes=%d", recorder.Code, recorder.Body.Len())
+		}
+		if !strings.Contains(logs.String(), "upstream authentication rejected") ||
+			strings.Contains(logs.String(), "secret-access") || strings.Contains(logs.String(), "user@example.com") {
+			t.Fatalf("missing diagnostics or sensitive response leaked: %s", logs.String())
+		}
+		if len(body) < 8<<10 && !strings.Contains(logs.String(), "reason=revoked") {
+			t.Fatalf("missing revocation reason: %s", logs.String())
+		}
+		if len(body) > 8<<10 && !strings.Contains(logs.String(), "body_truncated=true") {
+			t.Fatalf("missing truncation diagnostic: %s", logs.String())
+		}
+		logs.Reset()
+	}
+}
 
 func TestForwardDecodesCompressedSSEBeforeUsageObservation(t *testing.T) {
 	t.Parallel()

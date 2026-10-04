@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -41,11 +42,7 @@ func (m *tokenManager) refreshNow(ctx context.Context, account store.Account) (s
 	if current.RefreshToken == "" {
 		return store.Account{}, fmt.Errorf("account %q cannot refresh because its refresh token is missing", current.Alias)
 	}
-	refreshed, err := m.oauth.Refresh(ctx, current.RefreshToken)
-	if err != nil {
-		return store.Account{}, fmt.Errorf("refresh account %q: %w", current.Alias, err)
-	}
-	return m.store.UpdateTokens(ctx, current.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt.Format(time.RFC3339))
+	return m.refreshAndPersist(ctx, current, "manual")
 }
 
 func (m *tokenManager) ensureFresh(ctx context.Context, selected store.Account) (store.Account, error) {
@@ -97,13 +94,27 @@ func (m *tokenManager) ensureFresh(ctx context.Context, selected store.Account) 
 	if current.RefreshToken == "" {
 		return store.Account{}, fmt.Errorf("account %q cannot refresh because its refresh token is missing", current.Alias)
 	}
+	return m.refreshAndPersist(ctx, current, "automatic")
+}
+
+// Both callers hold the account lock; success is logged only after both tokens
+// have been persisted, so the log establishes ownership of the new token chain.
+func (m *tokenManager) refreshAndPersist(ctx context.Context, current store.Account, trigger string) (store.Account, error) {
+	started := time.Now()
+	slog.Info("OAuth refresh started", "account", current.Alias, "trigger", trigger,
+		"previous_expires_at", current.ExpiresAt, "previous_refresh_at", current.LastRefreshAt)
 	refreshed, err := m.oauth.Refresh(ctx, current.RefreshToken)
 	if err != nil {
+		slog.Warn("OAuth refresh failed", "account", current.Alias, "trigger", trigger,
+			"duration_ms", time.Since(started).Milliseconds(), "error", err)
 		return store.Account{}, fmt.Errorf("refresh account %q: %w", current.Alias, err)
 	}
 	updated, err := m.store.UpdateTokens(ctx, current.ID, refreshed.AccessToken, refreshed.RefreshToken, refreshed.ExpiresAt.Format(time.RFC3339))
 	if err != nil {
+		slog.Error("persist OAuth refresh failed", "account", current.Alias, "trigger", trigger, "error", err)
 		return store.Account{}, err
 	}
+	slog.Info("OAuth refresh succeeded", "account", current.Alias, "trigger", trigger,
+		"duration_ms", time.Since(started).Milliseconds(), "expires_at", updated.ExpiresAt)
 	return updated, nil
 }

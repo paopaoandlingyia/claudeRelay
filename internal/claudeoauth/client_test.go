@@ -89,3 +89,32 @@ func TestExchangeRejectsMismatchedStateBeforeTokenRequest(t *testing.T) {
 		t.Fatal("token endpoint was called for mismatched state")
 	}
 }
+
+func TestTokenEndpointErrorDiagnosticsDoNotExposeCredentials(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"revoked", `{"error":"invalid_grant","error_description":"Refresh token has been revoked: secret-refresh user@example.com","refresh_token":"secret-refresh"}`, "code=invalid_grant reason=revoked"},
+		{"expired", `{"error":{"type":"authentication_error","message":"OAuth token has expired secret-refresh"}}`, "code=authentication_error reason=expired"},
+		{"invalid", `{"error":"invalid_grant","error_description":"Refresh token is no longer valid secret-refresh"}`, "code=invalid_grant reason=invalid_refresh_token"},
+		{"unknown", `{"error":"secret-refresh","error_description":"user@example.com"}`, "code=unknown reason=unknown"},
+		{"html", `<html>secret-refresh user@example.com</html>`, "code=unknown reason=non_json_or_incomplete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			client := NewForTest(server.Client(), "https://example.test/authorize", server.URL, "https://example.test/callback")
+			_, err := client.Refresh(t.Context(), "secret-refresh")
+			if err == nil || !strings.Contains(err.Error(), "status 400") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want status and %s", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "secret-refresh") || strings.Contains(err.Error(), "user@example.com") {
+				t.Fatalf("upstream credentials leaked: %v", err)
+			}
+		})
+	}
+}

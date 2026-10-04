@@ -241,13 +241,58 @@ func (c *Client) requestToken(ctx context.Context, payload map[string]any) (toke
 		return tokenResponse{}, fmt.Errorf("read OAuth token response: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return tokenResponse{}, fmt.Errorf("OAuth token endpoint returned status %d", response.StatusCode)
+		code, reason := ErrorDiagnostics(limited)
+		return tokenResponse{}, fmt.Errorf("OAuth token endpoint returned status %d (code=%s reason=%s)", response.StatusCode, code, reason)
 	}
 	var decoded tokenResponse
 	if err := json.Unmarshal(limited, &decoded); err != nil {
 		return tokenResponse{}, fmt.Errorf("decode OAuth token response: %w", err)
 	}
 	return decoded, nil
+}
+
+// ErrorDiagnostics extracts only known categories from third-party error bodies.
+// Never log free-form upstream text: it can echo tokens, authorization codes,
+// email addresses or other account identifiers. Unknown/malformed responses
+// remain explicit as unknown categories alongside their HTTP status.
+func ErrorDiagnostics(body []byte) (code, reason string) {
+	var envelope struct {
+		Error       json.RawMessage `json:"error"`
+		Description string          `json:"error_description"`
+		Message     string          `json:"message"`
+	}
+	code, reason = "unknown", "unknown"
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return "unknown", "non_json_or_incomplete"
+	}
+	var rawCode string
+	var nested struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(envelope.Error, &rawCode); err != nil {
+		if err := json.Unmarshal(envelope.Error, &nested); err == nil {
+			rawCode = nested.Type
+		}
+	}
+	switch rawCode {
+	case "invalid_request", "invalid_client", "invalid_grant", "unauthorized_client", "unsupported_grant_type", "invalid_scope", "access_denied", "server_error", "temporarily_unavailable", "authentication_error", "permission_error", "rate_limit_error":
+		code = rawCode
+	}
+	message := strings.ToLower(envelope.Description + " " + envelope.Message + " " + nested.Message)
+	switch {
+	case strings.Contains(message, "revok"):
+		reason = "revoked"
+	case strings.Contains(message, "expired") || strings.Contains(message, "expiration"):
+		reason = "expired"
+	case strings.Contains(message, "reuse") || strings.Contains(message, "already used"):
+		reason = "token_reused"
+	case strings.Contains(message, "refresh token") && (strings.Contains(message, "invalid") || strings.Contains(message, "no longer valid")):
+		reason = "invalid_refresh_token"
+	case strings.Contains(message, "invalid") && (strings.Contains(message, "credential") || strings.Contains(message, "token")):
+		reason = "invalid_credentials"
+	}
+	return code, reason
 }
 
 func parseAuthorizationCode(value string) (code, state string, err error) {

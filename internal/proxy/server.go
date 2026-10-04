@@ -556,7 +556,12 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	}
 
 	contentType := response.Header.Get("Content-Type")
-	observer := accounting.NewObserver(response.Body, contentType)
+	var authPreview authenticationPreview
+	var responseReader io.Reader = response.Body
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		responseReader = io.TeeReader(response.Body, &authPreview)
+	}
+	observer := accounting.NewObserver(responseReader, contentType)
 	responseWriter := flushWriter{ResponseWriter: w}
 	restoreJSON := len(toolNames) > 0 && strings.Contains(strings.ToLower(contentType), "json")
 	restoreSSE := len(toolNames) > 0 && strings.Contains(strings.ToLower(contentType), "text/event-stream")
@@ -595,6 +600,14 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		slog.Info("restored experimental response tool names", "request_id", requestID,
 			"ingress", ingress.Name, "account", selected.Account.Alias, "names_changed", restoredToolNames)
 	}
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		code, reason := claudeoauth.ErrorDiagnostics(authPreview.body)
+		event.Error = fmt.Sprintf("upstream authentication rejected (code=%s reason=%s)", code, reason)
+		slog.Warn("upstream authentication rejected", "request_id", requestID, "account", selected.Account.Alias,
+			"path", incoming.URL.Path, "ingress", ingress.Name, "status", response.StatusCode,
+			"code", code, "reason", reason, "expires_at", selected.Account.ExpiresAt,
+			"last_refresh_at", selected.Account.LastRefreshAt, "body_truncated", authPreview.truncated)
+	}
 	observedUsage, servedModel, refusal := observer.Result(copyErr, route.Model)
 	if incoming.URL.Path == "/v1/messages" && refusal.Seen {
 		event.Refusal = true
@@ -632,6 +645,24 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		}
 	}
 	slog.Info("request completed", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress.Name, "account", selected.Account.Alias, "selection", selected.Source, "status", response.StatusCode, "duration_ms", time.Since(started).Milliseconds())
+}
+
+// Capture a bounded preview while forwarding the original response unchanged.
+// A large or incomplete third-party error is diagnosed as unknown, never dumped.
+type authenticationPreview struct {
+	body      []byte
+	truncated bool
+}
+
+func (p *authenticationPreview) Write(data []byte) (int, error) {
+	n := len(data)
+	remaining := (8 << 10) - len(p.body)
+	if len(data) > remaining {
+		p.truncated = true
+		data = data[:remaining]
+	}
+	p.body = append(p.body, data...)
+	return n, nil
 }
 
 func (s *Server) markFiveHourExhausted(ctx context.Context, requestID string, account store.Account,

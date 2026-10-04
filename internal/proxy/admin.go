@@ -393,6 +393,7 @@ func (s *Server) setAccountEnabled(w http.ResponseWriter, r *http.Request, enabl
 		writeError(w, http.StatusNotFound, "not_found_error", err.Error())
 		return
 	}
+	slog.Info("account activation changed", "account", account.Alias, "enabled", enabled)
 	writeJSON(w, http.StatusOK, accountResponse(account))
 }
 
@@ -676,14 +677,17 @@ func (s *Server) exchangeClaudeOAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	alias, cred, err := s.oauth.Exchange(r.Context(), strings.TrimSpace(request.SessionID), request.Code)
 	if err != nil {
+		slog.Warn("OAuth authorization exchange failed", "error", err)
 		writeError(w, http.StatusBadRequest, "authentication_error", err.Error())
 		return
 	}
 	account, err := s.store.ImportAccount(r.Context(), alias, cred)
 	if err != nil {
+		slog.Error("persist OAuth authorization failed", "account", alias, "error", err)
 		writeError(w, http.StatusConflict, "api_error", err.Error())
 		return
 	}
+	slog.Info("OAuth authorization succeeded", "account", account.Alias, "enabled", account.Enabled, "expires_at", account.ExpiresAt)
 	writeJSON(w, http.StatusCreated, accountResponse(account))
 }
 

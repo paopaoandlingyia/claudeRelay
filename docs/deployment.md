@@ -119,6 +119,23 @@ to approximately 30 MiB. Logs contain paths, ingress names, selected account ali
 sources, upstream status, duration, and errors. They do not contain prompts, request bodies, API/OAuth tokens,
 metadata identities, email addresses, or usage token counts.
 
+Authentication diagnostics additionally record OAuth authorization, account activation,
+and manual/automatic refresh attempts, including token expiry and the last successful refresh
+timestamp (Unix seconds). Refresh success is logged only after both rotated tokens are saved.
+OAuth endpoint failures include HTTP status and allowlisted error codes/reasons; model endpoint
+`401`/`403` responses generate `upstream authentication rejected` with the account and request ID.
+Reasons distinguish `revoked`, `expired`, `token_reused`, `invalid_refresh_token`, and
+`invalid_credentials`. Unknown errors remain `unknown`; malformed or incomplete JSON is marked
+`non_json_or_incomplete`. Free-form upstream error text and raw bodies are never logged. Model
+error previews are capped at 8 KiB and report `body_truncated` without changing the forwarded response.
+The console's recent request records also include these safe authentication categories.
+
+For an authentication incident, filter retained logs without rotating any credentials:
+
+```powershell
+docker compose logs --since 24h claude-relay | Select-String 'OAuth|upstream authentication rejected|account activation changed'
+```
+
 Every response carries `X-Claude-Relay-Request-ID`, and the same value appears as `request_id` in
 request-related logs. Callers may supply a value of at most 64 characters using letters, digits,
 dots, colons, underscores, and hyphens; invalid or missing values are replaced with a random ID.
