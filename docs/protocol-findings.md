@@ -71,7 +71,12 @@ does not by itself prove how Anthropic classified subscription usage.
   requests and used `cc_entrypoint=claude-desktop-3p`; none of the 26 bodies contained `cch=`.
 - **Capture:** a small Haiku helper request contained a JSON-string `metadata.user_id` with
   `device_id` and `session_id`, but an empty `account_uuid`, and no billing block.
-- **Current classification policy:** classifier v4 requires the three headers above plus non-empty
+- **Capture 2026-10-04:** Claude Code 2.1.289 used `X-App: cli-bg` for the main `/fork`
+  background-session request and its status-classification helper; foreground requests used `cli`.
+  The background main request retained structured metadata, billing attribution, and the official
+  system prompt. PrismCat captured these before New API without header or body overrides.
+- **Current classification policy:** classifier v5 accepts `X-App: cli` or `cli-bg` and requires
+  the User-Agent and session headers above plus non-empty
   `anthropic-beta` and `anthropic-version`, then applies request-type-specific body checks. Ordinary
   Messages require structured metadata and a billing block or recognized official system prompt.
   Native `count_tokens`, the observed one-token Messages count fallback, and the one-token Haiku

@@ -262,8 +262,8 @@ while a healthy account absorbed its traffic.
 
 ## 2026-07-31: client-shape classification is observable and policy-scoped
 
-The relay classifies the raw incoming request before transforming it. Version 4 first requires a
-versioned `claude-cli` User-Agent together with `X-Claude-Code-Session-Id`, `X-App: cli`,
+The relay classifies the raw incoming request before transforming it. Version 5 first requires a
+versioned `claude-cli` User-Agent together with `X-Claude-Code-Session-Id`, `X-App: cli` or `cli-bg`,
 `anthropic-beta`, and `anthropic-version`. It then distinguishes ordinary Messages, native
 `count_tokens`, the non-streaming `max_tokens: 1` Messages fallback observed after a missing count
 endpoint, and the one-token Haiku connectivity probe. Ordinary Messages additionally require valid

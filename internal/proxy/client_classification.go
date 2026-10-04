@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const clientClassificationVersion = 4
+const clientClassificationVersion = 5
 
 const (
 	clientClassCompatible  = "compatible"
@@ -78,7 +78,9 @@ func classifyClient(root map[string]any, headers http.Header, path string) clien
 	evidence.StructuredMetadata = hasStructuredMetadata(root["metadata"])
 	evidence.ClaudeUserAgent = claudeCodeUserAgentPattern.MatchString(strings.TrimSpace(headers.Get("User-Agent")))
 	evidence.ClaudeCodeSession = strings.TrimSpace(headers.Get(claudeCodeSessionHeader)) != ""
-	evidence.XAppCLI = strings.EqualFold(strings.TrimSpace(headers.Get("X-App")), "cli")
+	// Claude Code's /fork background sessions send cli-bg instead of cli.
+	xApp := strings.TrimSpace(headers.Get("X-App"))
+	evidence.XAppCLI = strings.EqualFold(xApp, "cli") || strings.EqualFold(xApp, "cli-bg")
 	evidence.AnthropicBeta = strings.TrimSpace(headers.Get("anthropic-beta")) != ""
 	evidence.AnthropicVersion = strings.TrimSpace(headers.Get("anthropic-version")) != ""
 

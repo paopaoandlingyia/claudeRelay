@@ -534,6 +534,30 @@ func TestOfficialIngressClassifiesClaudeCodeRequestKinds(t *testing.T) {
 			wantStatus: http.StatusOK, wantKind: clientKindMessages,
 		},
 		{
+			name: "background fork messages", path: "/v1/messages", body: officialClaudeCodeTestBody(),
+			mutate:     func(request *http.Request) { request.Header.Set("X-App", "cli-bg") },
+			wantStatus: http.StatusOK, wantKind: clientKindMessages,
+		},
+		{
+			name: "background fork missing beta", path: "/v1/messages", body: officialClaudeCodeTestBody(),
+			mutate: func(request *http.Request) {
+				request.Header.Set("X-App", "cli-bg")
+				request.Header.Del("anthropic-beta")
+			},
+			wantStatus: http.StatusForbidden, wantKind: clientKindAmbiguous,
+		},
+		{
+			name: "background fork missing metadata", path: "/v1/messages",
+			body:       `{"model":"claude-sonnet-5","system":"You are Claude Code, Anthropic's official CLI for Claude.","messages":[{"role":"user","content":"hi"}]}`,
+			mutate:     func(request *http.Request) { request.Header.Set("X-App", "cli-bg") },
+			wantStatus: http.StatusForbidden, wantKind: clientKindAmbiguous,
+		},
+		{
+			name: "unknown app rejects messages", path: "/v1/messages", body: officialClaudeCodeTestBody(),
+			mutate:     func(request *http.Request) { request.Header.Set("X-App", "cli-other") },
+			wantStatus: http.StatusForbidden, wantKind: clientKindAmbiguous,
+		},
+		{
 			name: "count tokens without attribution", path: "/v1/messages/count_tokens",
 			body:       `{"model":"claude-sonnet-5","messages":[],"tools":[]}`,
 			wantStatus: http.StatusOK, wantKind: clientKindCountTokens,

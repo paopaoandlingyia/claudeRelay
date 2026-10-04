@@ -277,7 +277,7 @@ Two things are marked separately. The **key** decides which request policy is ap
 authenticated by `official_api_key` must have a recognized Claude Code shape or are rejected with
 `403`; `relay_api_key` preserves third-party request semantics; and the optional
 `experimental_api_key` applies experimental compatibility transforms. Every accepted official request has a
-versioned `claude-cli/...` User-Agent, `X-Claude-Code-Session-Id`, `X-App: cli`, `anthropic-beta`,
+versioned `claude-cli/...` User-Agent, `X-Claude-Code-Session-Id`, `X-App: cli` or `cli-bg`, `anthropic-beta`,
 and `anthropic-version`. Ordinary Messages additionally require structured Claude Code metadata and
 either a billing attribution block or a recognized official system prompt. Native `count_tokens`,
 the one-token Messages fallback used after a missing count endpoint, and the one-token Haiku probe
@@ -399,7 +399,7 @@ The relay keeps the last `request_log_size` requests in a fixed-size in-memory r
 Each record holds only metadata: request ID, timestamp, ingress key, path, model, selected account, why that
 account was selected, status, duration, the account a request failed over from, and a versioned
 client-shape observation. That observation stores booleans for billing-block, structured
-metadata, known entrypoint, version, Claude User-Agent, Claude Code session header, and `X-App: cli`
+metadata, known entrypoint, version, Claude User-Agent, Claude Code session header, and `X-App: cli` or `cli-bg`
 presence plus whether the relay passed the body through or added minimal attribution. The console
 also shows whether the request used `messages` or `count_tokens`. Prompts, response bodies, raw
 headers, billing values, metadata identities, and credentials are never recorded, nothing is written
