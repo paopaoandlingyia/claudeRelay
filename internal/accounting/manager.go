@@ -185,6 +185,14 @@ func (m *Manager) Flush(ctx context.Context) error {
 			current.Add(counters)
 			m.pending[key] = current
 		}
+		// Observation persistence failed before either hourly batch was written.
+		// Restore ingress totals too so retrying cannot lose group usage while
+		// retaining the same requests in the account/model totals.
+		for key, counters := range ingressBatch {
+			current := m.pendingIngress[key]
+			current.Add(counters)
+			m.pendingIngress[key] = current
+		}
 		m.restoreRefusalsLocked(refusals)
 		m.mu.Unlock()
 		return fmt.Errorf("persist five-hour observations: %w", err)

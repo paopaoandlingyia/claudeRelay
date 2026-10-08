@@ -50,6 +50,16 @@ type FiveHourWindow struct {
 	MissingUsageCount int64
 	IncompleteCount   int64
 	ByModel           map[string]UsageCounters
+	PriceBuckets      []FiveHourPriceBucket
+}
+
+// FiveHourPriceBucket groups usage only within one observation second. Model
+// price effective times use Unix seconds, so this preserves historical pricing
+// without retaining a separate in-memory object for every request.
+type FiveHourPriceBucket struct {
+	ObservedAtSeconds int64
+	Model             string
+	Counters          UsageCounters
 }
 
 type FiveHourObservationStats struct {
@@ -165,6 +175,13 @@ func (s *Store) MarkFiveHourExhausted(ctx context.Context, event FiveHourEvent, 
 }
 
 func (s *Store) FiveHourWindows(ctx context.Context, exhausted bool, nowMillis int64, limit int) ([]FiveHourWindow, error) {
+	// Window readings and their usage must come from the same snapshot while
+	// background accounting continues to append completed requests.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin five-hour window snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 	condition := `w.exhausted_at=0 AND CAST(w.resets_at AS INTEGER)*1000>?
 		AND EXISTS (SELECT 1 FROM five_hour_events e WHERE e.account_id=w.account_id AND e.resets_at=w.resets_at AND e.kind='messages')`
 	order := `w.last_observed_at DESC`
@@ -178,7 +195,7 @@ func (s *Store) FiveHourWindows(ctx context.Context, exhausted bool, nowMillis i
 		limit = 100
 	}
 	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, `SELECT w.account_id,a.alias,w.resets_at,w.first_observed_at,
+	rows, err := tx.QueryContext(ctx, `SELECT w.account_id,a.alias,w.resets_at,w.first_observed_at,
 		w.last_observed_at,w.first_used_percent,w.last_used_percent,w.max_used_percent,
 		w.exhausted_at,w.exhaustion_reason FROM five_hour_windows w JOIN accounts a ON a.id=w.account_id
 		WHERE `+condition+` ORDER BY `+order+` LIMIT ?`, args...)
@@ -200,21 +217,25 @@ func (s *Store) FiveHourWindows(ctx context.Context, exhausted bool, nowMillis i
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 	for index := range windows {
 		window := &windows[index]
-		usageRows, err := s.db.QueryContext(ctx, `SELECT model,SUM(input_tokens),SUM(output_tokens),
+		usageRows, err := tx.QueryContext(ctx, `SELECT model,observed_at/1000,SUM(input_tokens),SUM(output_tokens),
 			SUM(cache_creation_5m_tokens),SUM(cache_creation_1h_tokens),SUM(cache_read_tokens),
 			COUNT(*),SUM(CASE WHEN usage_seen=0 THEN 1 ELSE 0 END),SUM(CASE WHEN complete=0 THEN 1 ELSE 0 END)
-			FROM five_hour_events WHERE account_id=? AND resets_at=? AND kind=? GROUP BY model`,
+			FROM five_hour_events WHERE account_id=? AND resets_at=? AND kind=?
+			GROUP BY model,observed_at/1000 ORDER BY model,observed_at/1000`,
 			window.AccountID, window.ResetsAt, FiveHourEventMessages)
 		if err != nil {
 			return nil, fmt.Errorf("query five-hour window models: %w", err)
 		}
 		for usageRows.Next() {
-			var model string
-			var counters UsageCounters
+			var bucket FiveHourPriceBucket
+			counters := &bucket.Counters
 			var missing int64
-			if err := usageRows.Scan(&model, &counters.InputTokens, &counters.OutputTokens,
+			if err := usageRows.Scan(&bucket.Model, &bucket.ObservedAtSeconds, &counters.InputTokens, &counters.OutputTokens,
 				&counters.CacheCreation5mTokens, &counters.CacheCreation1hTokens, &counters.CacheReadTokens,
 				&counters.Requests, &missing, &counters.Incomplete); err != nil {
 				_ = usageRows.Close()
@@ -223,11 +244,21 @@ func (s *Store) FiveHourWindows(ctx context.Context, exhausted bool, nowMillis i
 			window.EventCount += counters.Requests
 			window.MissingUsageCount += missing
 			window.IncompleteCount += counters.Incomplete
-			window.ByModel[model] = counters
+			total := window.ByModel[bucket.Model]
+			total.Add(*counters)
+			window.ByModel[bucket.Model] = total
+			window.PriceBuckets = append(window.PriceBuckets, bucket)
+		}
+		if err := usageRows.Err(); err != nil {
+			_ = usageRows.Close()
+			return nil, fmt.Errorf("read five-hour window usage: %w", err)
 		}
 		if err := usageRows.Close(); err != nil {
 			return nil, err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("finish five-hour window snapshot: %w", err)
 	}
 	return windows, nil
 }

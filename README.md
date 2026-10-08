@@ -203,6 +203,17 @@ as proof. The console shows actual observed API-price-equivalent value and never
 partially used window. Non-exhausted windows remain available for export but are not presented as
 complete-window calibration samples.
 
+`GET /admin/v1/usage` also exposes `api_value_by_type_usd` for totals, model/account totals,
+and five-hour windows, separating ordinary input, output, 5m writes, 1h writes, and reads.
+Five-hour values apply the model price effective at each request's quota-observation time,
+not the price at the end of the window. `observed_used_percent_delta` is the observed maximum
+minus the first utilization reading, with no extrapolation to 100%. The optional
+`api_value_usd_per_used_percent` is API-equivalent value per actual observed percentage point;
+it is omitted for zero/missing utilization, mid-window starts, missing or incomplete usage,
+or missing prices. `data_quality` flags these conditions and mixed-model windows. These are
+observation metrics, not per-action subscription weights or guaranteed profit: actions in a
+mixed window share one utilization reading and cannot be charged separate quota by this endpoint.
+
 The export is a ZIP containing `manifest.json`, `windows.csv`, `events.csv`, and
 `model_prices.csv`. Times are included as epoch values and UTC text. It contains account aliases and
 billing metadata but no UUIDs, email addresses, credentials, prompts, or response content. Five-hour

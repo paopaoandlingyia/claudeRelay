@@ -2,6 +2,7 @@ package accounting
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -11,6 +12,65 @@ import (
 	"github.com/local/claude-relay/internal/credential"
 	"github.com/local/claude-relay/internal/store"
 )
+
+func TestManagerRetriesFailedObservationsWithoutLosingIngressUsage(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	account, err := database.ImportAccount(t.Context(), "retry", credential.Credential{
+		Type: "claude", AccessToken: "test-token", AccountUUID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		DeviceID: strings.Repeat("c", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, time.October, 7, 12, 0, 0, 0, time.UTC)
+	reset := strconv.FormatInt(at.Add(4*time.Hour).Unix(), 10)
+	manager := NewManager(database)
+	manager.Record(account.ID, "claude-opus-5-5", "compatible", at, Usage{
+		Seen: true, Complete: true, InputTokens: 10, OutputTokens: 20,
+		CacheCreation5mTokens: 30, CacheCreation1hTokens: 40, CacheReadTokens: 50,
+	}, FiveHourContext{
+		EventKey: "retry-1", ResetsAt: reset, ObservedAt: at, CompletedAt: at.Add(time.Second),
+		Status: 200, UsedPercent: 20,
+	})
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := manager.Flush(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("failed flush error=%v, want context cancellation", err)
+	}
+	// New traffic joins the restored batch before the next flush.
+	manager.Record(account.ID, "claude-opus-5-5", "compatible", at.Add(time.Second), Usage{
+		Seen: true, Complete: true, InputTokens: 1, OutputTokens: 2,
+		CacheCreation5mTokens: 3, CacheCreation1hTokens: 4, CacheReadTokens: 5,
+	}, FiveHourContext{
+		EventKey: "retry-2", ResetsAt: reset, ObservedAt: at.Add(time.Second), CompletedAt: at.Add(2 * time.Second),
+		Status: 200, UsedPercent: 21,
+	})
+	for range 2 {
+		if err := manager.Flush(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := store.UsageCounters{
+		InputTokens: 11, OutputTokens: 22, CacheCreation5mTokens: 33,
+		CacheCreation1hTokens: 44, CacheReadTokens: 55, Requests: 2,
+	}
+	buckets, err := database.UsageBuckets(t.Context(), 0)
+	if err != nil || len(buckets) != 1 || buckets[0].Counters != want {
+		t.Fatalf("account usage=%+v err=%v, want %+v", buckets, err, want)
+	}
+	ingress, err := database.UsageIngressBuckets(t.Context(), 0)
+	if err != nil || len(ingress) != 1 || ingress[0].Ingress != "compatible" || ingress[0].Counters != want {
+		t.Fatalf("ingress usage=%+v err=%v, want %+v", ingress, err, want)
+	}
+	events, err := database.AllFiveHourEvents(t.Context())
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events=%+v err=%v, want two requests without duplicates", events, err)
+	}
+}
 
 func TestManagerPersistsFiveHourEventEvenWhenUsageIsMissing(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "relay.db"))

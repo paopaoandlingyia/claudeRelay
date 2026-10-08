@@ -11,30 +11,66 @@ import (
 )
 
 type valuedUsage struct {
-	Account  string              `json:"account,omitempty"`
-	Ingress  string              `json:"ingress,omitempty"`
-	Model    string              `json:"model,omitempty"`
-	Usage    store.UsageCounters `json:"usage"`
-	CostUSD  float64             `json:"cost_usd"`
-	Unpriced bool                `json:"unpriced,omitempty"`
+	Account           string              `json:"account,omitempty"`
+	Ingress           string              `json:"ingress,omitempty"`
+	Model             string              `json:"model,omitempty"`
+	Usage             store.UsageCounters `json:"usage"`
+	CostUSD           float64             `json:"cost_usd"`
+	Unpriced          bool                `json:"unpriced,omitempty"`
+	APIValueByTypeUSD *usageAPIValue      `json:"api_value_by_type_usd,omitempty"`
+}
+
+// usageAPIValue is API-price-equivalent revenue before any downstream discount,
+// not the subscription's actual cost or a prediction of its quota rules.
+type usageAPIValue struct {
+	Input           float64 `json:"input"`
+	Output          float64 `json:"output"`
+	CacheCreation5m float64 `json:"cache_creation_5m"`
+	CacheCreation1h float64 `json:"cache_creation_1h"`
+	CacheRead       float64 `json:"cache_read"`
+}
+
+func (v *usageAPIValue) Add(other usageAPIValue) {
+	v.Input += other.Input
+	v.Output += other.Output
+	v.CacheCreation5m += other.CacheCreation5m
+	v.CacheCreation1h += other.CacheCreation1h
+	v.CacheRead += other.CacheRead
+}
+
+func (v usageAPIValue) Total() float64 {
+	return v.Input + v.Output + v.CacheCreation5m + v.CacheCreation1h + v.CacheRead
+}
+
+type fiveHourDataQuality struct {
+	MissingUsage    bool `json:"missing_usage"`
+	IncompleteUsage bool `json:"incomplete_usage"`
+	Unpriced        bool `json:"unpriced"`
+	PartialStart    bool `json:"partial_start"`
+	MissingQuota    bool `json:"missing_quota"`
+	MixedModels     bool `json:"mixed_models"`
 }
 
 type fiveHourWindowUsage struct {
-	Account           string        `json:"account"`
-	FirstObservedAt   int64         `json:"first_observed_at"`
-	LastObservedAt    int64         `json:"last_observed_at"`
-	ResetsAt          int64         `json:"resets_at"`
-	FirstUsedPercent  float64       `json:"first_used_percent"`
-	LastUsedPercent   float64       `json:"last_used_percent"`
-	MaxUsedPercent    float64       `json:"max_used_percent"`
-	ExhaustedAt       int64         `json:"exhausted_at,omitempty"`
-	ExhaustionReason  string        `json:"exhaustion_reason,omitempty"`
-	ObservedCostUSD   float64       `json:"observed_cost_usd"`
-	EventCount        int64         `json:"event_count"`
-	MissingUsageCount int64         `json:"missing_usage_count"`
-	IncompleteCount   int64         `json:"incomplete_count"`
-	ByModel           []valuedUsage `json:"by_model"`
-	Unpriced          bool          `json:"unpriced,omitempty"`
+	Account                   string              `json:"account"`
+	FirstObservedAt           int64               `json:"first_observed_at"`
+	LastObservedAt            int64               `json:"last_observed_at"`
+	ResetsAt                  int64               `json:"resets_at"`
+	FirstUsedPercent          float64             `json:"first_used_percent"`
+	LastUsedPercent           float64             `json:"last_used_percent"`
+	MaxUsedPercent            float64             `json:"max_used_percent"`
+	ExhaustedAt               int64               `json:"exhausted_at,omitempty"`
+	ExhaustionReason          string              `json:"exhaustion_reason,omitempty"`
+	ObservedCostUSD           float64             `json:"observed_cost_usd"`
+	EventCount                int64               `json:"event_count"`
+	MissingUsageCount         int64               `json:"missing_usage_count"`
+	IncompleteCount           int64               `json:"incomplete_count"`
+	ByModel                   []valuedUsage       `json:"by_model"`
+	Unpriced                  bool                `json:"unpriced,omitempty"`
+	APIValueByTypeUSD         usageAPIValue       `json:"api_value_by_type_usd"`
+	ObservedUsedPercentDelta  *float64            `json:"observed_used_percent_delta,omitempty"`
+	APIValueUSDPerUsedPercent *float64            `json:"api_value_usd_per_used_percent,omitempty"`
+	DataQuality               fiveHourDataQuality `json:"data_quality"`
 }
 
 type usageDashboardResponse struct {
@@ -108,32 +144,37 @@ func buildUsageDashboard(buckets []store.UsageBucket, ingressBuckets []store.Usa
 	byIngress := make(map[string]*valuedUsage)
 	unpriced := make(map[string]bool)
 	response := usageDashboardResponse{From: from * 1000, To: to * 1000, ByModel: []valuedUsage{}, ByAccount: []valuedUsage{}, ByIngress: []valuedUsage{}, UnpricedModels: []string{}, FiveHourCurrent: []fiveHourWindowUsage{}, FiveHourExhausted: []fiveHourWindowUsage{}}
+	response.Totals.APIValueByTypeUSD = &usageAPIValue{}
 	for _, bucket := range buckets {
 		price, priced := matchingPrice(prices, bucket.Model, bucket.BucketStart)
-		cost := 0.0
+		valueByType := usageAPIValue{}
 		if priced {
-			cost = usageCost(bucket.Counters, price)
+			valueByType = apiUsageValue(bucket.Counters, price)
 		} else {
 			unpriced[bucket.Model] = true
 			response.Totals.Unpriced = true
 		}
+		cost := valueByType.Total()
 		response.Totals.Usage.Add(bucket.Counters)
 		response.Totals.CostUSD += cost
+		response.Totals.APIValueByTypeUSD.Add(valueByType)
 		model := byModel[bucket.Model]
 		if model == nil {
-			model = &valuedUsage{Model: bucket.Model}
+			model = &valuedUsage{Model: bucket.Model, APIValueByTypeUSD: &usageAPIValue{}}
 			byModel[bucket.Model] = model
 		}
 		model.Usage.Add(bucket.Counters)
 		model.CostUSD += cost
+		model.APIValueByTypeUSD.Add(valueByType)
 		model.Unpriced = model.Unpriced || !priced
 		account := byAccount[bucket.Account]
 		if account == nil {
-			account = &valuedUsage{Account: bucket.Account}
+			account = &valuedUsage{Account: bucket.Account, APIValueByTypeUSD: &usageAPIValue{}}
 			byAccount[bucket.Account] = account
 		}
 		account.Usage.Add(bucket.Counters)
 		account.CostUSD += cost
+		account.APIValueByTypeUSD.Add(valueByType)
 		account.Unpriced = account.Unpriced || !priced
 	}
 	for _, bucket := range ingressBuckets {
@@ -184,30 +225,42 @@ func matchingPrice(prices []store.ModelPrice, model string, at int64) (store.Mod
 	return best, bestSpecificity >= 0
 }
 
-func usageCost(usage store.UsageCounters, price store.ModelPrice) float64 {
-	return (float64(usage.InputTokens)*price.InputUSDPerMTok +
-		float64(usage.OutputTokens)*price.OutputUSDPerMTok +
-		float64(usage.CacheCreation5mTokens)*price.CacheCreation5mUSDPerMTok +
-		float64(usage.CacheCreation1hTokens)*price.CacheCreation1hUSDPerMTok +
-		float64(usage.CacheReadTokens)*price.CacheReadUSDPerMTok) / 1_000_000
+func apiUsageValue(usage store.UsageCounters, price store.ModelPrice) usageAPIValue {
+	return usageAPIValue{
+		Input:           float64(usage.InputTokens) * price.InputUSDPerMTok / 1_000_000,
+		Output:          float64(usage.OutputTokens) * price.OutputUSDPerMTok / 1_000_000,
+		CacheCreation5m: float64(usage.CacheCreation5mTokens) * price.CacheCreation5mUSDPerMTok / 1_000_000,
+		CacheCreation1h: float64(usage.CacheCreation1hTokens) * price.CacheCreation1hUSDPerMTok / 1_000_000,
+		CacheRead:       float64(usage.CacheReadTokens) * price.CacheReadUSDPerMTok / 1_000_000,
+	}
 }
 
 func valueFiveHourWindows(windows []store.FiveHourWindow, prices []store.ModelPrice) []fiveHourWindowUsage {
 	result := make([]fiveHourWindowUsage, 0, len(windows))
 	for _, window := range windows {
-		values := make([]valuedUsage, 0, len(window.ByModel))
-		cost := 0.0
+		byModel := make(map[string]*valuedUsage)
+		totalValue := usageAPIValue{}
 		unpriced := false
-		for model, counters := range window.ByModel {
-			value := valuedUsage{Model: model, Usage: counters}
-			if price, ok := matchingPrice(prices, model, window.LastObservedAt/1000); ok {
-				value.CostUSD = usageCost(counters, price)
-				cost += value.CostUSD
+		for _, bucket := range window.PriceBuckets {
+			value := byModel[bucket.Model]
+			if value == nil {
+				value = &valuedUsage{Model: bucket.Model, APIValueByTypeUSD: &usageAPIValue{}}
+				byModel[bucket.Model] = value
+			}
+			value.Usage.Add(bucket.Counters)
+			if price, ok := matchingPrice(prices, bucket.Model, bucket.ObservedAtSeconds); ok {
+				valueByType := apiUsageValue(bucket.Counters, price)
+				value.APIValueByTypeUSD.Add(valueByType)
+				value.CostUSD += valueByType.Total()
+				totalValue.Add(valueByType)
 			} else {
 				value.Unpriced = true
 				unpriced = true
 			}
-			values = append(values, value)
+		}
+		values := make([]valuedUsage, 0, len(byModel))
+		for _, value := range byModel {
+			values = append(values, *value)
 		}
 		sort.Slice(values, func(i, j int) bool {
 			if values[i].CostUSD == values[j].CostUSD {
@@ -215,15 +268,36 @@ func valueFiveHourWindows(windows []store.FiveHourWindow, prices []store.ModelPr
 			}
 			return values[i].CostUSD > values[j].CostUSD
 		})
+		quality := fiveHourDataQuality{
+			MissingUsage: window.MissingUsageCount > 0, IncompleteUsage: window.IncompleteCount > 0,
+			Unpriced: unpriced, PartialStart: window.FirstUsedPercent > 0,
+			MissingQuota: window.FirstUsedPercent < 0 || window.MaxUsedPercent < 0,
+			MixedModels:  len(values) > 1,
+		}
+		var delta, valuePerPercent *float64
+		if !quality.MissingQuota {
+			observedDelta := window.MaxUsedPercent - window.FirstUsedPercent
+			delta = &observedDelta
+			// Only expose the ratio for complete usage observed from zero. Missing
+			// or partial usage otherwise makes the numerator misleading, and a
+			// mid-window start can include already-charged first-request tokens.
+			if observedDelta > 0 && window.EventCount > 0 && !quality.PartialStart &&
+				!quality.MissingUsage && !quality.IncompleteUsage && !quality.Unpriced {
+				ratio := totalValue.Total() / observedDelta
+				valuePerPercent = &ratio
+			}
+		}
 		reset, _ := strconv.ParseInt(window.ResetsAt, 10, 64)
 		result = append(result, fiveHourWindowUsage{
 			Account: window.Account, FirstObservedAt: window.FirstObservedAt,
 			LastObservedAt: window.LastObservedAt, ResetsAt: reset * 1000,
 			FirstUsedPercent: window.FirstUsedPercent, LastUsedPercent: window.LastUsedPercent,
 			MaxUsedPercent: window.MaxUsedPercent, ExhaustedAt: window.ExhaustedAt,
-			ExhaustionReason: window.ExhaustionReason, ObservedCostUSD: cost,
+			ExhaustionReason: window.ExhaustionReason, ObservedCostUSD: totalValue.Total(),
 			EventCount: window.EventCount, MissingUsageCount: window.MissingUsageCount,
 			IncompleteCount: window.IncompleteCount, ByModel: values, Unpriced: unpriced,
+			APIValueByTypeUSD: totalValue, ObservedUsedPercentDelta: delta,
+			APIValueUSDPerUsedPercent: valuePerPercent, DataQuality: quality,
 		})
 	}
 	return result
