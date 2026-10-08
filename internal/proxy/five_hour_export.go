@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/local/claude-relay/internal/store"
@@ -136,17 +137,22 @@ func writeEventsCSV(archive *zip.Writer, events []store.FiveHourEvent) error {
 func writeModelPricesCSV(archive *zip.Writer, prices []store.ModelPrice) error {
 	rows := make([][]string, 0, len(prices))
 	for _, price := range prices {
+		var contextLimit, contextMultiplier string
+		if store.UsesLongContextPricing(strings.TrimSuffix(price.ModelPattern, "*")) {
+			contextLimit = strconv.FormatInt(store.LongContextInputTokens, 10)
+			contextMultiplier = strconv.Itoa(store.LongContextPriceMultiplier)
+		}
 		rows = append(rows, []string{
 			price.ModelPattern, strconv.FormatInt(price.EffectiveFrom, 10), utcSeconds(price.EffectiveFrom),
 			formatFloat(price.InputUSDPerMTok), formatFloat(price.OutputUSDPerMTok),
 			formatFloat(price.CacheCreation5mUSDPerMTok), formatFloat(price.CacheCreation1hUSDPerMTok),
-			formatFloat(price.CacheReadUSDPerMTok), price.Source,
+			formatFloat(price.CacheReadUSDPerMTok), price.Source, contextLimit, contextMultiplier,
 		})
 	}
 	return writeZipCSV(archive, "model_prices.csv", []string{
 		"model_pattern", "effective_from_epoch_s", "effective_from_utc", "input_usd_per_mtok",
 		"output_usd_per_mtok", "cache_creation_5m_usd_per_mtok", "cache_creation_1h_usd_per_mtok",
-		"cache_read_usd_per_mtok", "source",
+		"cache_read_usd_per_mtok", "source", "long_context_input_tokens", "long_context_multiplier",
 	}, rows)
 }
 

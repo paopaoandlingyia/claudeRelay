@@ -246,6 +246,25 @@ new effective version preserves historical valuation. Unknown models keep their 
 reported as unpriced instead of silently contributing zero dollars. API value is an estimate at
 published API prices, not evidence that Anthropic deducts subscription capacity in dollars.
 
+The 5.5 defaults follow [Anthropic's published pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+as of 2026-10-08. Sonnet 5.5 defaults to $0.10/MTok for cache reads (5% of its $2/MTok input price).
+Haiku 5.5 price entries contain lower-tier rates: $0.10 input, $0.50 output, $0.125
+5m writes, $0.20 1h writes, and $0.01 reads per MTok. For each request whose total
+input exceeds 100,000 tokens (ordinary input + both cache-write durations + reads),
+all five rates are multiplied by 5, including output; exactly 100,000 uses the lower
+tier. This published model rule also applies to operator-entered Haiku 5.5 base
+price versions. The price-list API and `model_prices.csv` expose
+`long_context_input_tokens` and `long_context_multiplier` for this rule.
+Hourly statistics retain the long-prompt subset before aggregation, so clearing
+five-hour observations does not erase new hourly pricing information. On upgrade,
+old Haiku hours are reconstructed only when retained observations match every
+hourly token/request counter; unmatched hours remain explicitly unpriced and are
+reported in the startup log. Five-hour windows always classify individual requests
+before aggregation. The usage API reports `unclassified_context_requests` alongside
+`unpriced` for hourly totals affected by unknown prompt sizes. Price seeding preserves
+operator-entered versions and never changes relay behavior, scheduling, or downstream
+customer billing.
+
 Disabled accounts cannot be selected automatically or through `X-Claude-Relay-Account`, and they
 never trigger token refresh. Enabling an account means this relay becomes the sole owner of its
 refresh-token chain. Stop managing that account in CLIProxyAPI before enabling it here.

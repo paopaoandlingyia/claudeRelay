@@ -53,12 +53,13 @@ type FiveHourWindow struct {
 	PriceBuckets      []FiveHourPriceBucket
 }
 
-// FiveHourPriceBucket groups usage only within one observation second. Model
-// price effective times use Unix seconds, so this preserves historical pricing
-// without retaining a separate in-memory object for every request.
+// FiveHourPriceBucket groups usage within an observation second and prompt-size
+// tier. Determine the tier before summing: two small prompts must not become one
+// large prompt for pricing purposes.
 type FiveHourPriceBucket struct {
 	ObservedAtSeconds int64
 	Model             string
+	LongContext       bool
 	Counters          UsageCounters
 }
 
@@ -222,12 +223,14 @@ func (s *Store) FiveHourWindows(ctx context.Context, exhausted bool, nowMillis i
 	}
 	for index := range windows {
 		window := &windows[index]
-		usageRows, err := tx.QueryContext(ctx, `SELECT model,observed_at/1000,SUM(input_tokens),SUM(output_tokens),
+		usageRows, err := tx.QueryContext(ctx, `SELECT model,observed_at/1000,
+			(input_tokens+cache_creation_5m_tokens+cache_creation_1h_tokens+cache_read_tokens)>?,
+			SUM(input_tokens),SUM(output_tokens),
 			SUM(cache_creation_5m_tokens),SUM(cache_creation_1h_tokens),SUM(cache_read_tokens),
 			COUNT(*),SUM(CASE WHEN usage_seen=0 THEN 1 ELSE 0 END),SUM(CASE WHEN complete=0 THEN 1 ELSE 0 END)
 			FROM five_hour_events WHERE account_id=? AND resets_at=? AND kind=?
-			GROUP BY model,observed_at/1000 ORDER BY model,observed_at/1000`,
-			window.AccountID, window.ResetsAt, FiveHourEventMessages)
+			GROUP BY 1,2,3 ORDER BY 1,2,3`,
+			LongContextInputTokens, window.AccountID, window.ResetsAt, FiveHourEventMessages)
 		if err != nil {
 			return nil, fmt.Errorf("query five-hour window models: %w", err)
 		}
@@ -235,7 +238,7 @@ func (s *Store) FiveHourWindows(ctx context.Context, exhausted bool, nowMillis i
 			var bucket FiveHourPriceBucket
 			counters := &bucket.Counters
 			var missing int64
-			if err := usageRows.Scan(&bucket.Model, &bucket.ObservedAtSeconds, &counters.InputTokens, &counters.OutputTokens,
+			if err := usageRows.Scan(&bucket.Model, &bucket.ObservedAtSeconds, &bucket.LongContext, &counters.InputTokens, &counters.OutputTokens,
 				&counters.CacheCreation5mTokens, &counters.CacheCreation1hTokens, &counters.CacheReadTokens,
 				&counters.Requests, &missing, &counters.Incomplete); err != nil {
 				_ = usageRows.Close()

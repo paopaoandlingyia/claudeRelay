@@ -11,13 +11,14 @@ import (
 )
 
 type valuedUsage struct {
-	Account           string              `json:"account,omitempty"`
-	Ingress           string              `json:"ingress,omitempty"`
-	Model             string              `json:"model,omitempty"`
-	Usage             store.UsageCounters `json:"usage"`
-	CostUSD           float64             `json:"cost_usd"`
-	Unpriced          bool                `json:"unpriced,omitempty"`
-	APIValueByTypeUSD *usageAPIValue      `json:"api_value_by_type_usd,omitempty"`
+	Account                     string              `json:"account,omitempty"`
+	Ingress                     string              `json:"ingress,omitempty"`
+	Model                       string              `json:"model,omitempty"`
+	Usage                       store.UsageCounters `json:"usage"`
+	CostUSD                     float64             `json:"cost_usd"`
+	Unpriced                    bool                `json:"unpriced,omitempty"`
+	UnclassifiedContextRequests int64               `json:"unclassified_context_requests,omitempty"`
+	APIValueByTypeUSD           *usageAPIValue      `json:"api_value_by_type_usd,omitempty"`
 }
 
 // usageAPIValue is API-price-equivalent revenue before any downstream discount,
@@ -40,6 +41,14 @@ func (v *usageAPIValue) Add(other usageAPIValue) {
 
 func (v usageAPIValue) Total() float64 {
 	return v.Input + v.Output + v.CacheCreation5m + v.CacheCreation1h + v.CacheRead
+}
+
+func (v usageAPIValue) Scaled(factor float64) usageAPIValue {
+	return usageAPIValue{
+		Input: v.Input * factor, Output: v.Output * factor,
+		CacheCreation5m: v.CacheCreation5m * factor, CacheCreation1h: v.CacheCreation1h * factor,
+		CacheRead: v.CacheRead * factor,
+	}
 }
 
 type fiveHourDataQuality struct {
@@ -147,15 +156,29 @@ func buildUsageDashboard(buckets []store.UsageBucket, ingressBuckets []store.Usa
 	response.Totals.APIValueByTypeUSD = &usageAPIValue{}
 	for _, bucket := range buckets {
 		price, priced := matchingPrice(prices, bucket.Model, bucket.BucketStart)
+		var unclassified int64
+		// Legacy hourly rows may outlive cleared request observations. Without
+		// a verified prompt-size partition, Haiku cannot safely use either tier.
+		if store.UsesLongContextPricing(bucket.Model) && bucket.ContextKnownRequests != bucket.Counters.Requests {
+			priced = false
+			unclassified = bucket.Counters.Requests - bucket.ContextKnownRequests
+		}
 		valueByType := usageAPIValue{}
 		if priced {
 			valueByType = apiUsageValue(bucket.Counters, price)
+			if store.UsesLongContextPricing(bucket.Model) {
+				// The base valuation already includes the long prompts once; add
+				// the remaining 4x to reach their published 5x rate.
+				premium := apiUsageValue(bucket.LongContextCounters, price)
+				valueByType.Add(premium.Scaled(store.LongContextPriceMultiplier - 1))
+			}
 		} else {
 			unpriced[bucket.Model] = true
 			response.Totals.Unpriced = true
 		}
 		cost := valueByType.Total()
 		response.Totals.Usage.Add(bucket.Counters)
+		response.Totals.UnclassifiedContextRequests += unclassified
 		response.Totals.CostUSD += cost
 		response.Totals.APIValueByTypeUSD.Add(valueByType)
 		model := byModel[bucket.Model]
@@ -164,6 +187,7 @@ func buildUsageDashboard(buckets []store.UsageBucket, ingressBuckets []store.Usa
 			byModel[bucket.Model] = model
 		}
 		model.Usage.Add(bucket.Counters)
+		model.UnclassifiedContextRequests += unclassified
 		model.CostUSD += cost
 		model.APIValueByTypeUSD.Add(valueByType)
 		model.Unpriced = model.Unpriced || !priced
@@ -173,6 +197,7 @@ func buildUsageDashboard(buckets []store.UsageBucket, ingressBuckets []store.Usa
 			byAccount[bucket.Account] = account
 		}
 		account.Usage.Add(bucket.Counters)
+		account.UnclassifiedContextRequests += unclassified
 		account.CostUSD += cost
 		account.APIValueByTypeUSD.Add(valueByType)
 		account.Unpriced = account.Unpriced || !priced
@@ -250,6 +275,9 @@ func valueFiveHourWindows(windows []store.FiveHourWindow, prices []store.ModelPr
 			value.Usage.Add(bucket.Counters)
 			if price, ok := matchingPrice(prices, bucket.Model, bucket.ObservedAtSeconds); ok {
 				valueByType := apiUsageValue(bucket.Counters, price)
+				if bucket.LongContext && store.UsesLongContextPricing(bucket.Model) {
+					valueByType = valueByType.Scaled(store.LongContextPriceMultiplier)
+				}
 				value.APIValueByTypeUSD.Add(valueByType)
 				value.CostUSD += valueByType.Total()
 				totalValue.Add(valueByType)
@@ -309,11 +337,22 @@ func (s *Server) listModelPrices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "api_error", "failed to query model prices")
 		return
 	}
-	views := make([]store.ModelPrice, len(prices))
+	// Price inputs remain lower-tier rates. These read-only annotations prevent
+	// API consumers from mistaking Haiku's listed rates for a flat-price model.
+	type priceView struct {
+		store.ModelPrice
+		LongContextInputTokens int64   `json:"long_context_input_tokens,omitempty"`
+		LongContextMultiplier  float64 `json:"long_context_multiplier,omitempty"`
+	}
+	views := make([]priceView, len(prices))
 	for index, price := range prices {
-		views[index] = price
+		views[index].ModelPrice = price
 		views[index].EffectiveFrom *= 1000
 		views[index].CreatedAt *= 1000
+		if store.UsesLongContextPricing(strings.TrimSuffix(price.ModelPattern, "*")) {
+			views[index].LongContextInputTokens = store.LongContextInputTokens
+			views[index].LongContextMultiplier = store.LongContextPriceMultiplier
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"prices": views})
 }

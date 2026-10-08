@@ -38,7 +38,7 @@ type Manager struct {
 	store           *store.Store
 	flushMu         sync.Mutex
 	mu              sync.Mutex
-	pending         map[bucketKey]store.UsageCounters
+	pending         map[bucketKey]store.UsageBucket
 	pendingIngress  map[ingressBucketKey]store.UsageCounters
 	pendingEvents   []store.FiveHourEvent
 	pendingRefusals map[refusalBucketKey]pendingRefusal
@@ -59,7 +59,7 @@ type FiveHourContext struct {
 func NewManager(database *store.Store) *Manager {
 	return &Manager{
 		store:           database,
-		pending:         make(map[bucketKey]store.UsageCounters),
+		pending:         make(map[bucketKey]store.UsageBucket),
 		pendingIngress:  make(map[ingressBucketKey]store.UsageCounters),
 		pendingRefusals: make(map[refusalBucketKey]pendingRefusal),
 	}
@@ -104,8 +104,12 @@ func (m *Manager) Record(accountID int64, model, ingress string, at time.Time, u
 		if !usage.Complete {
 			delta.Incomplete = 1
 		}
+		bucket := store.UsageBucket{Counters: delta, ContextKnownRequests: 1}
+		if delta.HasLongContext() {
+			bucket.LongContextCounters = delta
+		}
 		current := m.pending[key]
-		current.Add(delta)
+		current.Add(bucket)
 		m.pending[key] = current
 		ingressKey := ingressBucketKey{bucketStart: key.bucketStart, ingress: ingress}
 		ingressCurrent := m.pendingIngress[ingressKey]
@@ -166,7 +170,7 @@ func (m *Manager) Flush(ctx context.Context) error {
 	defer m.flushMu.Unlock()
 	m.mu.Lock()
 	batch := m.pending
-	m.pending = make(map[bucketKey]store.UsageCounters)
+	m.pending = make(map[bucketKey]store.UsageBucket)
 	ingressBatch := m.pendingIngress
 	m.pendingIngress = make(map[ingressBucketKey]store.UsageCounters)
 	events := m.pendingEvents
@@ -198,8 +202,9 @@ func (m *Manager) Flush(ctx context.Context) error {
 		return fmt.Errorf("persist five-hour observations: %w", err)
 	}
 	buckets := make([]store.UsageBucket, 0, len(batch))
-	for key, counters := range batch {
-		buckets = append(buckets, store.UsageBucket{BucketStart: key.bucketStart, AccountID: key.accountID, Model: key.model, Counters: counters})
+	for key, bucket := range batch {
+		bucket.BucketStart, bucket.AccountID, bucket.Model = key.bucketStart, key.accountID, key.model
+		buckets = append(buckets, bucket)
 	}
 	ingressBuckets := make([]store.UsageIngressBucket, 0, len(ingressBatch))
 	for key, counters := range ingressBatch {
@@ -254,7 +259,7 @@ func (m *Manager) Clear(ctx context.Context) error {
 	m.flushMu.Lock()
 	defer m.flushMu.Unlock()
 	m.mu.Lock()
-	m.pending = make(map[bucketKey]store.UsageCounters)
+	m.pending = make(map[bucketKey]store.UsageBucket)
 	m.pendingIngress = make(map[ingressBucketKey]store.UsageCounters)
 	m.mu.Unlock()
 	return m.store.ClearUsageAccounting(ctx)

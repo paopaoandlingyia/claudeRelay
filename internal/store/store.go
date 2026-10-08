@@ -84,7 +84,7 @@ type CooldownMatch struct {
 	Reason string
 }
 
-const schemaVersion = 13
+const schemaVersion = 14
 
 type Store struct {
 	db *sql.DB
@@ -405,6 +405,30 @@ func (s *Store) initialize(ctx context.Context) error {
 		// Runtime settings are persisted so administrative policy changes survive
 		// a restart without requiring a second configuration file.
 		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=13`); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
+	if version < 14 {
+		// Hourly totals cannot recover the per-request 100k prompt boundary.
+		// Retain the long-prompt subset and how many requests were classified;
+		// zero coverage on legacy rows must not be mistaken for the lower tier.
+		for _, column := range []string{
+			"long_input_tokens", "long_output_tokens", "long_cache_creation_5m_tokens",
+			"long_cache_creation_1h_tokens", "long_cache_read_tokens", "context_known_requests",
+		} {
+			if err := s.ensureColumn(ctx, "usage_hourly", column, "INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return err
+			}
+		}
+		for _, price := range []ModelPrice{defaultSonnetFiveFivePrice, defaultHaikuFiveFivePrice} {
+			if err := s.insertDefaultModelPrice(ctx, price); err != nil {
+				return fmt.Errorf("insert 5.5 model default price: %w", err)
+			}
+		}
+		if err := s.backfillLongContextUsage(ctx); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `PRAGMA user_version=14`); err != nil {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}

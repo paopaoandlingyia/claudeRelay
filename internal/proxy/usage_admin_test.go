@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/local/claude-relay/internal/accounting"
 	"github.com/local/claude-relay/internal/store"
 )
 
@@ -68,6 +69,112 @@ func TestRelayUsageFlowsIntoDashboardAndFiveHourWindowWithoutChangingSSE(t *test
 		dashboard.FiveHourCurrent[0].APIValueByTypeUSD.CacheRead <= 0 ||
 		!dashboard.FiveHourCurrent[0].DataQuality.PartialStart {
 		t.Fatalf("missing API value breakdown or partial-start flag: %+v", dashboard)
+	}
+}
+
+func TestHaikuFiveFivePromptTiersSurviveAggregationAndObservationCleanup(t *testing.T) {
+	server := newTestServer(t, "http://unused.invalid", 4096)
+	account, found, err := server.store.AccountByAlias(t.Context(), "default")
+	if err != nil || !found {
+		t.Fatalf("account found=%v err=%v", found, err)
+	}
+	prices, err := server.store.ModelPrices(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		model string
+		read  float64
+	}{
+		{"claude-sonnet-5", .2}, {"claude-sonnet-5-5", .1},
+		{"claude-sonnet-5-5-20260928", .1}, {"claude-haiku-5-5", .01},
+	} {
+		price, ok := matchingPrice(prices, tc.model, 1)
+		if !ok || price.CacheReadUSDPerMTok != tc.read {
+			t.Fatalf("published read price for %s=%+v found=%v, want %g", tc.model, price, ok, tc.read)
+		}
+	}
+	priceList := adminRequest(t, server, http.MethodGet, "/admin/v1/usage/prices", "")
+	if priceList.Code != http.StatusOK {
+		t.Fatalf("price list status=%d body=%s", priceList.Code, priceList.Body.String())
+	}
+	var priceResponse struct {
+		Prices []struct {
+			ModelPattern string  `json:"model_pattern"`
+			Threshold    int64   `json:"long_context_input_tokens"`
+			Multiplier   float64 `json:"long_context_multiplier"`
+		} `json:"prices"`
+	}
+	if err := json.Unmarshal(priceList.Body.Bytes(), &priceResponse); err != nil {
+		t.Fatal(err)
+	}
+	foundTier := false
+	for _, p := range priceResponse.Prices {
+		if p.ModelPattern == "claude-haiku-5-5*" {
+			foundTier = p.Threshold == 100_000 && p.Multiplier == 5
+		}
+	}
+	if !foundTier {
+		t.Fatalf("price list omitted the prompt-length rule: %s", priceList.Body.String())
+	}
+	at := time.Date(2026, 10, 8, 12, 0, 1, 0, time.UTC)
+	for i := range 3 {
+		usage := accounting.Usage{Seen: true, Complete: true, InputTokens: 1, OutputTokens: 1000,
+			CacheCreation5mTokens: 20_000, CacheCreation1hTokens: 30_000, CacheReadTokens: 49_999}
+		if i == 2 {
+			usage.CacheReadTokens++ // Exactly 100k is low; 100001 must price all categories at 5x.
+		}
+		server.accounting.Record(account.ID, "claude-haiku-5-5", "compatible", at, usage, accounting.FiveHourContext{
+			EventKey: "haiku-tier-" + strconv.Itoa(i), ResetsAt: "2000000000", ObservedAt: at,
+			CompletedAt: at.Add(time.Second), Status: 200, UsedPercent: float64(i) * 10,
+		})
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := server.accounting.Flush(canceled); err == nil {
+		t.Fatal("expected canceled flush to retain the context partition for retry")
+	}
+	if err := server.accounting.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	buckets, err := server.store.UsageBuckets(t.Context(), 0)
+	if err != nil || len(buckets) != 1 || buckets[0].ContextKnownRequests != 3 ||
+		buckets[0].LongContextCounters.CacheReadTokens != 50_000 || buckets[0].LongContextCounters.OutputTokens != 1000 {
+		t.Fatalf("hourly context partition=%+v err=%v", buckets, err)
+	}
+	dashboard := buildUsageDashboard(buckets, nil, prices, 0, at.Unix())
+	windows, err := server.store.FiveHourWindows(t.Context(), false, 0, 10)
+	if err != nil || len(windows) != 1 {
+		t.Fatalf("windows=%+v err=%v", windows, err)
+	}
+	window := valueFiveHourWindows(windows, prices)[0]
+	want := usageAPIValue{Input: .0000007, Output: .0035, CacheCreation5m: .0175, CacheCreation1h: .042, CacheRead: .00349998}
+	for _, got := range []usageAPIValue{*dashboard.Totals.APIValueByTypeUSD, window.APIValueByTypeUSD} {
+		if math.Abs(got.Input-want.Input) > 1e-12 || math.Abs(got.Output-want.Output) > 1e-12 ||
+			math.Abs(got.CacheCreation5m-want.CacheCreation5m) > 1e-12 || math.Abs(got.CacheCreation1h-want.CacheCreation1h) > 1e-12 ||
+			math.Abs(got.CacheRead-want.CacheRead) > 1e-12 {
+			t.Fatalf("prompt-tier API value=%+v want %+v", got, want)
+		}
+	}
+	if dashboard.Totals.Unpriced || window.Unpriced || len(window.ByModel) != 1 || window.EventCount != 3 {
+		t.Fatalf("lost model totals or pricing coverage: dashboard=%+v window=%+v", dashboard, window)
+	}
+	if err := server.accounting.ClearFiveHourObservations(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	buckets, err = server.store.UsageBuckets(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := buildUsageDashboard(buckets, nil, prices, 0, at.Unix())
+	if after.Totals.Unpriced || after.Totals.CostUSD != dashboard.Totals.CostUSD {
+		t.Fatalf("clearing observations lost hourly tier valuation: before=%+v after=%+v", dashboard.Totals, after.Totals)
+	}
+	buckets[0].ContextKnownRequests--
+	unknown := buildUsageDashboard(buckets, nil, prices, 0, at.Unix())
+	if !unknown.Totals.Unpriced || unknown.Totals.CostUSD != 0 || len(unknown.UnpricedModels) != 1 || unknown.Totals.Usage.Requests != 3 ||
+		unknown.Totals.UnclassifiedContextRequests != 1 || unknown.ByModel[0].UnclassifiedContextRequests != 1 || unknown.ByAccount[0].UnclassifiedContextRequests != 1 {
+		t.Fatalf("legacy unknown context silently used a tier or lost raw usage: %+v", unknown)
 	}
 }
 
