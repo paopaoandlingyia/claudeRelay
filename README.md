@@ -46,6 +46,9 @@ The dated protocol conclusions and unresolved questions are centralized in
 [`docs/protocol-findings.md`](docs/protocol-findings.md). Raw experiment notes remain in
 [`docs/protocol-experiments.md`](docs/protocol-experiments.md).
 
+The subscription-consumption analysis goal and reporting conventions are recorded in
+[`docs/subscription-observation.md`](docs/subscription-observation.md).
+
 ## Build
 
 ```powershell
