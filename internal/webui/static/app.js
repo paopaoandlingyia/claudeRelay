@@ -20,6 +20,7 @@ const state = {
   panel: "accounts",
   pendingOAuth: readJSON(sessionStorage, "claudeRelayPendingOAuth"),
   relayKeyVisible: false,
+  refusalBillingDirty: false,
   filters: { account: "", outcome: "" },
   accountQuery: "",
   accountStatus: "all",
@@ -1023,6 +1024,16 @@ function requestRow(record) {
     record.error ? small(record.error) : (refusalNote ? small(refusalNote) : null),
   ));
   row.appendChild(outcome);
+  if (record.refusal_billing) {
+    const billing = record.refusal_billing;
+    outcome.appendChild(small(`计费用量 ×${billing.multiplier}`));
+    const labels = {
+      input_tokens: "普通输入", output_tokens: "输出", cache_read_input_tokens: "缓存读取",
+      cache_creation_input_tokens: "缓存写入", ephemeral_5m_input_tokens: "5 分钟写入", ephemeral_1h_input_tokens: "1 小时写入",
+    };
+    outcome.title = Object.entries(billing.original_usage).map(([key, value]) =>
+      `${labels[key] || key}：${value} → ${billing.billed_usage[key]}`).join("\n");
+  }
 
   row.appendChild(cell(document.createTextNode(record.model || "—")));
 
@@ -1301,6 +1312,12 @@ function renderConnect() {
   $("runtimeMaxBytes").textContent = formatBytes(overview.max_request_bytes || 0);
   $("runtimeLogSize").textContent = `${overview.requests?.capacity ?? 0} 条`;
   $("runtimeStarted").textContent = overview.started_at ? new Date(overview.started_at).toLocaleString() : "—";
+  if (!state.refusalBillingDirty && !$("saveRefusalBillingButton").disabled) {
+    $("refusalBillingEnabled").checked = overview.refusal_billing.enabled;
+    for (const input of $("refusalBillingForm").querySelectorAll("[data-refusal-category]")) {
+      input.value = overview.refusal_billing.multipliers[input.dataset.refusalCategory];
+    }
+  }
   const minVersion = $("officialMinVersion");
   const maxVersion = $("officialMaxVersion");
   if (minVersion && document.activeElement !== minVersion) minVersion.value = overview.official_min_cli_version || "";
@@ -1339,6 +1356,32 @@ async function toggleA6APIProbes(element) {
   } catch (error) {
     showToast(error.message, true);
   } finally {
+    setBusy(element, false);
+    renderConnect();
+  }
+}
+
+async function saveRefusalBilling(element) {
+  const inputs = $("refusalBillingForm").querySelectorAll("input");
+  const multipliers = Object.fromEntries(
+    Array.from($("refusalBillingForm").querySelectorAll("[data-refusal-category]"),
+      (input) => [input.dataset.refusalCategory, Number(input.value)]),
+  );
+  const enabled = $("refusalBillingEnabled").checked;
+  setBusy(element, true, "保存中");
+  for (const input of inputs) input.disabled = true;
+  $("refusalBillingError").textContent = "";
+  try {
+    const result = await api("/admin/v1/refusal-billing", {
+      method: "POST", body: JSON.stringify({ enabled, multipliers }),
+    });
+    state.overview.refusal_billing = result;
+    state.refusalBillingDirty = false;
+    showToast("拒绝计费倍率已保存，对新请求立即生效");
+  } catch (error) {
+    $("refusalBillingError").textContent = error.message;
+  } finally {
+    for (const input of inputs) input.disabled = false;
     setBusy(element, false);
     renderConnect();
   }
@@ -1739,6 +1782,7 @@ function showApp() {
 function logout(message = "") {
   state.apiKey = "";
   state.overview = null;
+  state.refusalBillingDirty = false;
   state.accounts = [];
   state.requests = [];
   stopPolling();
@@ -2149,6 +2193,11 @@ $("toggleRelayKey").addEventListener("click", () => {
 });
 $("routingPolicyButton").addEventListener("click", (event) => toggleRoutingPolicy(event.currentTarget));
 $("saveOfficialVersionButton").addEventListener("click", (event) => saveOfficialVersionBounds(event.currentTarget));
+$("refusalBillingForm").addEventListener("input", () => { state.refusalBillingDirty = true; });
+$("refusalBillingForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveRefusalBilling($("saveRefusalBillingButton"));
+});
 $("a6APIProbesSwitch").addEventListener("click", (event) => toggleA6APIProbes(event.currentTarget));
 $("copyRelayKey").addEventListener("click", () => copyText(state.overview?.relay_api_key, "中转密钥已复制"));
 $("copyExperimentalKey").addEventListener("click", () => copyText(state.overview?.experimental_api_key, "实验入口密钥已复制"));

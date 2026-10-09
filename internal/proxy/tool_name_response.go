@@ -48,6 +48,12 @@ func restoreNonStreamingToolNames(body []byte, names toolNameMapping) ([]byte, i
 }
 
 func copySSEWithRestoredToolNames(destination io.Writer, source io.Reader, names toolNameMapping) (int64, int, error) {
+	return copySSEWithResponseTransforms(destination, source, names, nil)
+}
+
+// Adapt one complete event at a time so tool restoration and refusal billing
+// share SSE framing without buffering the response or changing content deltas.
+func copySSEWithResponseTransforms(destination io.Writer, source io.Reader, names toolNameMapping, adjustment *refusalResponseAdapter) (int64, int, error) {
 	reader := bufio.NewReader(source)
 	var event []byte
 	var written int64
@@ -60,6 +66,12 @@ func copySSEWithRestoredToolNames(destination io.Writer, source io.Reader, names
 		if err != nil {
 			return err
 		}
+		if adjustment != nil {
+			transformed, _, err = rewriteSSEEventData(transformed, adjustment.adjust)
+			if err != nil {
+				return err
+			}
+		}
 		n, err := writeAll(destination, transformed)
 		written += int64(n)
 		changed += eventChanges
@@ -67,23 +79,35 @@ func copySSEWithRestoredToolNames(destination io.Writer, source io.Reader, names
 		return err
 	}
 
+	lineLength := 0
 	for {
-		line, readErr := reader.ReadBytes('\n')
+		line, readErr := reader.ReadSlice('\n')
 		if len(line) > 0 {
+			if adjustment != nil && len(event)+len(line) > maxAdaptedResponseBytes {
+				return written, changed, fmt.Errorf("upstream SSE event exceeds %d bytes", maxAdaptedResponseBytes)
+			}
 			event = append(event, line...)
+			lineLength += len(line)
 			trimmed := bytes.TrimSuffix(line, []byte{'\n'})
 			trimmed = bytes.TrimSuffix(trimmed, []byte{'\r'})
-			if len(trimmed) == 0 {
+			if lineLength <= 2 && len(trimmed) == 0 {
 				if err := flushEvent(); err != nil {
 					return written, changed, err
 				}
 			}
 		}
+		if readErr == bufio.ErrBufferFull {
+			continue
+		}
+		lineLength = 0
 		if readErr == nil {
 			continue
 		}
 		if readErr != io.EOF {
 			return written, changed, readErr
+		}
+		if adjustment != nil && len(event) != 0 {
+			return written, changed, fmt.Errorf("incomplete upstream SSE event: %w", io.ErrUnexpectedEOF)
 		}
 		if err := flushEvent(); err != nil {
 			return written, changed, err
@@ -96,6 +120,33 @@ func restoreSSEEventToolName(event []byte, names toolNameMapping) ([]byte, int, 
 	if len(names) == 0 || !bytes.Contains(event, []byte("content_block_start")) {
 		return event, 0, nil
 	}
+	transformed, changed, err := rewriteSSEEventData(event, func(payload []byte) ([]byte, bool, error) {
+		var envelope map[string]any
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return nil, false, fmt.Errorf("decode upstream content_block_start event: %w", err)
+		}
+		if envelope["type"] != "content_block_start" {
+			return payload, false, nil
+		}
+		block, ok := envelope["content_block"].(map[string]any)
+		if !ok || block["type"] != "tool_use" || !restoreToolName(block, names) {
+			return payload, false, nil
+		}
+		body, err := json.Marshal(envelope)
+		if err != nil {
+			return nil, false, fmt.Errorf("encode tool-restored content_block_start event: %w", err)
+		}
+		return body, true, nil
+	})
+	if changed {
+		return transformed, 1, err
+	}
+	return transformed, 0, err
+}
+
+// Preserve event names, comments, IDs, and newline style while replacing only
+// data lines. Multiline data belongs to one JSON document, not several events.
+func rewriteSSEEventData(event []byte, transform func([]byte) ([]byte, bool, error)) ([]byte, bool, error) {
 	lines := bytes.SplitAfter(event, []byte{'\n'})
 	dataLines := make([]int, 0, 1)
 	var payload []byte
@@ -114,23 +165,14 @@ func restoreSSEEventToolName(event []byte, names toolNameMapping) ([]byte, int, 
 		dataLines = append(dataLines, index)
 	}
 	if len(dataLines) == 0 {
-		return event, 0, nil
+		return event, false, nil
 	}
-
-	var envelope map[string]any
-	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return nil, 0, fmt.Errorf("decode upstream content_block_start event: %w", err)
-	}
-	if envelope["type"] != "content_block_start" {
-		return event, 0, nil
-	}
-	block, ok := envelope["content_block"].(map[string]any)
-	if !ok || block["type"] != "tool_use" || !restoreToolName(block, names) {
-		return event, 0, nil
-	}
-	transformed, err := json.Marshal(envelope)
+	transformed, changed, err := transform(payload)
 	if err != nil {
-		return nil, 0, fmt.Errorf("encode tool-restored content_block_start event: %w", err)
+		return nil, false, err
+	}
+	if !changed {
+		return event, false, nil
 	}
 
 	var output bytes.Buffer
@@ -156,7 +198,7 @@ func restoreSSEEventToolName(event []byte, names toolNameMapping) ([]byte, int, 
 			output.WriteByte('\n')
 		}
 	}
-	return output.Bytes(), 1, nil
+	return output.Bytes(), true, nil
 }
 
 func restoreToolName(value map[string]any, names toolNameMapping) bool {

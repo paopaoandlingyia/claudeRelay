@@ -153,24 +153,25 @@ func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 type overviewResponse struct {
-	Version            string          `json:"version"`
-	StartedAt          int64           `json:"started_at"`
-	Listen             string          `json:"listen"`
-	Endpoint           string          `json:"endpoint"`
-	Upstream           string          `json:"upstream"`
-	UpstreamProxy      string          `json:"upstream_proxy,omitempty"`
-	AutoRefresh        bool            `json:"auto_refresh_enabled"`
-	MaxRequestBytes    int64           `json:"max_request_bytes"`
-	RelayAPIKey        string          `json:"relay_api_key"`
-	ExperimentalAPIKey string          `json:"experimental_api_key,omitempty"`
-	OfficialAPIKey     string          `json:"official_api_key,omitempty"`
-	Accounts           accountTotals   `json:"accounts"`
-	StickySessions     int             `json:"sticky_sessions"`
-	Requests           metrics.Summary `json:"requests"`
-	RoutingPolicy      string          `json:"routing_policy"`
-	OfficialMinVersion string          `json:"official_min_cli_version,omitempty"`
-	OfficialMaxVersion string          `json:"official_max_cli_version,omitempty"`
-	AllowA6APIProbes   bool            `json:"allow_a6api_probes"`
+	Version            string                `json:"version"`
+	StartedAt          int64                 `json:"started_at"`
+	Listen             string                `json:"listen"`
+	Endpoint           string                `json:"endpoint"`
+	Upstream           string                `json:"upstream"`
+	UpstreamProxy      string                `json:"upstream_proxy,omitempty"`
+	AutoRefresh        bool                  `json:"auto_refresh_enabled"`
+	MaxRequestBytes    int64                 `json:"max_request_bytes"`
+	RelayAPIKey        string                `json:"relay_api_key"`
+	ExperimentalAPIKey string                `json:"experimental_api_key,omitempty"`
+	OfficialAPIKey     string                `json:"official_api_key,omitempty"`
+	Accounts           accountTotals         `json:"accounts"`
+	StickySessions     int                   `json:"sticky_sessions"`
+	Requests           metrics.Summary       `json:"requests"`
+	RoutingPolicy      string                `json:"routing_policy"`
+	OfficialMinVersion string                `json:"official_min_cli_version,omitempty"`
+	OfficialMaxVersion string                `json:"official_max_cli_version,omitempty"`
+	AllowA6APIProbes   bool                  `json:"allow_a6api_probes"`
+	RefusalBilling     refusalBillingOptions `json:"refusal_billing"`
 }
 
 type accountTotals struct {
@@ -244,6 +245,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		OfficialMinVersion: s.officialVersion.current().Min,
 		OfficialMaxVersion: s.officialVersion.current().Max,
 		AllowA6APIProbes:   s.allowA6APIProbes.Load(),
+		RefusalBilling:     s.refusalBilling.current(),
 	})
 }
 

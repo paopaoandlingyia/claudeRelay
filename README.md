@@ -10,7 +10,7 @@ round-robin rotation, or Claude Code prompt injection.
   traffic only
 - Separate compatible, official, and administration API keys
 - `POST /v1/messages` and `POST /v1/messages/count_tokens`
-- Transparent JSON and SSE responses
+- Transparent JSON and SSE responses unless an optional response transformation is enabled
 - Minimum subscription attribution for ordinary Anthropic requests
 - Caller-owned billing and metadata fields preserved without interpreting unknown fields
 - Sticky-first account selection, in-process load-aware routing for new sessions, strict local
@@ -19,6 +19,28 @@ round-robin rotation, or Claude Code prompt injection.
 - Embedded management console with PKCE OAuth login, credential paste-import, and account removal
 - Bounded in-memory request records exposing routing, failover, and cooldown state
 - On-demand rotating OAuth refresh for enabled accounts
+
+## Refusal billing usage
+
+The management console's connection panel offers an optional **Claude 拒绝计费倍率** setting.
+It defaults to disabled, with `cyber` at 2, `reasoning_extraction` at 3, and `bio`,
+`frontier_llm`, and `general_harms` at 5. Multipliers accept values from 1 to 100, including
+decimals; 1 leaves that category unchanged. Saving persists the settings in SQLite and applies
+them to new requests immediately. In-flight requests keep the settings they started with.
+
+For successful `/v1/messages` responses explicitly marked `stop_reason: refusal` with a known
+category, the relay multiplies downstream input, output, and cache token counts, rounding each
+upward. SSE responses are transformed one event at a time when the final refusal arrives.
+Unknown or empty categories and `count_tokens` responses remain unchanged. Local account usage
+always records the original upstream counts; request records show the original and adjusted
+counts and multiplier. Malformed or overflowing counts fail response adaptation rather than
+inventing usage.
+
+This changes the usage consumed by downstream token billing; it does not deduct a balance in
+this relay. Downstream pricing still determines the charge: inflated input can cross a long
+context price threshold, and a client disconnect before the final usage event can prevent the
+adjustment from reaching downstream. The new-api and sub2api validation covers their usage and
+price calculations, not a complete production balance/refund transaction.
 
 The dated protocol conclusions and unresolved questions are centralized in
 [`docs/protocol-findings.md`](docs/protocol-findings.md). Raw experiment notes remain in

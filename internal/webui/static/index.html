@@ -316,6 +316,30 @@
           </dl>
         </div>
 
+        <form id="refusalBillingForm" class="card refusal-billing-card">
+          <h3>Claude 拒绝计费倍率</h3>
+          <p class="note">仅调整上游明确拒绝请求的计费用量，保留真实消耗统计。未知或空分类不加价。</p>
+          <label class="check-row" for="refusalBillingEnabled">
+            <input id="refusalBillingEnabled" type="checkbox">
+            <span>启用拒绝计费倍率</span>
+          </label>
+          <div class="form-grid">
+            <label for="refusalCyber">网络风险 · cyber</label>
+            <input id="refusalCyber" data-refusal-category="cyber" type="number" min="1" max="100" step="any" value="2" required>
+            <label for="refusalReasoning">思维提取 · reasoning_extraction</label>
+            <input id="refusalReasoning" data-refusal-category="reasoning_extraction" type="number" min="1" max="100" step="any" value="3" required>
+            <label for="refusalBio">生物风险 · bio</label>
+            <input id="refusalBio" data-refusal-category="bio" type="number" min="1" max="100" step="any" value="5" required>
+            <label for="refusalFrontier">竞争模型 · frontier_llm</label>
+            <input id="refusalFrontier" data-refusal-category="frontier_llm" type="number" min="1" max="100" step="any" value="5" required>
+            <label for="refusalGeneral">其他风险 · general_harms</label>
+            <input id="refusalGeneral" data-refusal-category="general_harms" type="number" min="1" max="100" step="any" value="5" required>
+          </div>
+          <p class="note">1 倍表示原价。保存后对新请求立即生效，重启后保留；已开始的请求使用原设置。倍率可能触发下游长上下文价格档位，实际费用不一定等比例增加。</p>
+          <button id="saveRefusalBillingButton" class="btn btn-primary" type="submit">保存计费倍率</button>
+          <p id="refusalBillingError" class="form-error" role="alert"></p>
+        </form>
+
         <div class="card official-version-card">
           <h3>Official 版本限制</h3>
           <p class="note">只影响 Official 入口。根据下游 <code class="mono">claude-cli/x.y.z</code> User-Agent 校验；留空表示不限制。</p>

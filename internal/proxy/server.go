@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +51,7 @@ type Server struct {
 	sampler          *subscriptionSampler
 	routingPolicy    *routingPolicyState
 	officialVersion  *officialVersionPolicy
+	refusalBilling   *refusalBillingPolicy
 	allowA6APIProbes atomic.Bool
 	a6APIProbeMu     sync.Mutex // Serialize persistence and publication of admin changes.
 	// missingUsageWarningAt rate-limits diagnostics for successful Messages
@@ -81,6 +83,10 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 		return nil, fmt.Errorf("config max_active_sessions_per_account must be positive")
 	}
 	officialVersion, err := loadOfficialVersionPolicy(database)
+	if err != nil {
+		return nil, err
+	}
+	refusalBilling, err := loadRefusalBillingPolicy(database)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +128,7 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 		sampler:         sampler,
 		routingPolicy:   routingPolicy,
 		officialVersion: officialVersion,
+		refusalBilling:  refusalBilling,
 		startedAt:       time.Now(),
 	}
 	server.tokens = &tokenManager{store: database, oauth: oauthClient, autoRefresh: cfg.AutoRefresh}
@@ -193,6 +200,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/v1/routing/policy", s.setRoutingPolicy)
 	mux.HandleFunc("POST /admin/v1/official/version-bounds", s.setOfficialVersionBounds)
 	mux.HandleFunc("POST /admin/v1/official/a6api-probes", s.setA6APIProbes)
+	mux.HandleFunc("POST /admin/v1/refusal-billing", s.setRefusalBilling)
 	mux.HandleFunc("GET /admin/v1/requests", s.listRequests)
 	mux.HandleFunc("GET /admin/v1/accounts", s.listAccounts)
 	mux.HandleFunc("POST /admin/v1/accounts/import", s.importAccount)
@@ -297,6 +305,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	requestID := requestIDFromContext(incoming.Context())
 	started := time.Now()
+	refusalOptions := s.refusalBilling.current()
 	event := metrics.Event{RequestID: requestID, Time: started, Path: incoming.URL.Path}
 	defer func() {
 		event.Duration = time.Since(started)
@@ -565,16 +574,33 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	responseWriter := flushWriter{ResponseWriter: w}
 	restoreJSON := len(toolNames) > 0 && strings.Contains(strings.ToLower(contentType), "json")
 	restoreSSE := len(toolNames) > 0 && strings.Contains(strings.ToLower(contentType), "text/event-stream")
+	adjustUsage := incoming.URL.Path == "/v1/messages" && successful && refusalOptions.Enabled
+	adjustJSON := adjustUsage && strings.Contains(strings.ToLower(contentType), "json")
+	adjustSSE := adjustUsage && strings.Contains(strings.ToLower(contentType), "text/event-stream")
+	var adjustment *refusalResponseAdapter
+	if adjustJSON || adjustSSE {
+		adjustment = &refusalResponseAdapter{options: refusalOptions, requestID: requestID, usage: map[string]json.RawMessage{}}
+	}
 	var copyErr error
 	var responseBody []byte
 	restoredToolNames := 0
-	if restoreJSON {
-		responseBody, copyErr = io.ReadAll(observer)
-		if copyErr == nil {
+	if restoreJSON || adjustJSON {
+		var reader io.Reader = observer
+		if adjustJSON {
+			reader = io.LimitReader(observer, maxAdaptedResponseBytes+1)
+		}
+		responseBody, copyErr = io.ReadAll(reader)
+		if copyErr == nil && adjustJSON && len(responseBody) > maxAdaptedResponseBytes {
+			copyErr = fmt.Errorf("upstream JSON response exceeds %d bytes", maxAdaptedResponseBytes)
+		}
+		if copyErr == nil && restoreJSON {
 			responseBody, restoredToolNames, copyErr = restoreNonStreamingToolNames(responseBody, toolNames)
 		}
+		if copyErr == nil && adjustJSON {
+			responseBody, _, copyErr = adjustment.adjust(responseBody)
+		}
 		if copyErr != nil {
-			slog.Error("restore experimental response tool names", "request_id", requestID,
+			slog.Error("adapt upstream JSON response", "request_id", requestID,
 				"ingress", ingress.Name, "account", selected.Account.Alias, "error", copyErr)
 			fail(http.StatusBadGateway, "api_error", "upstream response could not be adapted")
 			return
@@ -584,17 +610,20 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	copyResponseHeaders(w.Header(), response.Header)
 	w.Header().Set(requestIDHeader, requestID)
 	w.Header().Set("X-Claude-Relay-Account", selected.Account.Alias)
-	if restoreSSE || restoredToolNames > 0 {
+	if restoreSSE || adjustSSE || restoredToolNames > 0 || (adjustment != nil && adjustment.billing != nil) {
 		w.Header().Del("Content-Length")
 	}
 	w.WriteHeader(response.StatusCode)
 	switch {
-	case restoreJSON:
+	case restoreJSON || adjustJSON:
 		_, copyErr = writeAll(responseWriter, responseBody)
-	case restoreSSE:
-		_, restoredToolNames, copyErr = copySSEWithRestoredToolNames(responseWriter, observer, toolNames)
+	case restoreSSE || adjustSSE:
+		_, restoredToolNames, copyErr = copySSEWithResponseTransforms(responseWriter, observer, toolNames, adjustment)
 	default:
 		_, copyErr = io.Copy(responseWriter, observer)
+	}
+	if adjustment != nil {
+		event.RefusalBilling = adjustment.billing
 	}
 	if restoredToolNames > 0 {
 		slog.Info("restored experimental response tool names", "request_id", requestID,

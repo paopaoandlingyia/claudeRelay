@@ -32,6 +32,15 @@ type Event struct {
 	RelayAction           string
 	Refusal               bool
 	RefusalCategory       string
+	RefusalBilling        *RefusalBilling
+}
+
+// RefusalBilling records only token counts, never prompts or refusal explanations.
+type RefusalBilling struct {
+	Category      string           `json:"category"`
+	Multiplier    float64          `json:"multiplier"`
+	OriginalUsage map[string]int64 `json:"original_usage"`
+	BilledUsage   map[string]int64 `json:"billed_usage"`
 }
 
 // ClientEvidence contains presence checks only. It never includes raw request
@@ -78,6 +87,7 @@ type Record struct {
 	RelayAction           string          `json:"relay_action,omitempty"`
 	Refusal               bool            `json:"refusal,omitempty"`
 	RefusalCategory       string          `json:"refusal_category,omitempty"`
+	RefusalBilling        *RefusalBilling `json:"refusal_billing,omitempty"`
 }
 
 // AccountStat aggregates activity for one account alias.
@@ -159,6 +169,7 @@ func (r *Recorder) Record(event Event) {
 		RelayAction:           event.RelayAction,
 		Refusal:               event.Refusal,
 		RefusalCategory:       event.RefusalCategory,
+		RefusalBilling:        event.RefusalBilling,
 	}
 	failed := Failed(record.Status, record.Error)
 
