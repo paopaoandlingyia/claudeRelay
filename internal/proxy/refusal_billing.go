@@ -188,42 +188,55 @@ func (a *refusalResponseAdapter) adjust(body []byte) ([]byte, bool, error) {
 	stop := root
 	if kind == "message_delta" {
 		if raw := root["delta"]; len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
-			if err := json.Unmarshal(raw, &stop); err != nil {
+			var delta map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &delta); err != nil {
 				return nil, false, fmt.Errorf("decode message_delta: %w", err)
 			}
-		} else {
+			// Gateways can carry stop fields at the top level. Delta fields
+			// take precedence when supplied, without discarding top-level fields.
+			stop = maps.Clone(root)
+			maps.Copy(stop, delta)
+		}
+	}
+	var category string
+	var factor float64
+	if a.billing != nil {
+		// Later usage events may omit the refusal marker. Keep the confirmed
+		// request policy, but always scale a.usage, which contains upstream
+		// originals only, never the already-adjusted downstream counts.
+		category, factor = a.billing.Category, a.billing.Multiplier
+	} else {
+		var reason string
+		if raw := stop["stop_reason"]; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &reason); err != nil {
+				return nil, false, fmt.Errorf("decode stop reason: %w", err)
+			}
+		}
+		if reason != "refusal" {
 			return body, false, nil
 		}
-	}
-	var reason string
-	if raw := stop["stop_reason"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &reason); err != nil {
-			return nil, false, fmt.Errorf("decode stop reason: %w", err)
+		var details struct {
+			Category *string `json:"category"`
 		}
-	}
-	if reason != "refusal" {
-		return body, false, nil
-	}
-	var details struct {
-		Category *string `json:"category"`
-	}
-	if raw := stop["stop_details"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &details); err != nil {
-			return nil, false, fmt.Errorf("decode stop details: %w", err)
+		if raw := stop["stop_details"]; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &details); err != nil {
+				return nil, false, fmt.Errorf("decode stop details: %w", err)
+			}
 		}
-	}
-	if details.Category == nil {
-		return body, false, nil
-	}
-	factor := a.options.Multipliers[*details.Category]
-	if factor <= 1 {
-		return body, false, nil
+		if details.Category == nil {
+			return body, false, nil
+		}
+		category = *details.Category
+		factor = a.options.Multipliers[category]
+		if factor <= 1 {
+			return body, false, nil
+		}
 	}
 	if len(a.usage) == 0 {
 		return nil, false, fmt.Errorf("refusal billing requires upstream token usage")
 	}
 	billed := maps.Clone(a.usage)
-	audit := &metrics.RefusalBilling{Category: *details.Category, Multiplier: factor,
+	audit := &metrics.RefusalBilling{Category: category, Multiplier: factor,
 		OriginalUsage: map[string]int64{}, BilledUsage: map[string]int64{}}
 	for _, key := range []string{"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"} {
 		if raw, exists := billed[key]; exists {

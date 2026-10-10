@@ -324,6 +324,39 @@ func TestRefusalBillingSSECompositionAndFailures(t *testing.T) {
 	}
 }
 
+func TestRefusalBillingStreamUsageAfterRefusal(t *testing.T) {
+	prefix := "data: " + `{"type":"message_start","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":1949,"cache_read_input_tokens":244002}}}` + "\n\n"
+	refused := `"stop_reason":"refusal","stop_details":{"category":"cyber"}`
+	for _, tc := range []struct {
+		name, events string
+	}{
+		{"top-level stop", `{"type":"message_delta",` + refused + `,"usage":{"output_tokens":1118}}` + "\n\n"},
+		{"top-level stop with delta", `{"type":"message_delta",` + refused + `,"delta":{},"usage":{"output_tokens":1118}}` + "\n\n"},
+		{"later usage", `{"type":"message_delta","delta":{` + refused + `},"usage":{"output_tokens":1100}}` + "\n\ndata: " + `{"type":"message_delta","delta":{},"usage":{"input_tokens":2,"output_tokens":1118,"cache_creation_input_tokens":1949,"cache_read_input_tokens":244002}}` + "\n\n"},
+		{"repeated refusal", `{"type":"message_delta","delta":{` + refused + `},"usage":{"output_tokens":1100}}` + "\n\ndata: " + `{"type":"message_delta","delta":{` + refused + `},"usage":{"output_tokens":1118}}` + "\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &refusalResponseAdapter{options: refusalBillingOptions{Enabled: true, Multipliers: map[string]float64{"cyber": 2}}, usage: map[string]json.RawMessage{}}
+			original := prefix + "data: " + tc.events + "data: {\"type\":\"message_stop\"}\n\n"
+			var output bytes.Buffer
+			if _, _, err := copySSEWithResponseTransforms(&output, strings.NewReader(original), nil, adapter); err != nil {
+				t.Fatal(err)
+			}
+			observer := accounting.NewObserver(bytes.NewReader(output.Bytes()), "text/event-stream")
+			if _, err := io.Copy(io.Discard, observer); err != nil {
+				t.Fatal(err)
+			}
+			usage, _, _ := observer.Result(nil, "")
+			if !usage.Complete || usage.InputTokens != 4 || usage.OutputTokens != 2236 || usage.CacheCreation5mTokens != 3898 || usage.CacheReadTokens != 488004 {
+				t.Fatalf("missing or compounded adjustment: %+v", usage)
+			}
+			if !strings.HasPrefix(output.String(), prefix) || adapter.billing == nil || adapter.billing.OriginalUsage["input_tokens"] != 2 || adapter.billing.OriginalUsage["output_tokens"] != 1118 || adapter.billing.BilledUsage["output_tokens"] != 2236 {
+				t.Fatalf("changed prefix or incorrect final audit: %+v", adapter.billing)
+			}
+		})
+	}
+}
+
 func TestRefusalBillingDisabledAndRequestIsolation(t *testing.T) {
 	refused := `{"type":"message","model":"m","stop_reason":"refusal","stop_details":{"category":"cyber"},"usage":{"input_tokens":10,"output_tokens":0}}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
