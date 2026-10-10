@@ -178,6 +178,70 @@ func TestRefusalBillingForward(t *testing.T) {
 	}
 }
 
+func TestRefusalBillingUntypedJSON(t *testing.T) {
+	body := `{"model":"claude-test","stop_reason":"refusal","stop_details":{"category":"reasoning_extraction"},"usage":{"input_tokens":4,"output_tokens":164,"cache_read_input_tokens":114517,"cache_creation_input_tokens":117}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+	server := newTestServer(t, upstream.URL, 4096)
+	options := server.refusalBilling.current()
+	options.Enabled = true
+	if err := server.refusalBilling.persist(t.Context(), server.store, options); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[]}`))
+	request.Header.Set("x-api-key", "downstream-key")
+	response := httptest.NewRecorder()
+	server.routes().ServeHTTP(response, request)
+	observer := accounting.NewObserver(bytes.NewReader(response.Body.Bytes()), "application/json")
+	if _, err := io.Copy(io.Discard, observer); err != nil {
+		t.Fatal(err)
+	}
+	billed, _, refusal := observer.Result(nil, "")
+	if response.Code != 200 || !refusal.Seen || billed.InputTokens != 12 || billed.OutputTokens != 492 || billed.CacheReadTokens != 343551 || billed.CacheCreation5mTokens != 351 {
+		t.Fatalf("status=%d refusal=%+v usage=%+v", response.Code, refusal, billed)
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte(`"type"`)) {
+		t.Fatal("billing adjustment inserted a missing response type")
+	}
+	audit := server.metrics.Recent(1)[0].RefusalBilling
+	if audit == nil || audit.Multiplier != 3 || audit.OriginalUsage["output_tokens"] != 164 || audit.BilledUsage["output_tokens"] != 492 {
+		t.Fatalf("missing billing audit: %+v", audit)
+	}
+	if err := server.accounting.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := server.store.AllAccounts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	totals, err := server.store.UsageTotalsByModel(t.Context(), accounts[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original := totals["claude-test"]; original.InputTokens != 4 || original.OutputTokens != 164 || original.CacheReadTokens != 114517 {
+		t.Fatalf("original accounting changed: %+v", original)
+	}
+	for _, tc := range []struct {
+		name, body   string
+		nonStreaming bool
+	}{
+		{"untyped SSE", body, false},
+		{"explicit other type", strings.Replace(body, `{`, `{"type":"error",`, 1), true},
+		{"ordinary JSON", strings.Replace(body, `"stop_reason":"refusal"`, `"stop_reason":"end_turn"`, 1), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &refusalResponseAdapter{options: options, nonStreaming: tc.nonStreaming, usage: map[string]json.RawMessage{}}
+			result, changed, err := adapter.adjust([]byte(tc.body))
+			if err != nil || changed || string(result) != tc.body || adapter.billing != nil {
+				t.Fatalf("unrelated response adjusted: changed=%v error=%v body=%s", changed, err, result)
+			}
+		})
+	}
+}
+
 func TestRefusalBillingHotUpdateSnapshots(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var gate, releaseOnce sync.Once

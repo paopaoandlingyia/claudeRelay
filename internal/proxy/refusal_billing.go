@@ -119,10 +119,11 @@ func (s *Server) setRefusalBilling(w http.ResponseWriter, r *http.Request) {
 // The accounting.Observer reads original upstream bytes before this adapter.
 // Only downstream billing usage changes; account consumption stays authentic.
 type refusalResponseAdapter struct {
-	options   refusalBillingOptions
-	requestID string
-	usage     map[string]json.RawMessage
-	billing   *metrics.RefusalBilling
+	options      refusalBillingOptions
+	requestID    string
+	nonStreaming bool
+	usage        map[string]json.RawMessage
+	billing      *metrics.RefusalBilling
 }
 
 func (a *refusalResponseAdapter) adjust(body []byte) ([]byte, bool, error) {
@@ -139,6 +140,12 @@ func (a *refusalResponseAdapter) adjust(body []byte) ([]byte, bool, error) {
 		if err := json.Unmarshal(raw, &kind); err != nil {
 			return nil, false, fmt.Errorf("decode response type: %w", err)
 		}
+	} else if a.nonStreaming && len(root["stop_reason"]) > 0 && len(root["usage"]) > 0 {
+		// Some upstream JSON replies omit type although they contain the normal
+		// Messages stop reason and usage. Match the accounting observer's support
+		// for those replies; SSE events still require their explicit event type.
+		kind = "message"
+		slog.Warn("upstream Messages response missing type", "request_id", a.requestID)
 	}
 	envelope := root
 	if kind == "message_start" {

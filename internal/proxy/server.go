@@ -579,7 +579,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	adjustSSE := adjustUsage && strings.Contains(strings.ToLower(contentType), "text/event-stream")
 	var adjustment *refusalResponseAdapter
 	if adjustJSON || adjustSSE {
-		adjustment = &refusalResponseAdapter{options: refusalOptions, requestID: requestID, usage: map[string]json.RawMessage{}}
+		adjustment = &refusalResponseAdapter{options: refusalOptions, requestID: requestID, nonStreaming: adjustJSON, usage: map[string]json.RawMessage{}}
 	}
 	var copyErr error
 	var responseBody []byte
