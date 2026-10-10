@@ -393,6 +393,14 @@
         <label for="oauthAlias">账号别名</label>
         <input id="oauthAlias" type="text" maxlength="64" pattern="[A-Za-z0-9._-]+" placeholder="personal" autocomplete="off">
         <p class="note">别名用于日志、路由和 <code class="mono">X-Claude-Relay-Account</code>。只能使用字母、数字、点、下划线、连字符，不要填邮箱。</p>
+        <label for="oauthProxyMode">出口方式</label>
+<select id="oauthProxyMode"><option value="direct">直连（服务器出口）</option><option value="custom">自定义代理</option><option value="global">跟随全局配置</option></select>
+<div id="oauthProxyFields" class="hidden">
+<label for="oauthProxyAddress">代理地址</label><input id="oauthProxyAddress" type="text" placeholder="http://代理IP:12323" autocomplete="off">
+<label for="oauthProxyUsername">代理用户名（可选）</label><input id="oauthProxyUsername" type="text" autocomplete="off">
+<label for="oauthProxyPassword">代理密码（可选）</label><input id="oauthProxyPassword" type="password" autocomplete="new-password">
+<p class="note">支持 HTTP(S)。密码保存后不回显。修改已有代理时，三个输入框均留空则保留原配置；填写地址会替换整套认证信息。</p>
+</div>
         <button id="startOAuthButton" class="btn btn-primary btn-block" type="button">生成授权链接</button>
       </section>
 
@@ -442,6 +450,24 @@
       </div>
       <dl class="runtime" id="actionsDetail"></dl>
       <div class="action-list" id="actionsList"></div>
+    </form>
+  </dialog>
+
+  <dialog id="proxyDialog" class="dialog">
+    <form method="dialog" class="dialog-body">
+      <div class="dialog-head"><h2 id="proxyTitle">账号出口设置</h2><button class="btn btn-close" value="cancel" type="submit" aria-label="关闭">×</button></div>
+      <p id="proxyCurrent" class="note"></p>
+      <label for="accountProxyMode">出口方式</label>
+<select id="accountProxyMode"><option value="direct">直连（服务器出口）</option><option value="custom">自定义代理</option><option value="global">跟随全局配置</option></select>
+<div id="accountProxyFields" class="hidden">
+<label for="accountProxyAddress">代理地址</label><input id="accountProxyAddress" type="text" placeholder="http://代理IP:12323" autocomplete="off">
+<label for="accountProxyUsername">代理用户名（可选）</label><input id="accountProxyUsername" type="text" autocomplete="off">
+<label for="accountProxyPassword">代理密码（可选）</label><input id="accountProxyPassword" type="password" autocomplete="new-password">
+<p class="note">支持 HTTP(S)。密码保存后不回显。修改已有代理时，三个输入框均留空则保留原配置；填写地址会替换整套认证信息。</p>
+</div>
+      <p class="note">保存后对后续请求生效。代理失败会报错，不会自动切回直连。</p>
+      <p id="proxyError" class="form-error" role="alert"></p>
+      <button id="saveProxyButton" class="btn btn-primary btn-block" type="button">保存出口设置</button>
     </form>
   </dialog>
 

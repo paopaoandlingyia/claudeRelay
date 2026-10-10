@@ -78,6 +78,9 @@ func TestSchemaV3MigratesExistingAccountsToCompatiblePool(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("legacy account lookup: found=%v err=%v", found, err)
 	}
+	if account.ProxyMode != "global" || account.ProxyURL != "" {
+		t.Fatalf("legacy exit changed during migration: mode=%s", account.ProxyMode)
+	}
 	if account.Pool != AccountPoolCompatible || !account.Enabled {
 		t.Fatalf("migrated account = %#v", account)
 	}

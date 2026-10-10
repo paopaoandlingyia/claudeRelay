@@ -38,6 +38,9 @@ type cooldownView struct {
 }
 
 type accountView struct {
+	ProxyMode           string                       `json:"proxy_mode"`
+	ProxyURL            string                       `json:"proxy_url,omitempty"`
+	HasProxyAuth        bool                         `json:"has_proxy_auth"`
 	Alias               string                       `json:"alias"`
 	Enabled             bool                         `json:"enabled"`
 	Pool                string                       `json:"pool"`
@@ -60,6 +63,9 @@ type accountView struct {
 func accountResponse(account store.Account) accountView {
 	return accountView{
 		Alias:           account.Alias,
+		ProxyMode:       account.ProxyMode,
+		ProxyURL:        store.ProxyDisplay(account.ProxyURL),
+		HasProxyAuth:    proxyHasAuth(account.ProxyURL),
 		Enabled:         account.Enabled,
 		Pool:            account.Pool,
 		Email:           account.Email,
@@ -232,7 +238,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		Listen:             s.cfg.Listen,
 		Endpoint:           relayEndpoint(r),
 		Upstream:           s.upstream.String(),
-		UpstreamProxy:      s.cfg.UpstreamProxy,
+		UpstreamProxy:      store.ProxyDisplay(s.cfg.UpstreamProxy),
 		AutoRefresh:        s.cfg.AutoRefresh,
 		MaxRequestBytes:    s.cfg.MaxRequestBytes,
 		RelayAPIKey:        s.cfg.RelayAPIKey,
@@ -430,6 +436,7 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found_error", err.Error())
 		return
 	}
+	s.exits.forget(account.ID)
 	s.metrics.Forget(account.Alias)
 	s.sampler.forget(account)
 	writeJSON(w, http.StatusOK, map[string]any{"alias": account.Alias, "deleted": true})
@@ -547,7 +554,7 @@ func (s *Server) checkAccount(w http.ResponseWriter, r *http.Request) {
 	target := *s.upstream
 	target.Path = strings.TrimRight(s.upstream.Path, "/") + "/v1/messages/count_tokens"
 	target.RawQuery = "beta=true"
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(attributed))
+	request, err := http.NewRequestWithContext(withAccountExit(ctx, account), http.MethodPost, target.String(), bytes.NewReader(attributed))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "api_error", "failed to build check request")
 		return
@@ -644,7 +651,9 @@ func (s *Server) importAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 type oauthStartRequest struct {
-	Alias string `json:"alias"`
+	ProxyMode string `json:"proxy_mode"`
+	ProxyURL  string `json:"proxy_url"`
+	Alias     string `json:"alias"`
 }
 
 func (s *Server) startClaudeOAuth(w http.ResponseWriter, r *http.Request) {
@@ -658,7 +667,15 @@ func (s *Server) startClaudeOAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	result, err := s.oauth.Start(request.Alias)
+	if request.ProxyMode == "" {
+		request.ProxyMode = "direct"
+	}
+	request.ProxyURL = strings.TrimSpace(request.ProxyURL)
+	if err := store.ValidateAccountProxy(request.ProxyMode, request.ProxyURL); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	result, err := s.oauth.StartWithProxy(request.Alias, request.ProxyMode, request.ProxyURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "api_error", "failed to start OAuth login")
 		return
@@ -677,7 +694,13 @@ func (s *Server) exchangeClaudeOAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	alias, cred, err := s.oauth.Exchange(r.Context(), strings.TrimSpace(request.SessionID), request.Code)
+	session, err := s.oauth.PendingSession(strings.TrimSpace(request.SessionID))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "authentication_error", err.Error())
+		return
+	}
+	exit := store.Account{ProxyMode: session.ProxyMode, ProxyURL: session.ProxyURL}
+	alias, cred, err := s.oauth.Exchange(withAccountExit(r.Context(), exit), strings.TrimSpace(request.SessionID), request.Code)
 	if err != nil {
 		slog.Warn("OAuth authorization exchange failed", "error", err)
 		writeError(w, http.StatusBadRequest, "authentication_error", err.Error())
@@ -687,6 +710,12 @@ func (s *Server) exchangeClaudeOAuth(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("persist OAuth authorization failed", "account", alias, "error", err)
 		writeError(w, http.StatusConflict, "api_error", err.Error())
+		return
+	}
+	account, err = s.store.SetAccountProxy(r.Context(), account.Alias, session.ProxyMode, session.ProxyURL)
+	if err != nil {
+		slog.Error("persist OAuth exit failed", "account", alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "api_error", err.Error())
 		return
 	}
 	slog.Info("OAuth authorization succeeded", "account", account.Alias, "enabled", account.Enabled, "expires_at", account.ExpiresAt)

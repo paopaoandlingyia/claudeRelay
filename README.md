@@ -91,8 +91,20 @@ $env:CLAUDE_RELAY_ADMIN_API_KEY = "replace-with-a-different-long-random-key"
 .\claude-relay.exe serve -config config.json
 ```
 
-Point an Anthropic client to `http://127.0.0.1:8567`. Set `upstream_proxy` to a URL such as
-`http://127.0.0.1:7890` when upstream traffic must use a local proxy.
+Point an Anthropic client to `http://127.0.0.1:8567`. In the WebUI, open an account's
+**出口设置** to choose direct, a custom HTTP(S) proxy, or inheritance of the global
+`upstream_proxy` / `CLAUDE_RELAY_UPSTREAM_PROXY` setting. New accounts default to direct;
+accounts migrated from older releases inherit the global setting to preserve their exit.
+Messages, token counting, account checks, token refresh, and usage/profile queries all use
+the account's exit. OAuth setup also lets you choose the exit before exchanging the code.
+Browser authorization traffic uses the browser's network.
+
+Proxy settings persist in SQLite and apply to subsequent requests without restarting. Direct
+ignores proxy environment variables. A failed proxy never falls back to direct for that account.
+Custom proxies accept `http://user:password@host:port` or an address with credentials entered
+separately in the WebUI; credentials are omitted from administration responses and redacted in
+transport errors. To keep existing custom credentials, leave all three proxy inputs blank.
+Entering a new address replaces the entire custom proxy configuration, including authentication.
 
 `max_inflight_per_account` is a per-account hard in-process Messages request limit, set to `8` by
 default. Native `/v1/messages/count_tokens` calls use a separate short-request limit,

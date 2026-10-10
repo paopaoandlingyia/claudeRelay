@@ -21,6 +21,8 @@ type Account struct {
 	ID            int64
 	Alias         string
 	Enabled       bool
+	ProxyMode     string
+	ProxyURL      string
 	Pool          string
 	CreatedAt     int64
 	UpdatedAt     int64
@@ -84,7 +86,7 @@ type CooldownMatch struct {
 	Reason string
 }
 
-const schemaVersion = 14
+const schemaVersion = 15
 
 type Store struct {
 	db *sql.DB
@@ -432,6 +434,18 @@ func (s *Store) initialize(ctx context.Context) error {
 			return fmt.Errorf("record database schema version: %w", err)
 		}
 	}
+	if version < 15 {
+		// Existing rows inherit the previous global exit. New imports explicitly use direct.
+		if err := s.ensureColumn(ctx, "accounts", "proxy_mode", "TEXT NOT NULL DEFAULT 'global' CHECK(proxy_mode IN ('direct','custom','global'))"); err != nil {
+			return err
+		}
+		if err := s.ensureColumn(ctx, "accounts", "proxy_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, "PRAGMA user_version=15"); err != nil {
+			return fmt.Errorf("record database schema version: %w", err)
+		}
+	}
 	refusalCutoff := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Hour).Unix()
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM refusal_hourly WHERE bucket_start<?`, refusalCutoff); err != nil {
 		return fmt.Errorf("prune refusal observations during startup: %w", err)
@@ -528,8 +542,8 @@ func (s *Store) ImportAccount(ctx context.Context, alias string, cred credential
 		return account, reloadErr
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO accounts
-		(alias,type,access_token,refresh_token,expires_at,email,account_uuid,device_id,extra_json,enabled,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,0,?,?)
+		(alias,type,access_token,refresh_token,expires_at,email,account_uuid,device_id,extra_json,enabled,created_at,updated_at,proxy_mode)
+		VALUES(?,?,?,?,?,?,?,?,?,0,?,?,'direct')
 		ON CONFLICT(alias) DO UPDATE SET
 		type=excluded.type, access_token=excluded.access_token, refresh_token=excluded.refresh_token,
 		expires_at=excluded.expires_at, email=excluded.email, account_uuid=excluded.account_uuid,
@@ -628,7 +642,7 @@ func (s *Store) AllAccounts(ctx context.Context) ([]Account, error) {
 	return accounts, rows.Err()
 }
 
-const accountColumns = `a.id,a.alias,a.enabled,a.account_pool,a.type,a.access_token,a.refresh_token,a.expires_at,a.email,a.account_uuid,a.device_id,a.extra_json,a.created_at,a.updated_at,a.last_refresh_at`
+const accountColumns = `a.id,a.alias,a.enabled,a.account_pool,a.type,a.access_token,a.refresh_token,a.expires_at,a.email,a.account_uuid,a.device_id,a.extra_json,a.created_at,a.updated_at,a.last_refresh_at,a.proxy_mode,a.proxy_url`
 
 type scanner interface{ Scan(...any) error }
 
@@ -638,7 +652,7 @@ func scanAccount(row scanner) (Account, error) {
 	if err := row.Scan(&account.ID, &account.Alias, &account.Enabled, &account.Pool, &account.Type,
 		&account.AccessToken, &account.RefreshToken, &account.ExpiresAt, &account.Email,
 		&account.AccountUUID, &account.DeviceID, &extra,
-		&account.CreatedAt, &account.UpdatedAt, &account.LastRefreshAt); err != nil {
+		&account.CreatedAt, &account.UpdatedAt, &account.LastRefreshAt, &account.ProxyMode, &account.ProxyURL); err != nil {
 		return Account{}, fmt.Errorf("scan account: %w", err)
 	}
 	if extra != "" && extra != "null" {

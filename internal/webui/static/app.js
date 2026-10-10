@@ -1513,12 +1513,14 @@ function openActions(account) {
   } else if (usage?.status === "error") {
     detailRows.push(detailRow("订阅额度", `读取失败：${usage.error}`));
   }
+  detailRows.push(detailRow("账号出口", proxyModeLabel(account.proxy_mode) + (account.proxy_url ? " · " + account.proxy_url : "")));
   detail.replaceChildren(...detailRows);
 
   const list = $("actionsList");
   list.replaceChildren();
 
   list.appendChild(button("复制账号 UUID", "btn", () => copyText(account.account_uuid, "账号 UUID 已复制")));
+  list.appendChild(button("出口设置", "btn", () => { $("actionsDialog").close(); openAccountProxy(account); }));
   list.appendChild(button("重命名", "btn", () => { $("actionsDialog").close(); openRename(account); }));
   list.appendChild(button("刷新订阅额度", "btn", async () => {
     $("actionsDialog").close();
@@ -1584,6 +1586,74 @@ function openActions(account) {
 
   $("actionsDialog").showModal();
 }
+
+function proxyModeLabel(mode) {
+  return ({ direct: "直连", custom: "自定义代理", global: "跟随全局配置" })[mode];
+}
+
+function updateProxyFields(prefix) {
+  $(prefix + "Fields").classList.toggle("hidden", $(prefix + "Mode").value !== "custom");
+}
+
+function readProxySettings(prefix, preserve = false) {
+  const mode = $(prefix + "Mode").value;
+  if (mode !== "custom") return { mode, url: "" };
+  const address = $(prefix + "Address").value.trim();
+  const username = $(prefix + "Username").value;
+  const password = $(prefix + "Password").value;
+  if (preserve && !address && !username && !password) return { mode };
+  if (!address) throw new Error("请填写代理地址和端口。");
+  const url = new URL(address);
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("代理地址需要以 http:// 或 https:// 开头。");
+  if (username || password) {
+    url.username = encodeURIComponent(username);
+    url.password = encodeURIComponent(password);
+  }
+  // URL adds a root slash; the backend accepts proxy endpoints without paths.
+  return { mode, url: url.toString().replace(/\/$/, "") };
+}
+
+function clearProxyFields(prefix) {
+  for (const suffix of ["Address", "Username", "Password"]) $(prefix + suffix).value = "";
+}
+
+function openAccountProxy(account) {
+  const dialog = $("proxyDialog");
+  dialog.dataset.alias = account.alias;
+  dialog.dataset.hasCustom = String(account.proxy_mode === "custom");
+  $("proxyTitle").textContent = account.alias + " · 出口设置";
+  $("proxyCurrent").textContent = "当前：" + proxyModeLabel(account.proxy_mode) + (account.proxy_url ? " · " + account.proxy_url : "") + (account.has_proxy_auth ? "（已保存认证信息）" : "");
+  $("proxyError").textContent = "";
+  $("accountProxyMode").value = account.proxy_mode;
+  clearProxyFields("accountProxy");
+  $("accountProxyAddress").placeholder = account.proxy_url || "http://代理IP:12323";
+  updateProxyFields("accountProxy");
+  dialog.showModal();
+}
+
+async function saveAccountProxy() {
+  const dialog = $("proxyDialog");
+  const element = $("saveProxyButton");
+  $("proxyError").textContent = "";
+  setBusy(element, true, "保存中");
+  try {
+    const settings = readProxySettings("accountProxy", dialog.dataset.hasCustom === "true");
+    await api("/admin/v1/accounts/" + encodeURIComponent(dialog.dataset.alias) + "/proxy", { method: "POST", body: JSON.stringify(settings) });
+    clearProxyFields("accountProxy");
+    dialog.close();
+    showToast("账号出口已保存");
+    await refreshAll();
+  } catch (error) {
+    $("proxyError").textContent = error.message;
+  } finally { setBusy(element, false); }
+}
+
+for (const prefix of ["accountProxy", "oauthProxy"]) {
+  $(prefix + "Mode").addEventListener("change", () => updateProxyFields(prefix));
+}
+$("saveProxyButton").addEventListener("click", saveAccountProxy);
+$("proxyDialog").addEventListener("close", () => clearProxyFields("accountProxy"));
+$("oauthDialog").addEventListener("close", () => clearProxyFields("oauthProxy"));
 
 function openRename(account) {
   $("renameError").textContent = "";
@@ -1694,10 +1764,12 @@ async function startOAuth() {
   const element = $("startOAuthButton");
   setBusy(element, true, "创建中");
   try {
+    const proxy = readProxySettings("oauthProxy");
     const result = await api("/admin/v1/oauth/claude/start", {
       method: "POST",
-      body: JSON.stringify({ alias }),
+      body: JSON.stringify({ alias, proxy_mode: proxy.mode, proxy_url: proxy.url }),
     });
+    clearProxyFields("oauthProxy");
     state.pendingOAuth = {
       alias,
       sessionId: result.session_id,

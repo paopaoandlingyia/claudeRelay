@@ -42,6 +42,7 @@ type Server struct {
 	countTokensLoad  *accountLoadTracker
 	upstream         *url.URL
 	httpServer       *http.Server
+	exits            *accountTransport
 	client           *http.Client
 	oauth            *claudeoauth.Client
 	tokens           *tokenManager
@@ -102,7 +103,8 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
-	oauthClient := claudeoauth.New(&http.Client{Transport: transport, Timeout: 60 * time.Second})
+	exits := &accountTransport{global: transport, globalURL: cfg.UpstreamProxy, accounts: make(map[int64]accountTransportEntry)}
+	oauthClient := claudeoauth.New(&http.Client{Transport: exits, Timeout: 60 * time.Second})
 	load := newAccountLoadTracker()
 	countTokensLoad := newAccountLoadTracker()
 	sessions := newSessionAdmissionTracker(database, cfg.MaxActiveSessionsPerAccount)
@@ -122,7 +124,8 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 			policy:                        routingPolicy,
 		},
 		upstream:        upstream,
-		client:          &http.Client{Transport: transport},
+		client:          &http.Client{Transport: exits},
+		exits:           exits,
 		oauth:           oauthClient,
 		metrics:         metrics.New(cfg.RequestLogSize),
 		sampler:         sampler,
@@ -155,6 +158,7 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	defer s.exits.CloseIdleConnections()
 	accountingCtx, stopAccounting := context.WithCancel(context.Background())
 	defer stopAccounting()
 	go s.accounting.Run(accountingCtx)
@@ -214,6 +218,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/check", s.checkAccount)
 	mux.HandleFunc("GET /admin/v1/accounts/{alias}/usage", func(w http.ResponseWriter, r *http.Request) { s.accountUsage(w, r, false) })
 	mux.HandleFunc("POST /admin/v1/accounts/{alias}/usage/refresh", func(w http.ResponseWriter, r *http.Request) { s.accountUsage(w, r, true) })
+	mux.HandleFunc("POST /admin/v1/accounts/{alias}/proxy", s.setAccountProxy)
 	mux.HandleFunc("POST /admin/v1/oauth/claude/start", s.startClaudeOAuth)
 	mux.HandleFunc("POST /admin/v1/oauth/claude/exchange", s.exchangeClaudeOAuth)
 	mux.HandleFunc("GET /admin/v1/usage", s.usageDashboard)
@@ -494,7 +499,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		if changed {
 			slog.Info("added subscription attribution", "request_id", requestID, "path", incoming.URL.Path, "ingress", ingress.Name, "account", selected.Account.Alias)
 		}
-		response, err = s.doUpstream(incoming, transformedBody, selected.Account.AccessToken)
+		response, err = s.doUpstream(incoming, transformedBody, selected.Account)
 		if err == nil && !retryableStatus(response.StatusCode) {
 			break
 		}
@@ -735,13 +740,13 @@ func stickyTTLAtCompletion(route requestRoute, observedAt, completedAt time.Time
 	return remaining
 }
 
-func (s *Server) doUpstream(incoming *http.Request, body []byte, accessToken string) (*http.Response, error) {
+func (s *Server) doUpstream(incoming *http.Request, body []byte, account store.Account) (*http.Response, error) {
 	target := *s.upstream
 	target.Path = strings.TrimRight(s.upstream.Path, "/") + incoming.URL.Path
 	query := incoming.URL.Query()
 	query.Set("beta", "true")
 	target.RawQuery = query.Encode()
-	request, err := http.NewRequestWithContext(incoming.Context(), http.MethodPost, target.String(), bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(withAccountExit(incoming.Context(), account), http.MethodPost, target.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -751,7 +756,7 @@ func (s *Server) doUpstream(incoming *http.Request, body []byte, accessToken str
 	// Accept-Encoding leaves the body compressed and makes SSE metadata opaque.
 	request.Header.Del("Accept-Encoding")
 	request.Header.Del("x-api-key")
-	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("Authorization", "Bearer "+account.AccessToken)
 	if request.Header.Get("anthropic-version") == "" {
 		request.Header.Set("anthropic-version", "2023-06-01")
 	}

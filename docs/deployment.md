@@ -85,7 +85,7 @@ The image contains only non-secret defaults. Compose passes these supported runt
 | `CLAUDE_RELAY_OFFICIAL_API_KEY` | Optional Claude Code-shaped ingress with access to every account | Empty |
 | `CLAUDE_RELAY_ADMIN_API_KEY` | Administration key for WebUI, OAuth, and account state | Required and must differ |
 | `CLAUDE_RELAY_AVAILABILITY_API_KEY` | Read-only key for `GET /ops/v1/availability` | Empty (endpoint disabled) |
-| `CLAUDE_RELAY_UPSTREAM_PROXY` | Optional outbound HTTP(S) proxy | Empty |
+| `CLAUDE_RELAY_UPSTREAM_PROXY` | HTTP(S) proxy for accounts set to follow global configuration | Empty |
 | `CLAUDE_RELAY_MAX_REQUEST_BYTES` | Maximum request body size | `33554432` |
 | `CLAUDE_RELAY_MAX_INFLIGHT_PER_ACCOUNT` | Hard per-account in-flight request limit | `8` |
 | `CLAUDE_RELAY_MAX_ACTIVE_SESSIONS_PER_ACCOUNT` | New-session admission limit per account | `5` |
@@ -101,6 +101,15 @@ leaving either field empty disables that bound. The check uses the downstream
 `0.0.0.0:8567` inside its isolated container. On Docker Desktop, a host-side Clash proxy can
 usually be addressed as `http://host.docker.internal:7890`. On a Linux server, use a reachable
 proxy address rather than assuming that hostname exists.
+
+Per-account exits are managed in the WebUI through **账号 → 出口设置**; routine changes
+do not require editing `.env` or restarting the container. Choose direct, custom HTTP(S)
+proxy, or follow global configuration. New accounts default to direct; existing accounts
+retain global inheritance after the schema v15 migration. OAuth setup also supports choosing
+an exit before token exchange. HTTP proxies tunnel HTTPS destinations using CONNECT.
+SOCKS5 URLs are not supported. Settings and proxy credentials are stored in the private
+SQLite volume, so protect backups as carefully as OAuth tokens. Upgrade automatically adds
+the account exit columns; older builds cannot open the upgraded schema.
 
 The container runs as UID/GID `10001`, drops Linux capabilities, uses a read-only root filesystem,
 and writes only to `/data` and a small temporary filesystem. The health check calls `/healthz`

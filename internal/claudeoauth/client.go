@@ -28,6 +28,8 @@ const (
 )
 
 type Session struct {
+	ProxyMode    string
+	ProxyURL     string
 	Alias        string
 	State        string
 	CodeVerifier string
@@ -92,6 +94,20 @@ func NewForTest(httpClient *http.Client, authorizeURL, tokenURL, redirectURI str
 }
 
 func (c *Client) Start(alias string) (StartResult, error) {
+	return c.StartWithProxy(alias, "direct", "")
+}
+
+func (c *Client) PendingSession(id string) (Session, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	session, found := c.sessions[id]
+	if !found || time.Since(session.CreatedAt) > sessionTTL {
+		return Session{}, fmt.Errorf("OAuth session was not found or has expired")
+	}
+	return session, nil
+}
+
+func (c *Client) StartWithProxy(alias, mode, address string) (StartResult, error) {
 	state, err := randomURLToken(32)
 	if err != nil {
 		return StartResult{}, fmt.Errorf("generate OAuth state: %w", err)
@@ -124,7 +140,7 @@ func (c *Client) Start(alias string) (StartResult, error) {
 			delete(c.sessions, id)
 		}
 	}
-	c.sessions[sessionID] = Session{Alias: alias, State: state, CodeVerifier: verifier, CreatedAt: now}
+	c.sessions[sessionID] = Session{Alias: alias, State: state, CodeVerifier: verifier, CreatedAt: now, ProxyMode: mode, ProxyURL: address}
 	c.mu.Unlock()
 	return StartResult{
 		AuthorizationURL: c.authorizeURL + "?" + values.Encode(),

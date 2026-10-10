@@ -103,7 +103,7 @@ func (m *tokenManager) refreshAndPersist(ctx context.Context, current store.Acco
 	started := time.Now()
 	slog.Info("OAuth refresh started", "account", current.Alias, "trigger", trigger,
 		"previous_expires_at", current.ExpiresAt, "previous_refresh_at", current.LastRefreshAt)
-	refreshed, err := m.oauth.Refresh(ctx, current.RefreshToken)
+	refreshed, err := m.oauth.Refresh(withAccountExit(ctx, current), current.RefreshToken)
 	if err != nil {
 		slog.Warn("OAuth refresh failed", "account", current.Alias, "trigger", trigger,
 			"duration_ms", time.Since(started).Milliseconds(), "error", err)

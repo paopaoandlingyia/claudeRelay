@@ -143,7 +143,7 @@ func (m *accountUsageManager) get(ctx context.Context, account store.Account, fo
 	requestCtx, cancel := context.WithTimeout(ctx, accountUsageTimeout)
 	defer cancel()
 	var usage rawUsagePayload
-	if err := m.getJSON(requestCtx, "/api/oauth/usage", current.AccessToken, &usage); err != nil {
+	if err := m.getJSON(withAccountExit(requestCtx, current), "/api/oauth/usage", current.AccessToken, &usage); err != nil {
 		return accountUsageView{}, fmt.Errorf("read account usage: %w", err)
 	}
 	view := accountUsageView{
@@ -156,7 +156,7 @@ func (m *accountUsageManager) get(ctx context.Context, account store.Account, fo
 		}
 	}
 	var profile rawProfilePayload
-	if err := m.getJSON(requestCtx, "/api/oauth/profile", current.AccessToken, &profile); err == nil {
+	if err := m.getJSON(withAccountExit(requestCtx, current), "/api/oauth/profile", current.AccessToken, &profile); err == nil {
 		view.PlanType = resolveClaudePlan(profile)
 	}
 	m.cacheMu.Lock()
