@@ -13,16 +13,18 @@ var hopByHopHeaders = map[string]struct{}{
 	"Upgrade":             {},
 }
 
-func copyRequestHeaders(destination, source http.Header) {
+func copyRequestHeaders(destination, source http.Header, policy ingressPolicy) {
 	copyHeaders(destination, source)
 	destination.Del("Host")
 	destination.Del("Content-Length")
 	destination.Del(accountHeader)
 	destination.Del(requestIDHeader)
-	// Browser access belongs to the client-to-relay hop, not the relay's
-	// authenticated server-to-server request to Anthropic.
-	destination.Del("Origin")
-	destination.Del("anthropic-dangerous-direct-browser-access")
+	// Adapt browser clients only on compatible ingresses. Official traffic keeps
+	// these signals so upstream browser-access checks still apply.
+	if policy.StripBrowserHeaders {
+		destination.Del("Origin")
+		destination.Del("anthropic-dangerous-direct-browser-access")
+	}
 }
 
 func copyResponseHeaders(destination, source http.Header) {

@@ -89,6 +89,11 @@ recorded can still finish; there is no cancellation of other in-flight requests.
 
 ## Claude Code consistency checks
 
+Compatible and experimental ingresses strip `Origin` and
+`anthropic-dangerous-direct-browser-access` before forwarding Messages and token-counting
+requests. The official ingress preserves both headers so upstream browser-access checks still
+apply. This does not add browser CORS/preflight support to the relay.
+
 The official ingress rejects contradictory client claims with HTTP 403 before account selection:
 the original Claude Code session header must equal the original metadata session when both exist;
 billing `cc_version` must agree with the User-Agent release; and billing `cc_entrypoint` must agree

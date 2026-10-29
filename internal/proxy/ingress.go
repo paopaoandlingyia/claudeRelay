@@ -12,18 +12,21 @@ type ingressPolicy struct {
 	Name                      string
 	AccountAccess             store.AccountAccess
 	RequireClaudeCode         bool
+	StripBrowserHeaders       bool
 	NormalizeToolNames        bool
 	AlignGeneratedAttribution bool
 }
 
 var (
 	compatibleIngress = ingressPolicy{
-		Name:          ingressCompatible,
-		AccountAccess: store.AccountAccessCompatibleOnly,
+		Name:                ingressCompatible,
+		AccountAccess:       store.AccountAccessCompatibleOnly,
+		StripBrowserHeaders: true,
 	}
 	experimentalIngress = ingressPolicy{
 		Name:                      ingressExperimental,
 		AccountAccess:             store.AccountAccessCompatibleOnly,
+		StripBrowserHeaders:       true,
 		NormalizeToolNames:        true,
 		AlignGeneratedAttribution: true,
 	}

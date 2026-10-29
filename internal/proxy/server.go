@@ -871,7 +871,7 @@ func (s *Server) doUpstream(incoming *http.Request, body []byte, account store.A
 	if err != nil {
 		return nil, err
 	}
-	copyRequestHeaders(request.Header, incoming.Header)
+	copyRequestHeaders(request.Header, incoming.Header, requestIngress(incoming.Context()))
 	// The incoming encoding describes bytes already decoded before JSON processing.
 	request.Header.Del("Content-Encoding")
 	if compressed {
