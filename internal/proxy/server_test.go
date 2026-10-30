@@ -1293,6 +1293,9 @@ func TestStickyOverloadReturns429WithoutSwitchingAccount(t *testing.T) {
 	}))
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
+	if _, err := server.routingPolicy.set(routingPolicyLegacy); err != nil {
+		t.Fatal(err)
+	}
 	server.selector.concurrency.limit.Store(1)
 	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
 	body := `{"model":"claude-test","messages":[{"role":"user","content":"sticky overload"}]}`
@@ -1353,6 +1356,9 @@ func TestUnboundRequestUsesLeastLoadedAccount(t *testing.T) {
 	}))
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
+	if _, err := server.routingPolicy.set(routingPolicyLegacy); err != nil {
+		t.Fatal(err)
+	}
 	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
 	primary, found, err := server.store.AccountByAlias(t.Context(), "default")
 	if err != nil || !found {
@@ -1453,6 +1459,7 @@ func TestRetryableResponseSwitchesAccountOnce(t *testing.T) {
 	}))
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
+	server.traffic, _ = newTrafficObservation(time.Now().Add(time.Hour).Format(time.RFC3339))
 	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"retry me"}]}`))
@@ -1461,6 +1468,19 @@ func TestRetryableResponseSwitchesAccountOnce(t *testing.T) {
 	if recorder.Code != http.StatusOK || calls != 2 {
 		t.Fatalf("status = %d calls = %d body = %s", recorder.Code, calls, recorder.Body.String())
 	}
+	if len(server.traffic.groups) != 2 {
+		t.Fatalf("missing failover account totals: %v", server.traffic.groups)
+	}
+	var attempts, throttled, success int64
+	for _, counts := range server.traffic.groups {
+		attempts += counts["attempts"]
+		throttled += counts["status_429"]
+		success += counts["status_200"]
+	}
+	if attempts != 2 || throttled != 1 || success != 1 {
+		t.Fatalf("attempts=%d throttled=%d success=%d", attempts, throttled, success)
+	}
+
 }
 
 func TestGenericUpstreamFailuresFailOverWithoutCoolingAccounts(t *testing.T) {
@@ -1714,6 +1734,9 @@ func TestOnlyDeclaredAffinityPersistsAfterSuccess(t *testing.T) {
 	}))
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
+	if _, err := server.routingPolicy.set(routingPolicyLegacy); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name          string
 		body          string

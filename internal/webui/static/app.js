@@ -1348,13 +1348,13 @@ function renderConnect() {
 
   const quotaAware = overview.routing_policy === "quota_aware";
   const badge = $("routingPolicyBadge");
-  badge.textContent = quotaAware ? "额度优先" : "现有策略";
+  badge.textContent = quotaAware ? "额度优先" : "亲和优先";
   badge.className = `badge ${quotaAware ? "badge-ok" : "badge-off"}`;
   $("routingPolicyDescription").textContent = quotaAware
     ? "忽略账号 UUID、会话和缓存前缀的硬绑定，优先消耗即将重置的五小时剩余额度；前缀只用于同分裁决。"
     : "按会话与缓存前缀保持账号亲和，新会话优先选择当前负载较低的账号。";
   const policyButton = $("routingPolicyButton");
-  policyButton.textContent = quotaAware ? "恢复现有策略" : "启用额度优先";
+  policyButton.textContent = quotaAware ? "切换亲和优先" : "恢复额度优先";
   policyButton.className = quotaAware ? "btn" : "btn btn-primary";
 }
 
@@ -1532,27 +1532,27 @@ async function saveOfficialVersionBounds(element) {
 
 async function toggleRoutingPolicy(element) {
   const quotaAware = state.overview?.routing_policy === "quota_aware";
-  if (!quotaAware) {
+  if (quotaAware) {
     const accepted = await confirmDialog({
-      title: "启用额度优先调度",
-      lead: "启用后，新请求会优先消耗即将重置的五小时额度。",
+      title: "切换亲和优先调度",
+      lead: "切换后，请求将按会话与缓存前缀保持账号亲和。",
       items: [
-        "账号 UUID、会话和缓存前缀不再形成硬绑定",
-        "活跃会话上限不参与准入，账号瞬时并发上限仍然有效",
-        "设置不会保存，服务重启后恢复现有策略",
+        "恢复账号 UUID、会话和缓存前缀的账号绑定",
+        "恢复活跃会话上限，账号瞬时并发上限仍然有效",
+        "设置不会保存，服务重启后恢复额度优先",
       ],
-      accept: "确认启用",
+      accept: "确认切换",
     });
     if (!accepted) return;
   }
-  setBusy(element, true, quotaAware ? "恢复中" : "启用中");
+  setBusy(element, true, "切换中");
   try {
     const result = await api("/admin/v1/routing/policy", {
       method: "POST",
       body: JSON.stringify({ policy: quotaAware ? "legacy" : "quota_aware" }),
     });
     state.overview.routing_policy = result.routing_policy;
-    showToast(result.routing_policy === "quota_aware" ? "已启用额度优先调度" : "已恢复现有调度策略");
+    showToast(result.routing_policy === "quota_aware" ? "已恢复额度优先调度" : "已切换亲和优先调度");
   } catch (error) {
     showToast(error.message, true);
   } finally {

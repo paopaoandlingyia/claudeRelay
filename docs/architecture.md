@@ -47,18 +47,17 @@ the compatible and experimental keys cannot share sticky state because one reque
 transformed and the other preserved. Metrics and availability keep the three ingress names so
 operators can observe each contract independently.
 
-## 2026-09-16: optional quota-aware routing for workspace-shared caches
+## Quota-aware routing for workspace-shared caches
 
 Some enterprise workspaces have been observed to share prompt-cache entries across their member
 accounts. Those deployments gain no cache-locality benefit from binding a prefix to one account;
 the binding can instead strand most of an account's five-hour allowance just before its reset.
-This is a deployment property, not a universal Anthropic contract, so quota-aware routing is a
-runtime policy rather than a replacement for the default behavior.
+This is a deployment property, not a universal Anthropic contract. Following the operational trial,
+quota-aware routing became the startup default on 2026-10-30; legacy affinity remains selectable.
 
 The administration console switches between `legacy` and `quota_aware`. The value lives only in
-process memory and starts as `legacy` after every restart. This deliberately avoids a schema
-migration and guarantees that an operator can recover the established policy by restarting an
-unhealthy rollout.
+process memory and starts as `quota_aware` after every restart. No schema migration is involved;
+an operator can temporarily switch to `legacy` through the existing console or API.
 
 Quota-aware Messages selection keeps an explicit `X-Claude-Relay-Account`, pool fences, cooldowns,
 per-account in-flight limits, and bounded failover. Automatic account UUIDs, pending sessions,
@@ -160,10 +159,10 @@ whether an in-flight slot, a session slot, or all eligible accounts caused it re
 diagnostics. This avoids exposing account identity and prevents clients from depending on routing
 implementation details.
 
-Under the default legacy policy, Anthropic's unified five-hour utilization remains sampled from
+Under the legacy affinity policy, Anthropic's unified five-hour utilization remains sampled from
 successful response headers for the console and usage estimates rather than used as a routing
-input. The optional workspace-specific policy in the 2026-09-16 decision supersedes that choice
-only while an operator explicitly enables it.
+input. The default workspace-specific quota-aware policy described above uses those readings
+for routing.
 
 Failover eligibility and persisted account health are deliberately separate. A `529` or generic
 `5xx` may be request-scoped or service-wide, so it can cause the single bounded failover but never
@@ -349,7 +348,7 @@ Successful results live in a two-minute in-memory cache, but the console never r
 them automatically. Only an explicit per-account action calls the cache-bypassing refresh endpoint,
 so opening the console and its five-second operations poll generate no Anthropic usage requests.
 Ordinary cached reads are not persisted. An explicit refresh writes one quota observation as
-described in the 2026-08-26 decision. Legacy routing does not consume it; the optional quota-aware
+described in the 2026-08-26 decision. Legacy routing does not consume it; the default quota-aware
 policy may use the live sampler reading populated by that explicit refresh.
 
 Usage reads share the configured outbound proxy. Enabled accounts may use the existing synchronized

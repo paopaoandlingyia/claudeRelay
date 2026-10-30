@@ -50,6 +50,7 @@ type Server struct {
 	usage            *accountUsageManager
 	models           *modelCatalog
 	accounting       *accounting.Manager
+	traffic          *trafficObservation
 	sampler          *subscriptionSampler
 	routingPolicy    *routingPolicyState
 	officialVersion  *officialVersionPolicy
@@ -90,6 +91,10 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	if cfg.MaxActiveSessionsPerAccount < 1 {
 		return nil, fmt.Errorf("config max_active_sessions_per_account must be positive")
 	}
+	traffic, err := newTrafficObservation(cfg.TrafficObservationUntil)
+	if err != nil {
+		return nil, err
+	}
 	officialVersion, err := loadOfficialVersionPolicy(database)
 	if err != nil {
 		return nil, err
@@ -121,8 +126,10 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 	sessions := newSessionAdmissionTracker(database, cfg.MaxActiveSessionsPerAccount)
 	sampler := newSubscriptionSampler(cfg.MaxInflightPerAccount)
 	routingPolicy := &routingPolicyState{}
+	routingPolicy.quotaAware.Store(true)
 	server := &Server{
 		cfg:             cfg,
+		traffic:         traffic,
 		store:           database,
 		load:            load,
 		countTokensLoad: countTokensLoad,
@@ -172,6 +179,10 @@ func NewServer(cfg config.Config, database *store.Store) (*Server, error) {
 
 func (s *Server) Run(ctx context.Context) error {
 	defer s.exits.CloseIdleConnections()
+	trafficCtx, stopTraffic := context.WithCancel(context.Background())
+	trafficDone := make(chan struct{})
+	go func() { defer close(trafficDone); s.traffic.run(trafficCtx) }()
+	defer func() { stopTraffic(); <-trafficDone }()
 	accountingCtx, stopAccounting := context.WithCancel(context.Background())
 	defer stopAccounting()
 	go s.accounting.Run(accountingCtx)
@@ -892,7 +903,12 @@ func (s *Server) doUpstream(incoming *http.Request, body []byte, account store.A
 		request.Header.Set("content-type", "application/json")
 	}
 	request.Host = s.upstream.Host
-	return s.client.Do(request)
+	request, observation := s.observeTraffic(request, body, account)
+	response, err := s.client.Do(request)
+	if observation != nil {
+		return observation.response(response, err)
+	}
+	return response, err
 }
 
 func (s *Server) warnMissingUsage(requestID, model string, response *http.Response) {

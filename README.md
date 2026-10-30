@@ -189,14 +189,14 @@ defaults to 3). Lowering the limit never interrupts running requests; new Messag
 for capacity or receive the existing local `429` response. Native `/v1/messages/count_tokens` calls use a separate short-request limit,
 `max_count_tokens_inflight_per_account`, set to `32` by default; they consume neither a Messages
 slot nor an active-session slot, and do not create or refresh session bindings.
-`max_active_sessions_per_account` admits at most `5` recently active, explicitly identified client
+With affinity-first (`legacy`) routing, `max_active_sessions_per_account` admits at most `5` recently active, explicitly identified client
 sessions per account by default. Cache-prefix affinity without a session ID does not consume a
 session slot. Explicit client sessions retain sliding one-hour affinity; declared cache prefixes
 retain affinity for their five-minute default or explicit one-hour lifetime. A new session may
 select another eligible account when either limit is full; an
 existing sticky session never switches accounts because of local pressure. If its account is full,
-or no account can admit a new session, the relay returns `429`. Under the default `legacy` policy,
-Anthropic's five-hour utilization is sampled for the console and usage estimates only; the optional
+or no account can admit a new session, the relay returns `429`. Under the optional `legacy` policy,
+Anthropic's five-hour utilization is sampled for the console and usage estimates only; the default
 quota-aware policy described below also uses it for routing. Both
 limits can be overridden with the matching `CLAUDE_RELAY_*` environment variables.
 
@@ -372,7 +372,7 @@ revoke the authorization at Anthropic.
 
 `POST /admin/v1/routing/policy` accepts `{"policy":"legacy"}` or
 `{"policy":"quota_aware"}`. The selection is process-local by design and always returns to
-`legacy` after a restart. The console exposes the same switch under the connection panel; no
+`quota_aware` after a restart. The console exposes the same switch under the connection panel; no
 configuration file, environment variable, or database migration is involved.
 
 The usage endpoint reads Anthropic's private OAuth usage surface and returns only windows actually
@@ -544,7 +544,7 @@ Changing an account's pool immediately clears its sticky bindings. Cooldowns and
 state remain with the account. The fence applies to every selection path, so `X-Claude-Relay-Account`
 cannot be used to reach an `official` account from the compatible ingress.
 
-The relay first honors an explicit private account alias, then an account UUID already present in
+When affinity-first (`legacy`) routing is selected, the relay first honors an explicit private account alias, then an account UUID already present in
 official-client metadata, then a persisted sticky binding. New explicitly identified sessions use
 the healthy account with the lowest in-process active-request count that still has both an in-flight
 slot and an active-session slot; the existing cache-affinity hash breaks ties. Cache affinity is
@@ -556,8 +556,9 @@ included `cache_control` lifetime: five minutes when `ttl` is omitted and one ho
 persisted, so it remains deterministic when account loads tie but can rebalance when capacity
 differs. Cache-prefix affinity is never treated as proof of a distinct client session.
 
-The console can temporarily enable **quota-aware** routing for deployments whose Anthropic prompt
-cache is shared by every account in the same workspace. An explicit `X-Claude-Relay-Account`
+**Quota-aware routing is the startup default**, following the workspace's operational trial.
+It is intended for deployments whose Anthropic prompt cache is shared by every account in the
+same workspace. An explicit `X-Claude-Relay-Account`
 continues to win, but automatic account UUID, session, and cache-prefix affinities are bypassed.
 The selector ranks live five-hour readings by `remaining percentage / seconds until reset`, so
 unused quota that will expire soon receives traffic first. An account without a current reading is
@@ -565,8 +566,8 @@ sampled before known accounts; successful Messages response headers then supply 
 The prefix hash only breaks equal-priority ties. Per-account in-flight limits, account pools,
 cooldowns, and bounded failover remain active, while active-session admission and affinity writes
 are skipped. Native `count_tokens` requests continue to use their independent least-loaded pool.
-Switching back to `legacy` immediately restores the behavior above, and a process restart always
-does the same.
+Switching to `legacy` immediately restores the affinity behavior above. A process restart
+returns to `quota_aware`.
 
 An overloaded sticky request returns `429` without deleting, migrating, or temporarily bypassing
 its binding. The in-flight counter and provisional new-session admissions are process-local because
@@ -624,6 +625,48 @@ size. Set `disable_upstream_compression: true` or
 attempt logs `gzip`, `raw_bytes`, and `sent_body_bytes` without logging the body. Compression is
 lossless, including base64 images, and does not change token counts. Upstream errors retain the
 existing handling; compression rejection does not trigger an uncompressed retry.
+
+Temporary traffic diagnostics are off by default. Set `traffic_observation_until` or
+`CLAUDE_RELAY_TRAFFIC_OBSERVATION_UNTIL` to an RFC3339 timestamp with timezone, usually 24–48 hours
+after deployment. The absolute deadline survives restarts; an expired deadline disables new
+observations. Requests already observed can finish afterward. No database migration is involved.
+
+While enabled, `traffic observation` log lines contain **incremental totals**, flushed every minute
+and on graceful shutdown, grouped by UTC hour (Unix timestamp), account, proxy endpoint without
+credentials, model, and Messages/count_tokens path. Sum lines with matching labels; they are not
+cumulative snapshots. At most 256 groups are retained before an early flush. Existing Docker log
+rotation still applies: preserve summaries during a long observation rather than assuming all
+48 hours remain in the container logs. Abrupt termination can lose the current unflushed interval.
+
+- `request_raw_bytes` and `request_encoded_bytes`: request bodies before/after outbound gzip for
+  every API attempt, including attempts that fail or trigger failover. `upload_body_read_bytes`
+  measures bytes consumed by the HTTP transport, including body replays; this is not a count of
+  acknowledged network bytes. `response_encoded_bytes` counts response-body bytes before gzip
+  decoding; `response_decoded_bytes` counts bytes read after decoding. TLS/HTTP headers, CONNECT,
+  handshakes, retransmissions, OAuth, model-list and usage polling traffic are outside these totals.
+- The disjoint raw JSON categories are `system_bytes`, `tool_definitions_bytes`,
+  `message_text_bytes`, `tool_result_text_bytes`, `tool_call_bytes`, `thinking_bytes`,
+  `image_json_bytes`, `document_json_bytes`, and `other_json_bytes`. These sum to raw request size;
+  base64/binary image counters and per-format counters are **subtotals**, not extra traffic.
+- `repeated_images` and `repeated_image_binary_bytes` mean identical image bytes recently seen
+  under the same account, including repeated images within one request and retries. They do not
+  prove membership of one conversation or measure compressed savings. Fingerprints are salted,
+  process-local, never logged, limited to 4,096 entries, and expire after an hour; eviction and
+  restart can undercount repeats. Images referenced by URL or file ID are counted as JSON only.
+- Compression sampling covers approximately 1% of gzip attempts up to 4 MiB, with a global cap
+  of one sample per ten seconds. `sample_baseline_bytes` and `sample_image_marginal_bytes` /
+  `sample_document_marginal_bytes` compare equally reserialized requests with inline base64 image
+  or document payloads removed. These are non-additive marginal estimates; the sample excludes
+  large requests, so do not extrapolate blindly to all traffic. Actual upstream bodies are unchanged.
+- `connections`, `connections_reused`, `connections_idle`, `responses_http1`, `responses_http2`,
+  and `response_gzip` describe actual connection acquisition and final response encoding.
+  `status_*`, `transport_errors`, `response_read_errors`, and `response_eof` distinguish failures
+  and incomplete responses. Stream cancellation may leave received bytes unread and uncounted.
+
+Observed requests explicitly negotiate gzip and lazily decode it after counting encoded bytes,
+preserving the normal streaming and response-header behavior. Disabled diagnostics retain Go's
+automatic gzip handling. No prompts, images, URLs from content, headers, or image fingerprints
+are written to these summaries.
 
 Each response includes `X-Claude-Relay-Request-ID`. A caller may supply a short ID containing only
 letters, digits, dots, colons, underscores, or hyphens; otherwise the relay generates one. The ID

@@ -205,3 +205,24 @@ func TestUpstreamCompressionEnvironment(t *testing.T) {
 		})
 	}
 }
+
+func TestTrafficObservationDeadlineEnvironment(t *testing.T) {
+	for _, deadline := range []string{"", "2026-11-01T18:00:00+08:00", "invalid"} {
+		t.Run(deadline, func(t *testing.T) {
+			t.Setenv("CLAUDE_RELAY_TRAFFIC_OBSERVATION_UNTIL", deadline)
+			path := filepath.Join(t.TempDir(), "config.json")
+			raw := `{"listen":"127.0.0.1:8567","relay_api_key":"relay-key","admin_api_key":"admin-key","upstream_base_url":"https://api.anthropic.com"}`
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if deadline == "invalid" {
+				if err == nil {
+					t.Fatal("accepted invalid observation deadline")
+				}
+			} else if err != nil || cfg.TrafficObservationUntil != deadline {
+				t.Fatalf("deadline=%q err=%v", cfg.TrafficObservationUntil, err)
+			}
+		})
+	}
+}

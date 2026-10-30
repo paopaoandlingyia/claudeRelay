@@ -375,12 +375,12 @@
           <div class="routing-policy-head">
             <div>
               <h3>账号调度</h3>
-              <span id="routingPolicyBadge" class="badge badge-off">现有策略</span>
+              <span id="routingPolicyBadge" class="badge badge-ok">额度优先</span>
             </div>
-            <button id="routingPolicyButton" class="btn btn-primary" type="button">启用额度优先</button>
+            <button id="routingPolicyButton" class="btn" type="button">切换亲和优先</button>
           </div>
-          <p id="routingPolicyDescription" class="note">按会话与缓存前缀保持账号亲和，新会话优先选择当前负载较低的账号。</p>
-          <p class="routing-policy-warning">此开关只在当前进程内有效；服务重启后自动恢复现有策略。</p>
+          <p id="routingPolicyDescription" class="note">忽略账号 UUID、会话和缓存前缀的硬绑定，优先消耗即将重置的五小时剩余额度；前缀只用于同分裁决。</p>
+          <p class="routing-policy-warning">此开关只在当前进程内有效；服务重启后自动恢复额度优先。</p>
         </div>
 
         <div class="card model-list-card">

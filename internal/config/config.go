@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -19,6 +20,7 @@ const (
 )
 
 type Config struct {
+	TrafficObservationUntil          string `json:"traffic_observation_until"`
 	DisableUpstreamCompression       bool   `json:"disable_upstream_compression"`
 	Listen                           string `json:"listen"`
 	RelayAPIKey                      string `json:"relay_api_key"`
@@ -64,6 +66,9 @@ func Load(path string) (Config, error) {
 }
 
 func applyEnvironment(cfg *Config) error {
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_TRAFFIC_OBSERVATION_UNTIL")); value != "" {
+		cfg.TrafficObservationUntil = value
+	}
 	if value := strings.TrimSpace(os.Getenv("CLAUDE_RELAY_DISABLE_UPSTREAM_COMPRESSION")); value != "" {
 		parsed, err := strconv.ParseBool(value)
 		if err != nil {
@@ -143,6 +148,11 @@ func applyEnvironment(cfg *Config) error {
 }
 
 func (cfg *Config) validate() error {
+	if cfg.TrafficObservationUntil != "" {
+		if _, err := time.Parse(time.RFC3339, cfg.TrafficObservationUntil); err != nil {
+			return fmt.Errorf("config traffic_observation_until must be RFC3339: %w", err)
+		}
+	}
 	cfg.Listen = strings.TrimSpace(cfg.Listen)
 	cfg.RelayAPIKey = strings.TrimSpace(cfg.RelayAPIKey)
 	cfg.ExperimentalAPIKey = strings.TrimSpace(cfg.ExperimentalAPIKey)

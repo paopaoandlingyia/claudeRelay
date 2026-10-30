@@ -167,6 +167,9 @@ func TestSuccessfulSessionBecomesConfirmedAdmission(t *testing.T) {
 	}))
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
+	if _, err := server.routingPolicy.set(routingPolicyLegacy); err != nil {
+		t.Fatal(err)
+	}
 	tracker := newSessionAdmissionTracker(server.store, 1)
 	server.selector.sessions = tracker
 	body := `{"model":"claude-test","messages":[{"role":"user","content":"session admission"}]}`

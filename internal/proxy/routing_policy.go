@@ -11,10 +11,8 @@ const (
 	routingPolicyQuotaAware = "quota_aware"
 )
 
-// routingPolicyState is deliberately process-local. Quota-aware routing is an
-// operator-controlled rollout mode: every process start returns to the proven
-// legacy policy, and the administration console can enable it again after the
-// operator has inspected account health.
+// Routing policy is process-local. NewServer starts with quota-aware routing;
+// operators can temporarily switch to legacy affinity routing.
 type routingPolicyState struct {
 	quotaAware atomic.Bool
 }

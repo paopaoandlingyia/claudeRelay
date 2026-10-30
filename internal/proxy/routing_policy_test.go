@@ -187,15 +187,15 @@ func TestRoutingPolicyAdminEndpointAndOverview(t *testing.T) {
 		}
 		return overview
 	}
-	if got := decodeOverview().RoutingPolicy; got != routingPolicyLegacy {
+	if got := decodeOverview().RoutingPolicy; got != routingPolicyQuotaAware {
 		t.Fatalf("initial policy = %q", got)
 	}
 
-	recorder := adminRequest(t, server, http.MethodPost, "/admin/v1/routing/policy", `{"policy":"quota_aware"}`)
+	recorder := adminRequest(t, server, http.MethodPost, "/admin/v1/routing/policy", `{"policy":"legacy"}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("toggle status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if got := decodeOverview().RoutingPolicy; got != routingPolicyQuotaAware {
+	if got := decodeOverview().RoutingPolicy; got != routingPolicyLegacy {
 		t.Fatalf("enabled policy = %q", got)
 	}
 
@@ -203,7 +203,14 @@ func TestRoutingPolicyAdminEndpointAndOverview(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid policy status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if got := decodeOverview().RoutingPolicy; got != routingPolicyQuotaAware {
+	if got := decodeOverview().RoutingPolicy; got != routingPolicyLegacy {
 		t.Fatalf("invalid update changed policy to %q", got)
+	}
+	restarted, err := NewServer(server.cfg, server.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.routingPolicy.current(); got != routingPolicyQuotaAware {
+		t.Fatalf("restarted policy = %q", got)
 	}
 }
