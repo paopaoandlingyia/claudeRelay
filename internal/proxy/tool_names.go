@@ -2,13 +2,22 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
+	"sort"
 	"strings"
 )
 
 const mcpToolNamePrefix = "mcp__"
+
+// Anthropic's tool definition schema permits 1–128 ASCII name characters:
+// https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools
+const maxToolNameLength = 128
+
+var customToolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 // toolNameMapping contains only names changed by the experimental ingress.
 // A client that already declared an mcp__ name therefore never has that name
@@ -38,37 +47,22 @@ func normalizeExperimentalToolNames(body []byte) ([]byte, int, toolNameMapping, 
 	renamed := make(map[string]string)
 	restored := make(toolNameMapping)
 	if tools, ok := root["tools"].([]any); ok {
-		declaredNames := make(map[string]struct{}, len(tools))
-		for _, raw := range tools {
-			tool, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			if name, ok := tool["name"].(string); ok && name != "" {
-				declaredNames[name] = struct{}{}
-			}
+		var err error
+		renamed, err = experimentalToolAliases(tools)
+		if err != nil {
+			return nil, 0, nil, err
 		}
 		for _, raw := range tools {
 			tool, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}
-			// Custom tools may omit type or explicitly use "custom". Other typed
-			// tools include server tools with fixed names; leave them unchanged,
-			// including unknown types, for upstream validation.
-			if toolType, typed := tool["type"]; typed && toolType != "custom" {
+			name, _ := tool["name"].(string)
+			normalized, ok := renamed[name]
+			if !ok {
 				continue
-			}
-			name, ok := tool["name"].(string)
-			if !ok || name == "" || strings.HasPrefix(name, mcpToolNamePrefix) {
-				continue
-			}
-			normalized := mcpToolNamePrefix + name
-			if _, collision := declaredNames[normalized]; collision {
-				return nil, 0, nil, fmt.Errorf("normalize tool name %q: target %q is already declared", name, normalized)
 			}
 			tool["name"] = normalized
-			renamed[name] = normalized
 			restored[normalized] = name
 			changed++
 		}
@@ -105,6 +99,69 @@ func normalizeExperimentalToolNames(body []byte) ([]byte, int, toolNameMapping, 
 		return nil, 0, nil, fmt.Errorf("encode tool-normalized request body: %w", err)
 	}
 	return transformed, changed, restored, nil
+}
+
+func experimentalToolAliases(tools []any) (map[string]string, error) {
+	// Reserve every original name, including server and already-prefixed tools.
+	// A caller can also declare a name that happens to match a generated alias.
+	used := make(map[string]struct{}, len(tools))
+	var customNames []string
+	for _, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := tool["name"].(string)
+		if name == "" {
+			continue
+		}
+		if _, duplicate := used[name]; duplicate {
+			return nil, fmt.Errorf("duplicate tool name %q", name)
+		}
+		used[name] = struct{}{}
+		// Unknown/versioned types have fixed protocol names. Leave invalid caller
+		// names to upstream validation rather than making them valid by truncation.
+		if toolType, typed := tool["type"]; typed && toolType != "custom" {
+			continue
+		}
+		if strings.HasPrefix(name, mcpToolNamePrefix) || !customToolNamePattern.MatchString(name) {
+			continue
+		}
+		customNames = append(customNames, name)
+	}
+
+	renamed := make(map[string]string, len(customNames))
+	var aliasedNames []string
+	for _, name := range customNames {
+		normalized := mcpToolNamePrefix + name
+		if _, collision := used[normalized]; collision || len(normalized) > maxToolNameLength {
+			aliasedNames = append(aliasedNames, name)
+			continue
+		}
+		renamed[name] = normalized
+		used[normalized] = struct{}{}
+	}
+	// Allocate exceptional aliases after all ordinary targets are reserved.
+	// Sorting makes even alias-collision resolution independent of tool order.
+	sort.Strings(aliasedNames)
+	for _, name := range aliasedNames {
+		sum := sha256.Sum256([]byte(name))
+		for attempt := 0; ; attempt++ {
+			suffix := fmt.Sprintf("__%x", sum[:8])
+			if attempt > 0 {
+				suffix += fmt.Sprintf("_%d", attempt)
+			}
+			head := name[:min(len(name), maxToolNameLength-len(mcpToolNamePrefix)-len(suffix))]
+			normalized := mcpToolNamePrefix + head + suffix
+			if _, collision := used[normalized]; collision {
+				continue
+			}
+			renamed[name] = normalized
+			used[normalized] = struct{}{}
+			break
+		}
+	}
+	return renamed, nil
 }
 
 func renameToolReference(value map[string]any, renamed map[string]string) bool {
