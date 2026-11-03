@@ -398,7 +398,7 @@
   <dialog id="oauthDialog" class="dialog">
     <form method="dialog" class="dialog-body">
       <div class="dialog-head">
-        <h2>通过 OAuth 添加账号</h2>
+        <h2 id="oauthTitle">通过 OAuth 添加账号</h2>
         <button class="btn btn-close" value="cancel" type="submit" aria-label="关闭">×</button>
       </div>
       <ol class="steps" aria-label="授权步骤">
@@ -408,6 +408,8 @@
       </ol>
 
       <section id="oauthStep1" class="step">
+        <p id="oauthReauthorizeNote" class="note hidden"></p>
+        <div id="oauthAccountSettings">
         <label for="oauthAlias">账号别名</label>
         <input id="oauthAlias" type="text" maxlength="64" pattern="[A-Za-z0-9._-]+" placeholder="personal" autocomplete="off">
         <p class="note">别名用于日志、路由和 <code class="mono">X-Claude-Relay-Account</code>。只能使用字母、数字、点、下划线、连字符，不要填邮箱。</p>
@@ -419,6 +421,7 @@
 <label for="oauthProxyPassword">代理密码（可选）</label><input id="oauthProxyPassword" type="password" autocomplete="new-password">
 <p class="note">支持 HTTP(S)。密码保存后不回显。修改已有代理时，三个输入框均留空则保留原配置；填写地址会替换整套认证信息。</p>
 </div>
+        </div>
         <button id="startOAuthButton" class="btn btn-primary btn-block" type="button">生成授权链接</button>
       </section>
 
@@ -432,8 +435,8 @@
       </section>
 
       <section id="oauthStep3" class="step hidden">
-        <p class="success-note">账号已入库，当前为关闭状态。</p>
-        <p class="note">确认旧服务（例如 CLIProxyAPI）不再刷新该账号后，再回到列表手动启用。启用即代表本服务独占它的 refresh token。</p>
+        <p id="oauthSuccess" class="success-note">账号已入库，当前为关闭状态。</p>
+        <p id="oauthSuccessNote" class="note">确认旧服务（例如 CLIProxyAPI）不再刷新该账号后，再回到列表手动启用。启用即代表本服务独占它的 refresh token。</p>
         <button id="finishOAuthButton" class="btn btn-primary btn-block" type="button">返回账号列表</button>
       </section>
       <p id="oauthError" class="form-error" role="alert"></p>

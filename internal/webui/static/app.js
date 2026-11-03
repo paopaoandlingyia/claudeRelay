@@ -18,6 +18,7 @@ const state = {
   fiveHourChartSelectionInitialized: false,
   autoRefreshEnabled: true,
   panel: "accounts",
+  oauthTarget: null,
   pendingOAuth: readJSON(sessionStorage, "claudeRelayPendingOAuth"),
   relayKeyVisible: false,
   refusalBillingDirty: false,
@@ -1780,6 +1781,13 @@ function openActions(account) {
   list.replaceChildren();
 
   list.appendChild(button("复制账号 UUID", "btn", () => copyText(account.account_uuid, "账号 UUID 已复制")));
+  list.appendChild(button("重新授权", "btn", () => {
+    $("actionsDialog").close();
+    resetOAuth();
+    state.oauthTarget = account.alias;
+    updateOAuthMode();
+    $("oauthDialog").showModal();
+  }));
   list.appendChild(button("出口设置", "btn", () => { $("actionsDialog").close(); openAccountProxy(account); }));
   list.appendChild(button("查看 / 使用重置卡", "btn", () => { $("actionsDialog").close(); openUsageResets(account); }));
   list.appendChild(button("重命名", "btn", () => { $("actionsDialog").close(); openRename(account); }));
@@ -2015,7 +2023,7 @@ async function submitImport() {
 }
 
 async function startOAuth() {
-  const alias = $("oauthAlias").value.trim();
+  const alias = state.oauthTarget || $("oauthAlias").value.trim();
   const error = $("oauthError");
   error.textContent = "";
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(alias)) {
@@ -2025,14 +2033,17 @@ async function startOAuth() {
   const element = $("startOAuthButton");
   setBusy(element, true, "创建中");
   try {
-    const proxy = readProxySettings("oauthProxy");
+    const proxy = state.oauthTarget ? null : readProxySettings("oauthProxy");
     const result = await api("/admin/v1/oauth/claude/start", {
       method: "POST",
-      body: JSON.stringify({ alias, proxy_mode: proxy.mode, proxy_url: proxy.url }),
+      body: JSON.stringify(state.oauthTarget
+        ? { alias, reauthorize: true }
+        : { alias, proxy_mode: proxy.mode, proxy_url: proxy.url }),
     });
     clearProxyFields("oauthProxy");
     state.pendingOAuth = {
       alias,
+      reauthorize: Boolean(state.oauthTarget),
       sessionId: result.session_id,
       authorizationURL: result.authorization_url,
       createdAt: Date.now(),
@@ -2080,6 +2091,8 @@ async function exchangeOAuth() {
 
 function restoreOAuthUI() {
   if (state.pendingOAuth && Date.now() - state.pendingOAuth.createdAt < 30 * 60 * 1000) {
+    state.oauthTarget = state.pendingOAuth.reauthorize ? state.pendingOAuth.alias : null;
+    updateOAuthMode();
     $("authorizationLink").href = state.pendingOAuth.authorizationURL;
     setOAuthStep(2);
     return;
@@ -2087,9 +2100,25 @@ function restoreOAuthUI() {
   resetOAuth();
 }
 
+function updateOAuthMode() {
+  const reauthorize = Boolean(state.oauthTarget);
+  $("oauthTitle").textContent = reauthorize ? `重新授权 · ${state.oauthTarget}` : "通过 OAuth 添加账号";
+  $("oauthAccountSettings").classList.toggle("hidden", reauthorize);
+  $("oauthReauthorizeNote").classList.toggle("hidden", !reauthorize);
+  $("oauthReauthorizeNote").textContent = reauthorize
+    ? `将使用 ${state.oauthTarget} 已保存的出口配置交换令牌。请在授权页登录同一个 Claude 账号；完成后保留原有配置和启停状态。` : "";
+  $("stepDot1").textContent = reauthorize ? "账号" : "别名";
+  $("exchangeOAuthButton").textContent = reauthorize ? "完成重新授权" : "完成导入";
+  $("oauthSuccess").textContent = reauthorize ? "重新授权成功，已更新该账号的令牌。" : "账号已入库，当前为关闭状态。";
+  $("oauthSuccessNote").classList.toggle("hidden", reauthorize);
+}
+
 function resetOAuth() {
   state.pendingOAuth = null;
   sessionStorage.removeItem("claudeRelayPendingOAuth");
+  state.oauthTarget = null;
+  updateOAuthMode();
+  clearProxyFields("oauthProxy");
   $("oauthAlias").value = "";
   $("oauthCode").value = "";
   $("oauthError").textContent = "";
@@ -2501,7 +2530,12 @@ function openOAuthDialog() {
 
 $("startOAuthButton").addEventListener("click", startOAuth);
 $("exchangeOAuthButton").addEventListener("click", exchangeOAuth);
-$("restartOAuthButton").addEventListener("click", resetOAuth);
+$("restartOAuthButton").addEventListener("click", () => {
+  const target = state.oauthTarget;
+  resetOAuth();
+  state.oauthTarget = target;
+  updateOAuthMode();
+});
 $("finishOAuthButton").addEventListener("click", () => {
   $("oauthDialog").close();
   resetOAuth();

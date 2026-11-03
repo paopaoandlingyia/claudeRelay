@@ -28,6 +28,7 @@ const (
 )
 
 type Session struct {
+	AccountID    int64
 	ProxyMode    string
 	ProxyURL     string
 	Alias        string
@@ -108,6 +109,15 @@ func (c *Client) PendingSession(id string) (Session, error) {
 }
 
 func (c *Client) StartWithProxy(alias, mode, address string) (StartResult, error) {
+	return c.start(alias, mode, address, 0)
+}
+
+// StartReauthorization binds the login to an existing account, independent of renames.
+func (c *Client) StartReauthorization(alias, mode, address string, accountID int64) (StartResult, error) {
+	return c.start(alias, mode, address, accountID)
+}
+
+func (c *Client) start(alias, mode, address string, accountID int64) (StartResult, error) {
 	state, err := randomURLToken(32)
 	if err != nil {
 		return StartResult{}, fmt.Errorf("generate OAuth state: %w", err)
@@ -140,7 +150,7 @@ func (c *Client) StartWithProxy(alias, mode, address string) (StartResult, error
 			delete(c.sessions, id)
 		}
 	}
-	c.sessions[sessionID] = Session{Alias: alias, State: state, CodeVerifier: verifier, CreatedAt: now, ProxyMode: mode, ProxyURL: address}
+	c.sessions[sessionID] = Session{AccountID: accountID, Alias: alias, State: state, CodeVerifier: verifier, CreatedAt: now, ProxyMode: mode, ProxyURL: address}
 	c.mu.Unlock()
 	return StartResult{
 		AuthorizationURL: c.authorizeURL + "?" + values.Encode(),

@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/local/claude-relay/internal/credential"
@@ -653,9 +654,10 @@ func (s *Server) importAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 type oauthStartRequest struct {
-	ProxyMode string `json:"proxy_mode"`
-	ProxyURL  string `json:"proxy_url"`
-	Alias     string `json:"alias"`
+	Reauthorize bool   `json:"reauthorize"`
+	ProxyMode   string `json:"proxy_mode"`
+	ProxyURL    string `json:"proxy_url"`
+	Alias       string `json:"alias"`
 }
 
 func (s *Server) startClaudeOAuth(w http.ResponseWriter, r *http.Request) {
@@ -667,6 +669,28 @@ func (s *Server) startClaudeOAuth(w http.ResponseWriter, r *http.Request) {
 	request.Alias = strings.TrimSpace(request.Alias)
 	if err := store.ValidateAlias(request.Alias); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if request.Reauthorize {
+		account, found, err := s.store.AccountByAlias(r.Context(), request.Alias)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "api_error", "failed to load account")
+			return
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "not_found_error", "account was not found")
+			return
+		}
+		if request.ProxyMode != "" || request.ProxyURL != "" {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "reauthorization uses the saved account proxy")
+			return
+		}
+		result, err := s.oauth.StartReauthorization(account.Alias, account.ProxyMode, account.ProxyURL, account.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "api_error", "failed to start OAuth login")
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
 		return
 	}
 	if request.ProxyMode == "" {
@@ -701,6 +725,10 @@ func (s *Server) exchangeClaudeOAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "authentication_error", err.Error())
 		return
 	}
+	if session.AccountID != 0 {
+		s.reauthorizeClaudeAccount(w, r, session.AccountID, request)
+		return
+	}
 	exit := store.Account{ProxyMode: session.ProxyMode, ProxyURL: session.ProxyURL}
 	alias, cred, err := s.oauth.Exchange(withAccountExit(r.Context(), exit), strings.TrimSpace(request.SessionID), request.Code)
 	if err != nil {
@@ -722,6 +750,42 @@ func (s *Server) exchangeClaudeOAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("OAuth authorization succeeded", "account", account.Alias, "enabled", account.Enabled, "expires_at", account.ExpiresAt)
 	writeJSON(w, http.StatusCreated, accountResponse(account))
+}
+
+// Share the refresh lock so an in-flight refresh cannot overwrite the new login.
+func (s *Server) reauthorizeClaudeAccount(w http.ResponseWriter, r *http.Request, accountID int64, request oauthExchangeRequest) {
+	lockValue, _ := s.tokens.locks.LoadOrStore(accountID, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	current, found, err := s.store.AccountByID(r.Context(), accountID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to load account")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "not_found_error", "account was removed; start a new login")
+		return
+	}
+	_, cred, err := s.oauth.Exchange(withAccountExit(r.Context(), current), strings.TrimSpace(request.SessionID), request.Code)
+	if err != nil {
+		slog.Warn("OAuth reauthorization failed", "account", current.Alias, "error", err)
+		writeError(w, http.StatusBadRequest, "authentication_error", err.Error())
+		return
+	}
+	if cred.AccountUUID != current.AccountUUID {
+		writeError(w, http.StatusConflict, "invalid_request_error", "登录的 Claude 账号与当前账号不一致，原凭据未修改。请重新开始授权并选择正确账号。")
+		return
+	}
+	account, err := s.store.ReauthorizeAccount(r.Context(), current.ID, cred)
+	if err != nil {
+		slog.Error("persist OAuth reauthorization failed", "account", current.Alias, "error", err)
+		writeError(w, http.StatusConflict, "api_error", err.Error())
+		return
+	}
+	slog.Info("OAuth reauthorization succeeded", "account", account.Alias, "enabled", account.Enabled, "expires_at", account.ExpiresAt)
+	writeJSON(w, http.StatusOK, accountResponse(account))
 }
 
 func decodeAdminJSON(w http.ResponseWriter, r *http.Request, destination any) error {

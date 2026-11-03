@@ -905,6 +905,26 @@ func (s *Store) ActiveSessionCount(ctx context.Context, accountID int64, now, cu
 	return count, nil
 }
 
+// ReauthorizeAccount replaces only tokens for the same identity. The UUID predicate
+// also prevents overwriting an account replaced or removed during the OAuth exchange.
+func (s *Store) ReauthorizeAccount(ctx context.Context, id int64, cred credential.Credential) (Account, error) {
+	now := time.Now().Unix()
+	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET access_token=?,refresh_token=?,expires_at=?,updated_at=?,last_refresh_at=? WHERE id=? AND account_uuid=?`,
+		cred.AccessToken, cred.RefreshToken, cred.ExpiresAt, now, now, id, cred.AccountUUID)
+	if err != nil {
+		return Account{}, fmt.Errorf("persist reauthorized tokens: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return Account{}, fmt.Errorf("inspect reauthorization update: %w", err)
+	}
+	if changed == 0 {
+		return Account{}, fmt.Errorf("account was removed or its identity changed; start a new login")
+	}
+	account, _, err := s.AccountByID(ctx, id)
+	return account, err
+}
+
 func (s *Store) UpdateTokens(ctx context.Context, id int64, accessToken, refreshToken, expiresAt string) (Account, error) {
 	now := time.Now().Unix()
 	result, err := s.db.ExecContext(ctx, `UPDATE accounts SET access_token=?,refresh_token=?,expires_at=?,updated_at=?,last_refresh_at=? WHERE id=?`,

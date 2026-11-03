@@ -304,7 +304,7 @@ The console is a single dense screen with four sections:
   Successful Messages response headers update the available five-hour window automatically without
   another upstream request. A manual refresh remains available for optional weekly/model-specific
   OAuth usage windows and the plan label. Per-account actions cover usage refresh, enable/disable,
-  connectivity check, forced token refresh, cooldown release, rename, and deletion.
+  connectivity check, forced token refresh, reauthorization, cooldown release, rename, and deletion.
 - **请求** — the recent request records described below, filterable by account and by failures only.
   A policy refusal is marked separately even when Anthropic returns HTTP 200; it is not counted as a
   transport failure. The known third-party extra-usage HTTP 400 is labeled separately, with
@@ -485,6 +485,14 @@ Content-Type: application/json
 
 {"session_id":"...","code":"..."}
 ```
+
+To reauthorize an existing account, use its **Details → 重新授权** action, or start with
+`{"alias":"personal","reauthorize":true}` (omit proxy fields). The server binds the
+session to that account ID and uses its saved exit, including proxy authentication,
+when exchanging the code. The returned account UUID must match. Success returns
+HTTP 200 and updates only tokens, expiry and refresh timestamps; account settings,
+device ID, enabled state and usage history are preserved. A mismatched login is
+rejected without changing stored credentials; start again with the correct account.
 
 The OAuth session and PKCE verifier live in memory for 30 minutes. A completed login is imported as
 disabled and must be enabled separately. Anthropic does not document this subscription OAuth flow
