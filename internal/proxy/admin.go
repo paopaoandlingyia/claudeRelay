@@ -52,6 +52,7 @@ type accountView struct {
 	CreatedAt           int64                        `json:"created_at,omitempty"`
 	LastRefreshAt       int64                        `json:"last_refresh_at,omitempty"`
 	Cooldown            *cooldownView                `json:"cooldown,omitempty"`
+	Unavailable         bool                         `json:"unavailable,omitempty"`
 	StickySessions      int                          `json:"sticky_sessions"`
 	ActiveSessions      int                          `json:"active_sessions"`
 	InFlight            int                          `json:"in_flight"`
@@ -119,6 +120,9 @@ func (s *Server) accountViews(r *http.Request, accounts []store.Account) ([]acco
 		if cooldown, cooling := latest[account.ID]; cooling {
 			view.Cooldown = &cooldown
 		}
+		refreshable := s.cfg.AutoRefresh && strings.TrimSpace(account.RefreshToken) != ""
+		view.Unavailable = !account.Enabled || view.Cooldown != nil ||
+			(account.Credential.IsExpired(now) && !refreshable) || s.selector.quotaUnavailable(account, now)
 		view.StickySessions = bindings[account.ID]
 		view.ActiveSessions = active[account.ID]
 		view.InFlight = inFlight[account.ID]
@@ -225,7 +229,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 			totals.Expired++
 		}
 		refreshable := s.cfg.AutoRefresh && strings.TrimSpace(account.RefreshToken) != ""
-		if account.Enabled && !cooling[account.ID] && (!expired || refreshable) {
+		if account.Enabled && !cooling[account.ID] && (!expired || refreshable) && !s.selector.quotaUnavailable(account, now) {
 			totals.Available++
 		}
 	}

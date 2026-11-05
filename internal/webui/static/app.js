@@ -169,9 +169,9 @@ function renderStats() {
   const attention = state.accounts.length
     ? state.accounts.filter((account) => {
       const label = accountStatus(account).label;
-      return label === "冷却中" || label === "待刷新" || label === "令牌过期";
+      return label === "冷却中" || label === "待刷新" || label === "令牌过期" || label === "暂不可用";
     }).length
-    : (totals.cooling || 0) + (totals.expired || 0);
+    : Math.max(0, (totals.enabled || 0) - available);
 
   setStat("statAvailable", available, available === 0 && total > 0 ? "is-bad" : "");
   $("statAvailableTotal").textContent = ` / ${total}`;
@@ -183,7 +183,7 @@ function renderStats() {
   $("statAttentionIcon").classList.toggle("stat-icon-warn", attention > 0);
   $("statAttentionIcon").classList.toggle("stat-icon-ok", attention === 0);
   $("statAttentionNote").textContent = attention > 0
-    ? `${totals.cooling || 0} 个冷却 · ${totals.expired || 0} 个凭据需处理`
+    ? `${Math.max(0, (totals.enabled || 0) - available)} 个已启用账号暂不可用`
     : "所有已启用账号均正常";
 
   setStat("statRecent", summary.recent_requests || 0, (summary.recent_failures || 0) > 0 ? "is-warn" : "");
@@ -230,6 +230,9 @@ function accountStatus(account) {
       return { label: "待刷新", css: "badge-warn", note: "下一次请求时将自动续期" };
     }
     return { label: "令牌过期", css: "badge-bad", note: "刷新令牌或重新授权后才能使用" };
+  }
+  if (account.unavailable) {
+    return { label: "暂不可用", css: "badge-warn", note: "当前账号暂不参与 Messages 调度" };
   }
   return { label: "可用", css: "badge-ok", note: "" };
 }
@@ -402,7 +405,7 @@ function accountContactLine(account) {
 
 function accountNeedsAttention(account) {
   const label = accountStatus(account).label;
-  return label === "冷却中" || label === "待刷新" || label === "令牌过期" || Number(account.refusal?.count_24h) > 0;
+  return label === "冷却中" || label === "待刷新" || label === "令牌过期" || label === "暂不可用" || Number(account.refusal?.count_24h) > 0;
 }
 
 function refusalCategoryLabel(category) {

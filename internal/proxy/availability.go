@@ -38,7 +38,7 @@ func (s *Server) availability(w http.ResponseWriter, r *http.Request) {
 
 	available := func(access store.AccountAccess) bool {
 		for _, account := range accounts {
-			if !account.Enabled || !store.AccountAccessMayUse(access, account.Pool) || excluded[account.ID] {
+			if !account.Enabled || !store.AccountAccessMayUse(access, account.Pool) || excluded[account.ID] || s.selector.quotaUnavailable(account, now) {
 				continue
 			}
 			refreshable := s.cfg.AutoRefresh && strings.TrimSpace(account.RefreshToken) != ""

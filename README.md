@@ -582,6 +582,13 @@ are skipped. Native `count_tokens` requests continue to use their independent le
 Switching to `legacy` immediately restores the affinity behavior above. A process restart
 returns to `quota_aware`.
 
+The console's account status, available-account count, and `/ops/v1/availability` also honor
+the quota-aware exclusion: a live five-hour reading at 100% is unavailable for automatic
+Messages routing even if the last response was HTTP 200 and no 429 cooldown exists. Unknown
+or reset windows remain eligible for probing, and a newer reading can restore availability.
+This reporting does not create cooldowns, change client errors/status codes, or affect the
+independent `count_tokens` pool. Model-scoped cooldowns still do not disable an entire ingress.
+
 An overloaded sticky request returns `429` without deleting, migrating, or temporarily bypassing
 its binding. The in-flight counter and provisional new-session admissions are process-local because
 the supported deployment is a single relay instance; successful bindings and their last activity

@@ -367,6 +367,17 @@ func (s accountSelector) routingPolicy() string {
 	return s.policy.current()
 }
 
+// quotaUnavailable mirrors the Messages candidate exclusion in selectQuotaAware.
+// Unknown or reset windows remain eligible for probing; legacy routing and
+// count_tokens do not use this quota exclusion.
+func (s accountSelector) quotaUnavailable(account store.Account, now time.Time) bool {
+	if s.routingPolicy() != routingPolicyQuotaAware || s.sampler == nil {
+		return false
+	}
+	reading, ok := s.sampler.current(account, now)
+	return ok && reading.usedPercent >= 100
+}
+
 func (s accountSelector) wasBoundTo(ctx context.Context, route requestRoute, accountID int64) (bool, error) {
 	if route.StickyTTL <= 0 || route.ConversationKey == "" {
 		return false, nil
