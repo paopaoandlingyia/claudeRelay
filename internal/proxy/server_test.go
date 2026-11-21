@@ -868,6 +868,12 @@ func TestFailedAlternateSelectionDoesNotDoubleCountAccount(t *testing.T) {
 func TestForwardAddsStandardAnthropicHeadersWhenMissing(t *testing.T) {
 	t.Parallel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !classifyClientHeaders(r.Header).Evidence.hasCompleteHeaders() {
+			t.Error("missing Claude Code headers on compatible upstream request")
+		}
+		if got := r.Header.Get("anthropic-beta"); got != "oauth-2025-04-20" {
+			t.Errorf("anthropic-beta = %q", got)
+		}
 		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
 			t.Errorf("anthropic-version = %q", got)
 		}

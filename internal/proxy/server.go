@@ -551,7 +551,9 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		}
 		selected.Account = freshAccount
 		attributed, transformErr := addSubscriptionAttribution(body, incoming.Header, selected.Account.Credential, attributionOptions{
-			IncludeMetadata: includeMetadata, SessionSeed: route.ConversationKey,
+			IncludeMetadata:      includeMetadata,
+			IncludeSessionHeader: ingress.Name == ingressCompatible,
+			SessionSeed:          route.ConversationKey,
 			AlignGeneratedFields: ingress.AlignGeneratedAttribution,
 		})
 		if transformErr != nil {
@@ -577,7 +579,9 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			// Only this account's outgoing attempt receives the generated session.
 			upstreamIncoming = incoming.Clone(incoming.Context())
 			upstreamIncoming.Header.Set(claudeCodeSessionHeader, attributed.SessionHeader)
-			slog.Info("aligned generated attribution session", "request_id", requestID, "ingress", ingress.Name, "account", selected.Account.Alias)
+			if ingress.AlignGeneratedAttribution {
+				slog.Info("aligned generated attribution session", "request_id", requestID, "ingress", ingress.Name, "account", selected.Account.Alias)
+			}
 		}
 		response, err = s.doUpstream(upstreamIncoming, attributed.Body, selected.Account)
 		if err == nil && !retryableStatus(response.StatusCode) {

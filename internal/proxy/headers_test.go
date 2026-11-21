@@ -21,6 +21,8 @@ func TestCopyRequestHeadersBrowserPolicy(t *testing.T) {
 		"User-Agent":               {"claude-cli/2.1.215"},
 		"X-Claude-Code-Session-Id": {"client-session"},
 		"X-App":                    {"cli"},
+		"Cookie":                   {"client_session=example"},
+		"Cf-Ray":                   {"client-edge"},
 	}
 	original := source.Clone()
 	for _, policy := range []ingressPolicy{compatibleIngress, experimentalIngress, officialIngress} {
@@ -29,6 +31,11 @@ func TestCopyRequestHeadersBrowserPolicy(t *testing.T) {
 			if policy.Name != ingressOfficial {
 				want.Del("Origin")
 				want.Del("anthropic-dangerous-direct-browser-access")
+			}
+			if policy.Name == ingressCompatible {
+				want.Del("Authorization")
+				want.Del("Cookie")
+				want.Del("Cf-Ray")
 			}
 			destination := make(http.Header)
 			copyRequestHeaders(destination, source, policy)
@@ -93,6 +100,24 @@ func TestForwardStripsBrowserOnlyHeaders(t *testing.T) {
 		for _, key := range []string{"downstream-key", "experimental-downstream-key"} {
 			t.Run(test.name+"/"+key, func(t *testing.T) {
 				t.Parallel()
+				wantHeaders := map[string]string{
+					"Authorization":             "Bearer upstream-access-token",
+					"x-api-key":                 "",
+					"anthropic-version":         "2023-06-01",
+					"anthropic-beta":            "messages-2023-12-15",
+					"anthropic-workspace-id":    "wrkspc_example",
+					"anthropic-user-profile-id": "profile-example",
+					"User-Agent":                "NextAI-Translator/0.6.19",
+					"X-App":                     "custom-client",
+					"X-Forwarded-For":           "192.0.2.1",
+					"X-Script-Debug":            "custom-value",
+				}
+				if key == "downstream-key" {
+					wantHeaders["User-Agent"] = defaultClientUserAgent
+					wantHeaders["X-App"] = "cli"
+					wantHeaders["X-Forwarded-For"] = ""
+					wantHeaders["X-Script-Debug"] = ""
+				}
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if r.Header.Get("Origin") != "" || r.Header.Get("anthropic-dangerous-direct-browser-access") != "" {
 						w.Header().Set("Content-Type", "application/json")
@@ -100,16 +125,13 @@ func TestForwardStripsBrowserOnlyHeaders(t *testing.T) {
 						_, _ = io.WriteString(w, `{"type":"error","error":{"type":"authentication_error","message":"CORS requests are not allowed for this Organization because of its settings."}}`)
 						return
 					}
-					for header, want := range map[string]string{
-						"Authorization":     "Bearer upstream-access-token",
-						"x-api-key":         "",
-						"anthropic-version": "2023-06-01",
-						"anthropic-beta":    "messages-2023-12-15",
-						"User-Agent":        "NextAI-Translator/0.6.19",
-					} {
+					for header, want := range wantHeaders {
 						if got := r.Header.Get(header); got != want {
 							t.Errorf("upstream %s = %q, want %q", header, got, want)
 						}
+					}
+					if key == "downstream-key" && !classifyClientHeaders(r.Header).Evidence.hasCompleteHeaders() {
+						t.Error("compatible request sent incomplete Claude Code headers")
 					}
 					if r.URL.Path != test.path {
 						t.Errorf("upstream path = %q, want %q", r.URL.Path, test.path)
@@ -129,7 +151,12 @@ func TestForwardStripsBrowserOnlyHeaders(t *testing.T) {
 				request.Header.Set("Content-Type", "application/json")
 				request.Header.Set("anthropic-version", "2023-06-01")
 				request.Header.Set("anthropic-beta", "messages-2023-12-15")
+				request.Header.Set("anthropic-workspace-id", "wrkspc_example")
+				request.Header.Set("anthropic-user-profile-id", "profile-example")
 				request.Header.Set("User-Agent", "NextAI-Translator/0.6.19")
+				request.Header.Set("X-App", "custom-client")
+				request.Header.Set("X-Forwarded-For", "192.0.2.1")
+				request.Header.Set("X-Script-Debug", "custom-value")
 				request.Header.Set("Origin", "chrome-extension://translator")
 				request.Header.Set("anthropic-dangerous-direct-browser-access", "true")
 				recorder := httptest.NewRecorder()

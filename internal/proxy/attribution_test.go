@@ -27,7 +27,7 @@ func TestExperimentalAttributionAlignsOnlyGeneratedFields(t *testing.T) {
 		wantAligned bool
 	}{
 		{"experimental", "experimental-downstream-key", "/v1/messages", plainBody, cliUA, "2.1.295", true},
-		{"compatible unchanged", "downstream-key", "/v1/messages", plainBody, cliUA, defaultClaudeCodeVersion, false},
+		{"compatible aligns outgoing session", "downstream-key", "/v1/messages", plainBody, cliUA, defaultClaudeCodeVersion, true},
 		{"ordinary UA preserved", "experimental-downstream-key", "/v1/messages", plainBody, "third-party-sdk/1.0", defaultClaudeCodeVersion, true},
 		{"malformed CLI release not inferred", "experimental-downstream-key", "/v1/messages", plainBody, "claude-cli/2.1.295unknown", defaultClaudeCodeVersion, true},
 		{"caller billing and business identity preserved", "experimental-downstream-key", "/v1/messages", opaqueBody, cliUA, "2.1.219.abc", false},

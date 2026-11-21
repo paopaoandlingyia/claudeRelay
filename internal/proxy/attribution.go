@@ -20,8 +20,7 @@ const (
 	defaultClaudeCodeVersion = "2.1.280"
 	// This is a compatibility identifier, not a claim that claude-relay is Claude Desktop.
 	defaultBillingAttribution = "x-anthropic-billing-header: cc_version=" + defaultClaudeCodeVersion + "; cc_entrypoint=claude-desktop-3p;"
-	// Sent only by relay-generated account checks, which have no client request
-	// headers to pass through.
+	// Used when the outgoing request has no versioned Claude Code user agent.
 	defaultClientUserAgent = "claude-cli/" + defaultClaudeCodeVersion + " (external, claude-desktop)"
 )
 
@@ -42,6 +41,7 @@ type attributionUserID struct {
 
 type attributionOptions struct {
 	IncludeMetadata      bool
+	IncludeSessionHeader bool
 	SessionSeed          string
 	AlignGeneratedFields bool
 }
@@ -49,8 +49,7 @@ type attributionOptions struct {
 type subscriptionAttribution struct {
 	Body    []byte
 	Changed bool
-	// SessionHeader is set only when relay-generated metadata must replace an
-	// existing outgoing Claude Code session header. Routing uses the original.
+	// SessionHeader applies only to the outgoing request. Routing uses the original.
 	SessionHeader string
 }
 
@@ -118,6 +117,15 @@ func addSubscriptionAttribution(body []byte, headers http.Header, cred credentia
 			changed = true
 			if options.AlignGeneratedFields && strings.TrimSpace(headers.Get(claudeCodeSessionHeader)) != "" {
 				result.SessionHeader = sessionID
+			}
+		}
+	}
+	if options.IncludeSessionHeader {
+		result.SessionHeader = validRequestID(originalMetadataSession(root["metadata"]))
+		if result.SessionHeader == "" {
+			result.SessionHeader, err = attributionSessionID(headers, cred.DeviceID, options.SessionSeed)
+			if err != nil {
+				return subscriptionAttribution{}, err
 			}
 		}
 	}

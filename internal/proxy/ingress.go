@@ -19,9 +19,8 @@ type ingressPolicy struct {
 
 var (
 	compatibleIngress = ingressPolicy{
-		Name:                ingressCompatible,
-		AccountAccess:       store.AccountAccessCompatibleOnly,
-		StripBrowserHeaders: true,
+		Name:          ingressCompatible,
+		AccountAccess: store.AccountAccessCompatibleOnly,
 	}
 	experimentalIngress = ingressPolicy{
 		Name:                      ingressExperimental,
