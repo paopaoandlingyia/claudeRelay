@@ -20,14 +20,14 @@ func TestCountTokensUsesIndependentInflightPool(t *testing.T) {
 	}
 
 	messageRoute, err := deriveRequestRoute(
-		[]byte(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`),
+		parseTestRequest(t, []byte(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`)).root,
 		http.Header{}, compatibleIngress, "/v1/messages",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	countRoute, err := deriveRequestRoute(
-		[]byte(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`),
+		parseTestRequest(t, []byte(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`)).root,
 		http.Header{}, compatibleIngress, "/v1/messages/count_tokens",
 	)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestCountTokensDoesNotCreateSessionBinding(t *testing.T) {
 		t.Fatalf("count_tokens status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	route, err := deriveRequestRoute([]byte(body), request.Header, compatibleIngress, request.URL.Path)
+	route, err := deriveRequestRoute(parseTestRequest(t, []byte(body)).root, request.Header, compatibleIngress, request.URL.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestCountTokensDoesNotConsumeActiveSessionAdmission(t *testing.T) {
 
 	headers := http.Header{"X-Claude-Session-Id": []string{"count-session"}}
 	countRoute, err := deriveRequestRoute(
-		[]byte(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`),
+		parseTestRequest(t, []byte(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}]}`)).root,
 		headers, compatibleIngress, "/v1/messages/count_tokens",
 	)
 	if err != nil {

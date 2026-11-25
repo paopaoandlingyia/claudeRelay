@@ -1,11 +1,8 @@
 package proxy
 
 import (
-	"bytes"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
-	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -29,20 +26,8 @@ type toolNameMapping map[string]string
 // Anthropic server tools carry a versioned type and require their fixed names, so
 // they are never renamed. References in tool_choice and prior tool_use blocks are changed
 // only when their matching custom declaration was renamed.
-func normalizeExperimentalToolNames(body []byte) ([]byte, int, toolNameMapping, error) {
-	var root map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	if err := decoder.Decode(&root); err != nil {
-		return nil, 0, nil, fmt.Errorf("decode request body: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, 0, nil, fmt.Errorf("decode request body: trailing JSON value")
-	}
-	if root == nil {
-		return nil, 0, nil, fmt.Errorf("request body must be a JSON object")
-	}
-
+func normalizeExperimentalToolNames(body *requestBody) (int, toolNameMapping, error) {
+	root := body.root
 	changed := 0
 	renamed := make(map[string]string)
 	restored := make(toolNameMapping)
@@ -50,7 +35,7 @@ func normalizeExperimentalToolNames(body []byte) ([]byte, int, toolNameMapping, 
 		var err error
 		renamed, err = experimentalToolAliases(tools)
 		if err != nil {
-			return nil, 0, nil, err
+			return 0, nil, err
 		}
 		for _, raw := range tools {
 			tool, ok := raw.(map[string]any)
@@ -92,13 +77,10 @@ func normalizeExperimentalToolNames(body []byte) ([]byte, int, toolNameMapping, 
 		}
 	}
 	if changed == 0 {
-		return body, 0, nil, nil
+		return 0, nil, nil
 	}
-	transformed, err := json.Marshal(root)
-	if err != nil {
-		return nil, 0, nil, fmt.Errorf("encode tool-normalized request body: %w", err)
-	}
-	return transformed, changed, restored, nil
+	body.changed = true
+	return changed, restored, nil
 }
 
 func experimentalToolAliases(tools []any) (map[string]string, error) {

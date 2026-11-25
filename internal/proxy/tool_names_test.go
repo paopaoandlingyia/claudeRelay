@@ -26,7 +26,7 @@ func TestNormalizeExperimentalToolNamesUpdatesDeclarationsAndReferences(t *testi
 		]
 	}`)
 
-	transformed, changed, names, err := normalizeExperimentalToolNames(body)
+	transformed, changed, names, err := normalizeTestToolNames(t, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestNormalizeExperimentalToolNamesLeavesBuiltInToolAndReferencesUnchanged(t
 			{"type":"tool_use","id":"toolu_1","name":"web_search","input":{}}
 		]}]
 	}`)
-	transformed, changed, names, err := normalizeExperimentalToolNames(body)
+	transformed, changed, names, err := normalizeTestToolNames(t, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestNormalizeExperimentalToolNamesLeavesBuiltInToolAndReferencesUnchanged(t
 func TestNormalizeExperimentalToolNamesLeavesAlreadyCompatibleBodyByteExact(t *testing.T) {
 	t.Parallel()
 	body := []byte("{\n  \"tools\": [{\"name\":\"mcp__web_search\"}], \"messages\": []\n}")
-	transformed, changed, names, err := normalizeExperimentalToolNames(body)
+	transformed, changed, names, err := normalizeTestToolNames(t, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestNormalizeExperimentalToolNamesResolvesCollisionAndRestoresResponses(t *
 			{"type":"tool_use","name":"mcp__search","input":{}}
 		]}]
 	}`)
-	transformed, changed, names, err := normalizeExperimentalToolNames(body)
+	transformed, changed, names, err := normalizeTestToolNames(t, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestExperimentalToolAliasesPreservePrefixedTypedAndInvalidNames(t *testing.
 	t.Parallel()
 	for _, name := range []string{"mcp__search", "mcp__" + strings.Repeat("x", maxToolNameLength-len(mcpToolNamePrefix)), strings.Repeat("x", maxToolNameLength+1), strings.Repeat("x", maxToolNameLength-1) + "!", "天气"} {
 		body, _ := json.Marshal(map[string]any{"tools": []any{map[string]any{"name": name}}})
-		transformed, changed, names, err := normalizeExperimentalToolNames(body)
+		transformed, changed, names, err := normalizeTestToolNames(t, body)
 		if err != nil || changed != 0 || len(names) != 0 || !bytes.Equal(body, transformed) {
 			t.Fatalf("caller-owned or invalid name %q changed: %s (err=%v)", name, transformed, err)
 		}
@@ -241,7 +241,7 @@ func TestExperimentalToolAliasesPreservePrefixedTypedAndInvalidNames(t *testing.
 func TestNormalizeExperimentalToolNamesRejectsDuplicateOriginalNames(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"tools":[{"name":"search"},{"name":"search"}]}`)
-	if _, _, _, err := normalizeExperimentalToolNames(body); err == nil || !strings.Contains(err.Error(), "duplicate tool name") {
+	if _, _, _, err := normalizeTestToolNames(t, body); err == nil || !strings.Contains(err.Error(), "duplicate tool name") {
 		t.Fatalf("duplicate originals must not receive distinct aliases: %v", err)
 	}
 }

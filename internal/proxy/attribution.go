@@ -1,12 +1,10 @@
 package proxy
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -56,20 +54,11 @@ type subscriptionAttribution struct {
 // addSubscriptionAttribution adds only the minimum fields demonstrated by the
 // protocol experiments. Existing caller-owned billing and metadata fields are
 // preserved, including fields the relay does not interpret.
-func addSubscriptionAttribution(body []byte, headers http.Header, cred credential.Credential, options attributionOptions) (subscriptionAttribution, error) {
-	result := subscriptionAttribution{Body: body}
-	var root map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	if err := decoder.Decode(&root); err != nil {
-		return subscriptionAttribution{}, fmt.Errorf("decode request body: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return subscriptionAttribution{}, fmt.Errorf("decode request body: trailing JSON value")
-	}
-	if root == nil {
-		return subscriptionAttribution{}, fmt.Errorf("request body must be a JSON object")
-	}
+func addSubscriptionAttribution(body *requestBody, headers http.Header, cred credential.Credential, options attributionOptions) (subscriptionAttribution, error) {
+	result := subscriptionAttribution{}
+	attempt := *body
+	attempt.root = cloneMap(body.root)
+	root := attempt.root
 
 	system, billingFound, err := inspectSystem(root["system"])
 	if err != nil {
@@ -112,6 +101,8 @@ func addSubscriptionAttribution(body []byte, headers http.Header, cred credentia
 			if err != nil {
 				return subscriptionAttribution{}, fmt.Errorf("encode metadata user identity: %w", err)
 			}
+			// The next account attempt must see the caller's original metadata.
+			metadata = cloneMap(metadata)
 			metadata["user_id"] = string(value)
 			root["metadata"] = metadata
 			changed = true
@@ -130,14 +121,12 @@ func addSubscriptionAttribution(body []byte, headers http.Header, cred credentia
 		}
 	}
 
-	if !changed {
-		return result, nil
-	}
-	transformed, err := json.Marshal(root)
+	attempt.changed = attempt.changed || changed
+	encoded, err := attempt.bytes()
 	if err != nil {
 		return subscriptionAttribution{}, fmt.Errorf("encode attributed request body: %w", err)
 	}
-	result.Body, result.Changed = transformed, true
+	result.Body, result.Changed = encoded, changed
 	return result, nil
 }
 

@@ -95,7 +95,7 @@ func TestClassifyClientRequestKinds(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			route, err := deriveRequestRoute([]byte(test.body), test.headers, compatibleIngress, test.path)
+			route, err := deriveRequestRoute(parseTestRequest(t, []byte(test.body)).root, test.headers, compatibleIngress, test.path)
 			if err != nil {
 				t.Fatal(err)
 			}

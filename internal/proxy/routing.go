@@ -49,16 +49,7 @@ type metadataIdentity struct {
 	SessionID   string `json:"session_id"`
 }
 
-func deriveRequestRoute(body []byte, headers http.Header, ingress ingressPolicy, path string) (requestRoute, error) {
-	var root map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	if err := decoder.Decode(&root); err != nil {
-		return requestRoute{}, fmt.Errorf("decode request body: %w", err)
-	}
-	if root == nil {
-		return requestRoute{}, fmt.Errorf("request body must be a JSON object")
-	}
+func deriveRequestRoute(root map[string]any, headers http.Header, ingress ingressPolicy, path string) (requestRoute, error) {
 	route := requestRoute{Ingress: ingress.Name, AccountAccess: ingress.AccountAccess, CountTokens: path == "/v1/messages/count_tokens"}
 	route.Model, _ = root["model"].(string)
 	route.Client = classifyClient(root, headers, path)

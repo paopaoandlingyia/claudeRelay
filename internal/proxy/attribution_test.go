@@ -117,7 +117,7 @@ func TestExperimentalAttributionPreservesCallerCCHWhenAddingMetadata(t *testing.
 	} {
 		headers.Set("User-Agent", "claude-cli/2.1.295 (external, cli)")
 		body := []byte(`{"system":[{"type":"text","text":"` + billing + `"}],"messages":[]}`)
-		attributed, err := addSubscriptionAttribution(body, headers, cred, attributionOptions{IncludeMetadata: true, AlignGeneratedFields: true})
+		attributed, err := addSubscriptionAttribution(parseTestRequest(t, body), headers, cred, attributionOptions{IncludeMetadata: true, AlignGeneratedFields: true})
 		if err != nil {
 			t.Fatal(err)
 		}

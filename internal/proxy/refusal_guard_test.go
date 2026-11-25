@@ -18,7 +18,7 @@ func TestRefusalGuardFingerprints(t *testing.T) {
 	g := &refusalGuard{secret: []byte("test-secret")}
 	derive := func(body string, headers http.Header, ingress string) refusalFingerprints {
 		t.Helper()
-		keys, err := g.fingerprints([]byte(body), headers, ingress)
+		keys, err := g.fingerprints(parseTestRequest(t, []byte(body)).root, headers, ingress)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -149,7 +149,7 @@ func TestRefusalGuardForward(t *testing.T) {
 			if calls.Load() != 3 {
 				t.Fatalf("upstream calls=%d want=3", calls.Load())
 			}
-			keys, err := server.refusalGuard.fingerprints([]byte(body), nil, compatibleIngress.Name)
+			keys, err := server.refusalGuard.fingerprints(parseTestRequest(t, []byte(body)).root, nil, compatibleIngress.Name)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +178,7 @@ func TestRefusalGuardEscalatesAfterExpiredCooldown(t *testing.T) {
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 4096)
 	const body = `{"model":"claude-test","messages":[{"role":"user","content":"refused request"}]}`
-	keys, err := server.refusalGuard.fingerprints([]byte(body), nil, compatibleIngress.Name)
+	keys, err := server.refusalGuard.fingerprints(parseTestRequest(t, []byte(body)).root, nil, compatibleIngress.Name)
 	if err != nil {
 		t.Fatal(err)
 	}

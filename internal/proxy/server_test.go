@@ -1028,11 +1028,11 @@ func TestAttributionTransformIsIdempotent(t *testing.T) {
 	headers := http.Header{"X-Session-Id": []string{"stable-session"}}
 	body := []byte(`{"system":[{"type":"text","text":"keep me"}],"messages":[]}`)
 	options := attributionOptions{IncludeMetadata: true}
-	first, err := addSubscriptionAttribution(body, headers, cred, options)
+	first, err := addSubscriptionAttribution(parseTestRequest(t, body), headers, cred, options)
 	if err != nil || !first.Changed {
 		t.Fatalf("first transform: changed=%v err=%v", first.Changed, err)
 	}
-	second, err := addSubscriptionAttribution(first.Body, headers, cred, options)
+	second, err := addSubscriptionAttribution(parseTestRequest(t, first.Body), headers, cred, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1306,7 +1306,7 @@ func TestStickyOverloadReturns429WithoutSwitchingAccount(t *testing.T) {
 	importTestAccount(t, server.store, "secondary", "token-secondary", "22222222-2222-4222-8222-222222222222", "b")
 	body := `{"model":"claude-test","messages":[{"role":"user","content":"sticky overload"}]}`
 	headers := http.Header{"X-Claude-Session-Id": []string{"sticky-overload"}}
-	route, err := deriveRequestRoute([]byte(body), headers, compatibleIngress, "/v1/messages")
+	route, err := deriveRequestRoute(parseTestRequest(t, []byte(body)).root, headers, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1625,11 +1625,11 @@ func TestUnknownBillingFieldsDoNotOverrideForcedAccount(t *testing.T) {
 func TestRoutingPrefixIgnoresContentAfterCacheBreakpoint(t *testing.T) {
 	t.Parallel()
 	headers := http.Header{}
-	first, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"one"}]}`), headers, compatibleIngress, "/v1/messages")
+	first, err := deriveRequestRoute(parseTestRequest(t, []byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"one"}]}`)).root, headers, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := deriveRequestRoute([]byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`), headers, compatibleIngress, "/v1/messages")
+	second, err := deriveRequestRoute(parseTestRequest(t, []byte(`{"model":"m","system":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`)).root, headers, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1644,11 +1644,11 @@ func TestRoutingPrefixIgnoresContentAfterCacheBreakpoint(t *testing.T) {
 func TestCompatibleIngressPoliciesUseSeparateRoutingScopes(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"same"}]}`)
 	headers := http.Header{sessionHeaderNames[0]: []string{"same-session"}}
-	compatible, err := deriveRequestRoute(body, headers, compatibleIngress, "/v1/messages")
+	compatible, err := deriveRequestRoute(parseTestRequest(t, body).root, headers, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
-	experimental, err := deriveRequestRoute(body, headers, experimentalIngress, "/v1/messages")
+	experimental, err := deriveRequestRoute(parseTestRequest(t, body).root, headers, experimentalIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1703,7 +1703,7 @@ func TestRoutingStickyTTLSeparatesSessionsCachesAndFallbacks(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			route, err := deriveRequestRoute([]byte(test.body), test.headers, compatibleIngress, "/v1/messages")
+			route, err := deriveRequestRoute(parseTestRequest(t, []byte(test.body)).root, test.headers, compatibleIngress, "/v1/messages")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1772,7 +1772,7 @@ func TestOnlyDeclaredAffinityPersistsAfterSuccess(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			route, err := deriveRequestRoute([]byte(test.body), nil, compatibleIngress, "/v1/messages")
+			route, err := deriveRequestRoute(parseTestRequest(t, []byte(test.body)).root, nil, compatibleIngress, "/v1/messages")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1802,7 +1802,7 @@ func TestOnlyDeclaredAffinityPersistsAfterSuccess(t *testing.T) {
 func TestOrdinaryFallbackIgnoresLegacyPrefixBinding(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t, "http://127.0.0.1:1", 4096)
-	route, err := deriveRequestRoute([]byte(`{"model":"m","messages":[{"role":"user","content":"legacy"}]}`), nil, compatibleIngress, "/v1/messages")
+	route, err := deriveRequestRoute(parseTestRequest(t, []byte(`{"model":"m","messages":[{"role":"user","content":"legacy"}]}`)).root, nil, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}

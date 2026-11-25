@@ -143,7 +143,7 @@ func TestQuotaAwareSuccessDoesNotPersistAffinityAndRollbackDoes(t *testing.T) {
 	defer upstream.Close()
 	server := newTestServer(t, upstream.URL, 1<<20)
 	body := `{"model":"claude-test","system":[{"type":"text","text":"shared","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hello"}]}`
-	route, err := deriveRequestRoute([]byte(body), nil, compatibleIngress, "/v1/messages")
+	route, err := deriveRequestRoute(parseTestRequest(t, []byte(body)).root, nil, compatibleIngress, "/v1/messages")
 	if err != nil {
 		t.Fatal(err)
 	}

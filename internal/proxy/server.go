@@ -393,10 +393,15 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 		fail(http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	parsed, err := parseRequestBody(body)
+	if err != nil {
+		fail(http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	includeMetadata := incoming.URL.Path == "/v1/messages"
 	var refusalKeys refusalFingerprints
 	if includeMetadata {
-		refusalKeys, err = s.refusalGuard.fingerprints(body, incoming.Header, ingress.Name)
+		refusalKeys, err = s.refusalGuard.fingerprints(parsed.root, incoming.Header, ingress.Name)
 		if err != nil {
 			fail(http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
@@ -405,7 +410,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 	normalizedToolNames := 0
 	var toolNames toolNameMapping
 	if ingress.NormalizeToolNames {
-		body, normalizedToolNames, toolNames, err = normalizeExperimentalToolNames(body)
+		normalizedToolNames, toolNames, err = normalizeExperimentalToolNames(parsed)
 		if err != nil {
 			fail(http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
@@ -415,7 +420,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 				"ingress", ingress.Name, "names_changed", normalizedToolNames)
 		}
 	}
-	route, routeErr := deriveRequestRoute(body, incoming.Header, ingress, incoming.URL.Path)
+	route, routeErr := deriveRequestRoute(parsed.root, incoming.Header, ingress, incoming.URL.Path)
 	if routeErr != nil {
 		fail(http.StatusBadRequest, "invalid_request_error", routeErr.Error())
 		return
@@ -550,7 +555,7 @@ func (s *Server) forward(w http.ResponseWriter, incoming *http.Request) {
 			continue
 		}
 		selected.Account = freshAccount
-		attributed, transformErr := addSubscriptionAttribution(body, incoming.Header, selected.Account.Credential, attributionOptions{
+		attributed, transformErr := addSubscriptionAttribution(parsed, incoming.Header, selected.Account.Credential, attributionOptions{
 			IncludeMetadata:      includeMetadata,
 			IncludeSessionHeader: ingress.Name == ingressCompatible,
 			SessionSeed:          route.ConversationKey,

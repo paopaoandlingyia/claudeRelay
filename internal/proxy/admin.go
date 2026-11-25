@@ -550,7 +550,12 @@ func (s *Server) checkAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body := []byte(`{"model":"` + checkModel + `","messages":[{"role":"user","content":"ping"}]}`)
-	attributed, err := addSubscriptionAttribution(body, http.Header{}, account.Credential, attributionOptions{})
+	parsed, err := parseRequestBody(body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "api_error", "failed to build check request")
+		return
+	}
+	attributed, err := addSubscriptionAttribution(parsed, http.Header{}, account.Credential, attributionOptions{})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "api_error", "failed to build check request")
 		return

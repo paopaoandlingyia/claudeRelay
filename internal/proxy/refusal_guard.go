@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -67,13 +66,7 @@ func (g *refusalGuard) digest(parts ...string) string {
 // The content seed includes system/tools but never stands alone as a block key:
 // identical harmless messages under different system instructions must not share
 // a cooldown. Model/metadata/cache and billing annotations are not content.
-func (g *refusalGuard) fingerprints(body []byte, headers http.Header, ingress string) (refusalFingerprints, error) {
-	var root map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	if err := decoder.Decode(&root); err != nil {
-		return refusalFingerprints{}, fmt.Errorf("decode refusal conversation: %w", err)
-	}
+func (g *refusalGuard) fingerprints(root map[string]any, headers http.Header, ingress string) (refusalFingerprints, error) {
 	var result refusalFingerprints
 	session := firstSessionHeader(headers)
 	if session == "" {
